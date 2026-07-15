@@ -1,0 +1,180 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Webull Pro Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <style>
+        body { background-color: #0b0e14; color: #a9b1d6; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; }
+        .card { background-color: #161b22; border-radius: 16px; border: 1px solid #2d3748; box-shadow: 0 10px 25px -5px rgba(0, 0, 0, 0.5); }
+        .text-green { color: #10b981; }
+        .text-red { color: #ef4444; }
+        th { text-align: right; padding: 1rem; color: #9ca3af; font-weight: 500; font-size: 0.875rem; text-transform: uppercase; letter-spacing: 0.05em; }
+        th:first-child { text-align: left; }
+        td { text-align: right; padding: 1rem; border-bottom: 1px solid #1f2937; transition: background-color 0.2s; }
+        td:first-child { text-align: left; }
+        tbody tr:hover td { background-color: #1f2937; cursor: pointer; }
+        tr:last-child td { border-bottom: none; }
+    </style>
+</head>
+<body class="p-4 md:p-8 max-w-7xl mx-auto">
+
+    <!-- ส่วนหัว -->
+    <div class="flex items-center mb-8 bg-[#161b22] p-6 rounded-2xl border border-gray-800 shadow-lg">
+        <div class="w-12 h-12 bg-gradient-to-tr from-blue-600 to-cyan-400 rounded-full mr-4 flex items-center justify-center text-white font-bold text-2xl shadow-lg shadow-blue-500/30">W</div>
+        <div>
+            <h1 class="text-3xl font-bold bg-clip-text text-transparent bg-gradient-to-r from-white to-gray-400">พอร์ต Webull (Pro Version)</h1>
+            <p class="text-sm text-cyan-400 mt-1">● ระบบจำลองข้อมูลแบบเรียลไทม์ (Mock Data)</p>
+        </div>
+    </div>
+
+    <!-- ตารางหุ้น -->
+    <div class="card mb-8 overflow-hidden">
+        <div class="p-6 pb-2 border-b border-gray-800">
+            <h2 class="text-xl font-bold text-white flex items-center"><span class="w-2 h-6 bg-blue-500 mr-3 rounded-full"></span> หุ้นในพอร์ตการลงทุน (USD)</h2>
+        </div>
+        <div class="overflow-x-auto">
+            <table class="w-full whitespace-nowrap">
+                <thead class="bg-[#0f131c]">
+                    <tr>
+                        <th>หุ้นในพอร์ต</th>
+                        <th>จำนวนหุ้น</th>
+                        <th>ต้นทุนต่อหุ้น</th>
+                        <th>เงินลงทุน</th>
+                        <th>มูลค่าตลาด</th>
+                        <th>กำไร/ขาดทุน-ทั้งหมด</th>
+                    </tr>
+                </thead>
+                <tbody id="stock-table-body">
+                    <!-- ข้อมูลจะถูกโหลดตรงนี้ -->
+                </tbody>
+                <tfoot class="bg-[#0f131c]">
+                    <tr class="font-bold text-white">
+                        <td class="text-lg">รวมทั้งหมด</td>
+                        <td>24.96046</td>
+                        <td>-</td>
+                        <td>$2,302.68</td>
+                        <td class="text-2xl text-blue-400">$3,658.63</td>
+                        <td class="text-green">
+                            <span class="text-lg">+$1,355.96</span><br>
+                            <span class="text-sm font-normal bg-green-500/20 text-green-400 px-2 py-1 rounded-md mt-1 inline-block">▲ 58.89%</span>
+                        </td>
+                    </tr>
+                </tfoot>
+            </table>
+        </div>
+    </div>
+
+    <!-- ส่วนกราฟ -->
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+        <!-- กราฟโดนัท -->
+        <div class="card p-6 flex flex-col items-center justify-center relative">
+            <h3 class="w-full text-left text-lg font-bold text-white mb-6 flex items-center"><span class="w-2 h-6 bg-purple-500 mr-3 rounded-full"></span>สัดส่วนพอร์ตตามมูลค่าตลาด</h3>
+            <div class="relative w-64 h-64">
+                <canvas id="donutChart"></canvas>
+                <!-- ตัวเลขตรงกลางกราฟโดนัท -->
+                <div class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none">
+                    <span class="text-2xl font-bold text-white">$3,658.63</span>
+                    <span class="text-xs text-gray-500">มูลค่ารวม</span>
+                </div>
+            </div>
+        </div>
+        <!-- กราฟแท่ง -->
+        <div class="card p-6">
+            <h3 class="w-full text-left text-lg font-bold text-white mb-6 flex items-center"><span class="w-2 h-6 bg-green-500 mr-3 rounded-full"></span>กำไร/ขาดทุนรายตัว (%)</h3>
+            <canvas id="barChart" height="250"></canvas>
+        </div>
+    </div>
+
+    <!-- JavaScript -->
+    <script>
+        const stockData = [
+            { symbol: 'NVDA', name: 'NVIDIA Corporation', shares: '1.785', avgCost: '$111.40', invest: '$198.85', market: '$347.77', marketDetail: '$194.83', pl: '+$148.92', plPercent: '74.89', isProfit: true },
+            { symbol: 'BKNG', name: 'Booking Holdings Inc.', shares: '10', avgCost: '$124.00', invest: '$1,240.00', market: '$1,842.80', marketDetail: '$184.28', pl: '+$602.80', plPercent: '48.61', isProfit: true },
+            { symbol: 'QQQ', name: 'Invesco QQQ Trust', shares: '0.5', avgCost: '$532.14', invest: '$266.07', market: '$356.30', marketDetail: '$712.60', pl: '+$90.23', plPercent: '33.91', isProfit: true },
+            { symbol: 'STX', name: 'Seagate Technology', shares: '1.24985', avgCost: '$393.43', invest: '$491.73', market: '$1,030.53', marketDetail: '$824.52', pl: '+$538.80', plPercent: '109.57', isProfit: true },
+            { symbol: 'BULL', name: 'Webull Corporation', shares: '11.42561', avgCost: '$9.28', invest: '$106.03', market: '$81.24', marketDetail: '$7.11', pl: '-$24.79', plPercent: '-23.38', isProfit: false }
+        ];
+
+        const tbody = document.getElementById('stock-table-body');
+        stockData.forEach(stock => {
+            const plClass = stock.isProfit ? 'text-green' : 'text-red';
+            const arrow = stock.isProfit ? '▲' : '▼';
+            const bgBadge = stock.isProfit ? 'bg-green-500/10 text-green-400' : 'bg-red-500/10 text-red-400';
+            
+            const row = `<tr>
+                <td>
+                    <div class="font-bold text-white text-lg tracking-wide">${stock.symbol}</div>
+                    <div class="text-xs text-gray-500">${stock.name}</div>
+                </td>
+                <td class="font-medium text-gray-300">${stock.shares}</td>
+                <td class="text-gray-400">${stock.avgCost}</td>
+                <td class="text-gray-400">${stock.invest}</td>
+                <td>
+                    <div class="text-white text-lg font-medium">${stock.market}</div>
+                    <div class="text-xs text-gray-500">${stock.marketDetail}</div>
+                </td>
+                <td class="${plClass}">
+                    <div class="font-bold">${stock.pl}</div>
+                    <div class="text-xs mt-1 inline-block px-2 py-0.5 rounded ${bgBadge}">${arrow} ${Math.abs(stock.plPercent)}%</div>
+                </td>
+            </tr>`;
+            tbody.innerHTML += row;
+        });
+
+        Chart.defaults.color = '#9ca3af';
+        Chart.defaults.font.family = "'Segoe UI', sans-serif";
+        
+        new Chart(document.getElementById('donutChart'), {
+            type: 'doughnut',
+            data: {
+                labels: ['NVDA', 'BKNG', 'QQQ', 'STX', 'BULL'],
+                datasets: [{
+                    data: [9.5, 50.4, 9.7, 28.2, 2.2],
+                    backgroundColor: ['#8b5cf6', '#f59e0b', '#3b82f6', '#10b981', '#ef4444'],
+                    borderWidth: 2,
+                    borderColor: '#161b22',
+                    hoverOffset: 10,
+                    cutout: '80%'
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                plugins: { 
+                    legend: { position: 'bottom', labels: { padding: 20, usePointStyle: true, pointStyle: 'circle' } },
+                    tooltip: { backgroundColor: 'rgba(15, 23, 42, 0.9)', titleColor: '#fff', bodyColor: '#fff', padding: 12, cornerRadius: 8 }
+                }
+            }
+        });
+
+        new Chart(document.getElementById('barChart'), {
+            type: 'bar',
+            data: {
+                labels: ['NVDA', 'BKNG', 'QQQ', 'STX', 'BULL'],
+                datasets: [{
+                    data: [74.89, 48.61, 33.91, 109.57, -23.38],
+                    backgroundColor: ctx => ctx.raw > 0 ? 'rgba(16, 185, 129, 0.8)' : 'rgba(239, 68, 68, 0.8)',
+                    hoverBackgroundColor: ctx => ctx.raw > 0 ? '#10b981' : '#ef4444',
+                    borderRadius: 6,
+                    borderSkipped: false
+                }]
+            },
+            options: {
+                responsive: true,
+                maintainAspectRatio: false,
+                scales: {
+                    y: { grid: { color: 'rgba(55, 65, 81, 0.3)', drawBorder: false }, ticks: { callback: function(value) { return value + '%' } } },
+                    x: { grid: { display: false, drawBorder: false } }
+                },
+                plugins: { 
+                    legend: { display: false },
+                    tooltip: { backgroundColor: 'rgba(15, 23, 42, 0.9)', padding: 12, callbacks: { label: function(context) { return context.raw + '%'; } } }
+                }
+            }
+        });
+    </script>
+</body>
+</html>
