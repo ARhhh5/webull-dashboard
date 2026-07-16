@@ -10,9 +10,9 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone
 
-st.title("📜 ประวัติทรานแซกชันและการซื้อขาย (Transactions Log)")
+st.title("📜 ประวัติการซื้อขายย้อนหลัง (Order History)")
 st.markdown("---")
-st.subheader("🕵️‍♂️ แกะรอยสมุดบัญชีรายวัน (Account Journal)")
+st.subheader("🕵️‍♂️ รายการคำสั่งซื้อขายในรอบ 7 วันล่าสุด (Filled Orders)")
 
 # โหลดกุญแจสำคัญจากระบบ Secrets ร่วมกัน
 webull_config = st.secrets.get("Webull", {})
@@ -22,11 +22,12 @@ ACCESS_TOKEN = webull_config.get("AccessToken", "").strip()
 ACCOUNT_ID = webull_config.get("AccountId", "").strip()
 HOST = "api.webull.co.th"
 
-def try_webull_journal_api(path):
+def get_webull_orders():
+    # เปลี่ยนที่อยู่เป็นตัวสะกดที่ถูกต้องสำหรับ Webull TH
+    path = "/openapi/trade/order/history"
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nonce = uuid.uuid4().hex
 
-    # ประกอบพารามิเตอร์พื้นฐานส่งไปให้เซิร์ฟเวอร์
     signing_values = {
         "host": HOST,
         "x-app-key": APP_KEY,
@@ -63,39 +64,49 @@ def try_webull_journal_api(path):
         request_path = f"{path}?account_id={ACCOUNT_ID}"
         conn = http.client.HTTPSConnection(HOST)
         conn.request("GET", request_path, "", headers)
-        response = conn.getresponse()
+        response = conn.getcall = conn.getresponse()
         res_body = response.read().decode("utf-8")
         
-        return {
-            "status": response.status,
-            "body": json.loads(res_body) if response.status == 200 else res_body
-        }
+        if response.status == 200:
+            return json.loads(res_body)
+        else:
+            return {"error_status": response.status, "msg": res_body}
     except Exception as e:
-        return {"status": "Error", "body": str(e)}
+        return {"error": str(e)}
 
 if ACCESS_TOKEN and ACCOUNT_ID:
+    with st.spinner("⏳ กำลังกางสมุดบัญชีดึงประวัติการเทรด 7 วันล่าสุด..."):
+        orders_data = get_webull_orders()
     
-    with st.spinner("กำลังเจาะสมุดบัญชีรายวันจาก Webull..."):
-        # ลองยิงเวอร์ชัน 1
-        res_v1 = try_webull_journal_api("/openapi/assets/account/journal")
-        # ลองยิงเวอร์ชัน 2
-        res_v2 = try_webull_journal_api("/openapi/v2/assets/account/journal")
-
-    col1, col2 = st.columns(2)
-    
-    with col1:
-        st.write("**สมุดบัญชีรายวัน v1 (`/openapi/assets/account/journal`):**")
-        st.write(f"HTTP Status: {res_v1['status']}")
-        if res_v1['status'] == 200 and isinstance(res_v1['body'], list):
-            # ถ้าเป็นตารางข้อมูล ให้แปลงเป็น DataFrame ให้ดูง่ายๆ เลย
-            st.dataframe(pd.DataFrame(res_v1['body']), use_container_width=True)
-        else:
-            st.json(res_v1['body'])
+    orders_list = []
+    if isinstance(orders_data, list):
+        orders_list = orders_data
+    elif isinstance(orders_data, dict):
+        orders_list = orders_data.get("orders") or orders_data.get("data") or []
+        
+    if orders_list:
+        order_rows = []
+        for order in orders_list:
+            symbol = order.get("symbol", "-")
+            side = order.get("action") or order.get("side", "-")
+            filled_qty = float(order.get("filled_quantity") or order.get("quantity", 0))
+            filled_price = float(order.get("filled_price") or order.get("price", 0))
+            total_amount = filled_qty * filled_price
+            time_str = order.get("filled_time") or order.get("placed_time") or "-"
             
-    with col2:
-        st.write("**สมุดบัญชีรายวัน v2 (`/openapi/v2/assets/account/journal`):**")
-        st.write(f"HTTP Status: {res_v2['status']}")
-        if res_v2['status'] == 200 and isinstance(res_v2['body'], list):
-            st.dataframe(pd.DataFrame(res_v2['body']), use_container_width=True)
-        else:
-            st.json(res_v2['body'])
+            side_emoji = "🟢 BUY" if "BUY" in side.upper() else "🔴 SELL"
+            
+            order_rows.append({
+                "เวลาที่สำเร็จ": time_str,
+                "หุ้น": symbol,
+                "ประเภทคำสั่ง": side_emoji,
+                "จำนวนหุ้น": f"{filled_qty:,.2f}",
+                "ราคาต่อหุ้น": f"${filled_price:,.2f}",
+                "มูลค่ารวม (USD)": f"${total_amount:,.2f}"
+            })
+            
+        st.dataframe(pd.DataFrame(order_rows), use_container_width=True, hide_index=True)
+    else:
+        st.info("ℹ️ ไม่พบประวัติคำสั่งซื้อขายที่แมตช์กันในช่วง 7 วันที่ผ่านมา (หากมีรายการเก่ากว่านั้น ระบบ API จะดึงไม่ถึงครับเพื่อน)")
+        with st.expander("🔍 ดูข้อความดิบตอบกลับจากเซิร์ฟเวอร์"):
+            st.json(orders_data)
