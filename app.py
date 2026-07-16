@@ -8,11 +8,9 @@ import http.client
 import json
 import streamlit as st
 import pandas as pd
-from datetime import datetime, timezone  # <-- เติมบรรทัดนี้เข้าไปครับเพื่อน
+from datetime import datetime, timezone
 
-# =====================================================================
-# 1. ตั้งค่าหน้าตา Dashboard & ธีมสีสไตล์เทรดเดอร์
-# =====================================================================
+# ตั้งค่าหน้าตา Dashboard
 st.set_page_config(page_title="Webull Portfolio Pro 2026", layout="wide")
 
 st.markdown("""
@@ -41,23 +39,17 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📊 Webull Live Portfolio Dashboard")
+st.title("📈 Webull Portfolio Dashboard")
 st.markdown("---")
 
-# =====================================================================
-# 2. โหลดกุญแจสำคัญจากระบบ Secrets ของ Streamlit Cloud (ปลอดภัย 100%)
-# =====================================================================
+# โหลดกุญแจสำคัญจากระบบ Secrets
 webull_config = st.secrets.get("Webull", {})
-
 APP_KEY = webull_config.get("AppKey", "").strip()
 APP_SECRET = webull_config.get("AppSecret", "").strip()
 ACCESS_TOKEN = webull_config.get("AccessToken", "").strip()
 ACCOUNT_ID = webull_config.get("AccountId", "").strip()
 HOST = "api.webull.co.th"
 
-# =====================================================================
-# 3. ฟังก์ชันดึงข้อมูลพอร์ตจาก Webull (ถอดสูตรจาก C#)
-# =====================================================================
 def get_webull_positions():
     path = "/openapi/assets/positions"
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -102,16 +94,9 @@ def get_webull_positions():
         response = conn.getresponse()
         if response.status == 200:
             return json.loads(response.read().decode("utf-8"))
-        else:
-            return {"error_http": response.status}
-    except Exception as e:
-        return {"error": str(e)}
-
-# =====================================================================
-# 4. ส่วนการแสดงผลดีไซน์
-# =====================================================================
-st.sidebar.markdown("### 🛠️ API Control Panel")
-st.sidebar.info(f"**Account ID:**\n`{ACCOUNT_ID}`")
+        return None
+    except Exception:
+        return None
 
 if ACCESS_TOKEN and ACCOUNT_ID:
     positions_data = get_webull_positions()
@@ -169,4 +154,4 @@ if ACCESS_TOKEN and ACCOUNT_ID:
         else:
             st.info("ไม่พบสินทรัพย์ประเภทหุ้นในพอร์ตโฟลิโอนี้")
     else:
-        st.error("🚨 ไม่สามารถดึงข้อมูลพอร์ตได้ กรุณาตรวจสอบค่าใน Advanced Settings (Secrets)")
+        st.error("🚨 ไม่สามารถดึงข้อมูลพอร์ตได้ กรุณาตรวจสอบรหัสผ่านในระบบ Secrets")
