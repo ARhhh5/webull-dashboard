@@ -10,9 +10,9 @@ import streamlit as st
 import pandas as pd
 from datetime import datetime, timezone
 
-st.set_page_config(page_title="Order History", layout="wide")
 st.title("📜 ประวัติการซื้อขายย้อนหลัง (Order History)")
 st.markdown("---")
+st.subheader("🕵️‍♂️ รายการซื้อมาขายไป (Filled Orders)")
 
 # โหลดกุญแจสำคัญจากระบบ Secrets ร่วมกัน
 webull_config = st.secrets.get("Webull", {})
@@ -22,11 +22,11 @@ ACCESS_TOKEN = webull_config.get("AccessToken", "").strip()
 ACCOUNT_ID = webull_config.get("AccountId", "").strip()
 HOST = "api.webull.co.th"
 
-def get_webull_orders():
-    path = "/openapi/trade/order/list"
+def try_webull_orders_api(path, extra_params={}):
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nonce = uuid.uuid4().hex
 
+    # ประกอบพารามิเตอร์พื้นฐาน + พารามิเตอร์พิเศษ
     signing_values = {
         "host": HOST,
         "x-app-key": APP_KEY,
@@ -34,9 +34,10 @@ def get_webull_orders():
         "x-signature-nonce": nonce,
         "x-signature-version": "1.0",
         "x-timestamp": timestamp,
-        "account_id": ACCOUNT_ID,
-        "status": "FILLED"
+        "account_id": ACCOUNT_ID
     }
+    for k, v in extra_params.items():
+        signing_values[k] = str(v)
 
     string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
     string_3 = f"{path}&{string_1}"
@@ -61,59 +62,56 @@ def get_webull_orders():
     }
 
     try:
-        request_path = f"{path}?account_id={ACCOUNT_ID}&status=FILLED"
+        # แปลงพารามิเตอร์สำหรับ Query String
+        query_dict = {"account_id": ACCOUNT_ID}
+        for k, v in extra_params.items():
+            query_dict[k] = str(v)
+            
+        queryString = "&".join(f"{k}={urllib.parse.quote(v)}" for k, v in query_dict.items())
+        request_path = f"{path}?{queryString}"
+        
         conn = http.client.HTTPSConnection(HOST)
         conn.request("GET", request_path, "", headers)
         response = conn.getresponse()
-        if response.status == 200:
-            return json.loads(response.read().decode("utf-8"))
+        res_body = response.read().decode("utf-8")
         
-        # ลองสลับไปใช้ v2 order list เผื่อระบบเปลี่ยนโครงสร้าง
-        path_v2 = "/openapi/trade/v2/order/list"
-        string_3_v2 = f"{path_v2}&{string_1}"
-        encoded_string_v2 = urllib.parse.quote(string_3_v2, safe="")
-        signature_v2 = base64.b64encode(hmac.new(secret_key, encoded_string_v2.encode("utf-8"), hashlib.sha1).digest()).decode("utf-8")
-        headers["x-signature"] = signature_v2
-        conn.request("GET", f"{path_v2}?account_id={ACCOUNT_ID}&status=FILLED", "", headers)
-        response_v2 = conn.getresponse()
-        if response_v2.status == 200:
-            return json.loads(response_v2.read().decode("utf-8"))
-        return None
-    except Exception:
-        return None
+        return {
+            "status": response.status,
+            "body": json.loads(res_body) if response.status == 200 else res_body
+        }
+    except Exception as e:
+        return {"status": "Error", "body": str(e)}
 
 if ACCESS_TOKEN and ACCOUNT_ID:
-    orders_data = get_webull_orders()
-    orders_list = []
     
-    if isinstance(orders_data, list):
-        orders_list = orders_data
-    elif isinstance(orders_data, dict):
-        orders_list = orders_data.get("orders") or orders_data.get("data") or []
+    # ยิงทดสอบ 3 รูปแบบเพื่อเช็คว่าเซิร์ฟเวอร์ไทยเปิดรับท่อไหน
+    st.markdown("### 🔍 ผลการทดสอบดึงข้อมูลผ่าน Endpoint ต่างๆ")
+    
+    # แบบที่ 1: ยิงผ่านออเดอร์ลิสต์มาตรฐานสากล
+    with st.spinner("กำลังทดสอบ Endpoint 1..."):
+        res1 = try_webull_orders_api("/openapi/trade/order/list", {"status": "FILLED"})
+    
+    # แบบที่ 2: ยิงผ่านออเดอร์ลิสต์เวอร์ชัน 2
+    with st.spinner("กำลังทดสอบ Endpoint 2..."):
+        res2 = try_webull_orders_api("/openapi/trade/v2/order/list", {"status": "FILLED"})
         
-    if orders_list:
-        order_rows = []
-        for order in orders_list:
-            symbol = order.get("symbol", "-")
-            side = order.get("action") or order.get("side", "-")
-            filled_qty = float(order.get("filled_quantity") or order.get("quantity", 0))
-            filled_price = float(order.get("filled_price") or order.get("price", 0))
-            total_amount = filled_qty * filled_price
-            time_str = order.get("filled_time") or order.get("placed_time") or "-"
-            
-            side_emoji = "🟢 BUY" if "BUY" in side.upper() else "🔴 SELL"
-            
-            order_rows.append({
-                "เวลาที่สำเร็จ": time_str,
-                "หุ้น": symbol,
-                "ประเภทคำสั่ง": side_emoji,
-                "จำนวนหุ้น": f"{filled_qty:,.2f}",
-                "ราคาต่อหุ้น": f"${filled_price:,.2f}",
-                "มูลค่ารวม (USD)": f"${total_amount:,.2f}"
-            })
-            
-        st.dataframe(pd.DataFrame(order_rows), use_container_width=True, hide_index=True)
-    else:
-        st.info("ไม่พบประวัติคำสั่งซื้อขายย้อนหลัง หรือ API ดึงข้อมูลส่วนนี้ของเซิร์ฟเวอร์ไทยต่างออกไป")
-        if orders_data:
-            st.json(orders_data)
+    # แบบที่ 3: ยิงผ่านประวัติธุรกรรมโดยตรง (บางประเทศใช้ที่อยู่ asset/v2/account/transaction)
+    with st.spinner("กำลังทดสอบ Endpoint 3..."):
+        res3 = try_webull_orders_api("/openapi/trade/order/list") # ดึงรวมทุกสถานะ
+
+    # กางผลลัพธ์ดิบให้เห็นเพื่อนำไปวิเคราะห์ฟิลด์ที่ถูกต้อง
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.write("**Endpoint 1 (/trade/order/list):**")
+        st.write(f"Status Code: {res1['status']}")
+        st.json(res1['body'])
+        
+    with col2:
+        st.write("**Endpoint 2 (/trade/v2/order/list):**")
+        st.write(f"Status Code: {res2['status']}")
+        st.json(res2['body'])
+        
+    with col3:
+        st.write("**Endpoint 3 (ดึงออเดอร์ทั้งหมด):**")
+        st.write(f"Status Code: {res3['status']}")
+        st.json(res3['body'])
