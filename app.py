@@ -8,6 +8,7 @@ import http.client
 import json
 import streamlit as st
 import pandas as pd
+from datetime import datetime, timezone  # <-- เติมบรรทัดนี้เข้าไปครับเพื่อน
 
 # =====================================================================
 # 1. ตั้งค่าหน้าตา Dashboard & ธีมสีสไตล์เทรดเดอร์
