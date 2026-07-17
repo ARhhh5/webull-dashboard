@@ -23,7 +23,6 @@ ACCOUNT_ID = webull_config.get("AccountId", "").strip()
 HOST = "api.webull.co.th"
 
 def get_webull_orders():
-    # เปลี่ยนที่อยู่เป็นตัวสะกดที่ถูกต้องสำหรับ Webull TH
     path = "/openapi/trade/order/history"
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
     nonce = uuid.uuid4().hex
@@ -64,9 +63,8 @@ def get_webull_orders():
         request_path = f"{path}?account_id={ACCOUNT_ID}"
         conn = http.client.HTTPSConnection(HOST)
         conn.request("GET", request_path, "", headers)
-        response = conn.getcall = conn.getresponse()
+        response = conn.getresponse()
         res_body = response.read().decode("utf-8")
-        
         if response.status == 200:
             return json.loads(res_body)
         else:
@@ -75,38 +73,46 @@ def get_webull_orders():
         return {"error": str(e)}
 
 if ACCESS_TOKEN and ACCOUNT_ID:
-    with st.spinner("⏳ กำลังกางสมุดบัญชีดึงประวัติการเทรด 7 วันล่าสุด..."):
+    with st.spinner("⏳ กำลังดึงข้อมูล..."):
         orders_data = get_webull_orders()
     
     orders_list = []
     if isinstance(orders_data, list):
         orders_list = orders_data
     elif isinstance(orders_data, dict):
-        orders_list = orders_data.get("orders") or orders_data.get("data") or []
+        orders_list = orders_data.get("orders") or orders_data.get("data") or orders_data.get("item") or []
         
     if orders_list:
         order_rows = []
         for order in orders_list:
-            symbol = order.get("symbol", "-")
-            side = order.get("action") or order.get("side", "-")
-            filled_qty = float(order.get("filled_quantity") or order.get("quantity", 0))
-            filled_price = float(order.get("filled_price") or order.get("price", 0))
-            total_amount = filled_qty * filled_price
-            time_str = order.get("filled_time") or order.get("placed_time") or "-"
+            # ดักจับคีย์แบบยืดหยุ่น (แก้ปัญหาระบบไทยใช้คีย์แปลก)
+            symbol = order.get("symbol") or order.get("ticker") or order.get("stockCode") or "-"
             
-            side_emoji = "🟢 BUY" if "BUY" in side.upper() else "🔴 SELL"
+            # เช็คฝั่ง BUY / SELL
+            action = str(order.get("action") or order.get("side") or "").upper()
+            side_emoji = "🟢 BUY" if "BUY" in action or "ซื้อ" in action else "🔴 SELL"
+            
+            # ดักจับตัวเลขจำนวนและราคา
+            qty = float(order.get("filled_quantity") or order.get("filledQty") or order.get("quantity") or 0)
+            price = float(order.get("filled_price") or order.get("avgPrice") or order.get("price") or 0)
+            total_amount = qty * price
+            
+            time_str = order.get("filled_time") or order.get("filledTime") or order.get("placed_time") or "-"
             
             order_rows.append({
                 "เวลาที่สำเร็จ": time_str,
                 "หุ้น": symbol,
                 "ประเภทคำสั่ง": side_emoji,
-                "จำนวนหุ้น": f"{filled_qty:,.2f}",
-                "ราคาต่อหุ้น": f"${filled_price:,.2f}",
+                "จำนวนหุ้น": f"{qty:,.2f}",
+                "ราคาต่อหุ้น": f"${price:,.2f}",
                 "มูลค่ารวม (USD)": f"${total_amount:,.2f}"
             })
             
         st.dataframe(pd.DataFrame(order_rows), use_container_width=True, hide_index=True)
     else:
-        st.info("ℹ️ ไม่พบประวัติคำสั่งซื้อขายที่แมตช์กันในช่วง 7 วันที่ผ่านมา (หากมีรายการเก่ากว่านั้น ระบบ API จะดึงไม่ถึงครับเพื่อน)")
-        with st.expander("🔍 ดูข้อความดิบตอบกลับจากเซิร์ฟเวอร์"):
-            st.json(orders_data)
+        st.info("ℹ️ ไม่พบประวัติคำสั่งซื้อขาย")
+        
+    # เปิดกล่องแฉ JSON ดิบไว้ข้างล่างเลย จะได้เห็นว่ารอบนี้ส่งอะไรมาบ้าง
+    st.markdown("---")
+    with st.expander("🔍 ดูกล่องข้อความดิบ (Raw JSON) เพื่อเช็คชื่อคีย์"):
+        st.json(orders_data)
