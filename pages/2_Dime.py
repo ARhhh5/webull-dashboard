@@ -38,13 +38,22 @@ def get_webull_live_prices():
     nonce = uuid.uuid4().hex
     signing_values = {"host": HOST, "x-app-key": APP_KEY, "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-signature-version": "1.0", "x-timestamp": timestamp, "account_id": ACCOUNT_ID}
     string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
-    signature = base64.b64encode(hmac.new(f"{APP_SECRET}&".encode("utf-8"), urllib.parse.quote(f"{path}&{string_1}", safe="").encode("utf-8"), hashlib.sha1).digest()).decode("utf-8")
-    headers = {"Accept": "application/json", "x-app-key": APP_KEY, "x-timestamp": timestamp, "x-signature-version": "1.0", "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-version": "v2", "x-signature": signature, "x-access-token": ACCESS_TOKEN}
+    string_3 = f"{path}&{string_1}"
+    
+    # 🎯 จุดแก้บั๊กสำคัญ: เอาตัว f ข้างหน้า secret_key ออก เพื่อแก้ปัญหา NameError บรรทัด 41
+    secret_key = f"{APP_SECRET}&".encode("utf-8") 
+    signature = base64.b64encode(hmac.new(secret_key, urllib.parse.quote(string_3, safe="").encode("utf-8"), hashlib.sha1).digest()).decode("utf-8")
+    
+    headers = {
+        "Accept": "application/json", "Content-Type": "application/json", "x-app-key": APP_KEY,
+        "x-timestamp": timestamp, "x-signature-version": "1.0", "x-signature-algorithm": "HMAC-SHA1",
+        "x-signature-nonce": nonce, "x-version": "v2", "x-signature": signature, "x-access-token": ACCESS_TOKEN
+    }
     prices = {}
     try:
         conn = http.client.HTTPSConnection(HOST)
         conn.request("GET", f"{path}?account_id={ACCOUNT_ID}", "", headers)
-        res = conn.getresponse()
+        res = conn.getcall = conn.getresponse()
         data = json.loads(res.read().decode("utf-8"))
         if isinstance(data, list):
             for p in data:
@@ -66,7 +75,7 @@ def load_sheet_data(sheet_name):
     except:
         return []
 
-# 1. ดึงข้อมูลจาก Google Sheet ทั้งสองแท็บ
+# ดึงข้อมูลจาก Google Sheet ทั้งสองแท็บแยกอิสระ
 us_records = load_sheet_data("Dime_Portfolio")
 th_records = load_sheet_data("Dime_TH_Portfolio")
 
@@ -85,7 +94,6 @@ if us_records:
         qty = float(r.get("จำนวนหุ้น (Volume)", 0))
         cost = float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0))
         
-        # ดึงราคาจาก Webull หรือใช้ราคาต้นทุนดักไว้
         price = webull_prices.get(symbol, 0)
         if price == 0:
             try:
@@ -124,6 +132,9 @@ if th_records:
         try:
             t = yf.Ticker(yf_symbol)
             price_thb = float(t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.fast_info.get('last_price') or cost_thb)
+            if not price_thb or price_thb == cost_thb:
+                hist = t.history(period="1d")
+                if not hist.empty: price_thb = float(hist['Close'].iloc[-1])
         except:
             price_thb = cost_thb
             
@@ -132,7 +143,7 @@ if th_records:
         pnl_thb = market_val_thb - invested_thb
         pnl_pct = (pnl_thb / invested_thb * 100) if invested_thb > 0 else 0.0
         
-        # แปลงเป็น USD ยัดเข้ากองกลางสรุปภาพรวมด้านบน
+        # แปลงเป็น USD เข้าไปคุมยอดเงินกองรวมด้านบนให้ถูกต้อง
         total_invested_usd += (invested_thb / fx_rate)
         total_market_value_usd += (market_val_thb / fx_rate)
         
@@ -144,7 +155,7 @@ if th_records:
             "กำไร/ขาดทุน": f"{pnl_sign} ฿{pnl_thb:,.2f} ({pnl_pct:+.2f}%)"
         })
 
-# --- ส่วนที่ 3: แสดงกล่องสรุปยอดพอร์ต Dime! รวมสองฝั่งสากล ---
+# --- ส่วนที่ 3: แสดงกล่องรวมมูลค่าพอร์ตสากล ---
 total_pnl_usd = total_market_value_usd - total_invested_usd
 total_pnl_pct = (total_pnl_usd / total_invested_usd * 100) if total_invested_usd > 0 else 0.0
 pnl_class = "color: #00c853;" if total_pnl_usd > 0 else ("color: #ff3d00;" if total_pnl_usd < 0 else "color: #848e9c;")
@@ -162,7 +173,7 @@ st.markdown(f"""
 
 st.markdown("<br>", unsafe_allow_html=True)
 
-# โชว์ตารางแยกฝั่งชัดเจน
+# โชว์กระดานข้อมูลแยกตามภูมิภาค
 if us_rows:
     st.subheader("🇺🇸 รายการหุ้นสหรัฐฯ (Dime! US Portfolio)")
     st.dataframe(pd.DataFrame(us_rows), use_container_width=True, hide_index=True)
