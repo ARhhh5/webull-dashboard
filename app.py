@@ -127,110 +127,67 @@ def get_dime_holdings():
     except:
         pass
     return holdings
-
-# ตารางคู่มือจัดกลุ่มอุตสาหกรรมในพอร์ตอัตโนมัติกรณี Yahoo บล็อกข้อมูล
-DEFAULT_SECTORS = {
-    "QQQM": "Technology", "SCHG": "Technology", "PG": "Consumer Defensive", 
-    "YMAG": "Technology", "KKP.BK": "Financial Services", "CYN": "Technology",
-    "ETOR": "Technology", "IMN": "Technology", "SLDE": "Technology"
-}
-
-with st.spinner("⏳ กำลังรวบรวมข้อมูลพอร์ตรวมและดึงราคาล่าสุดแบบปลอดภัย..."):
-    webull_prices = get_webull_live_prices()
-    all_holdings = get_webull_holdings() + get_dime_holdings()
-    
-    if all_holdings:
-        df_raw = pd.DataFrame(all_holdings)
-        unique_symbols = df_raw['Symbol'].unique().tolist()
-        
-        sectors = {}
-        live_prices = {}
-        
-        # วิ่งหาข้อมูลราคาสดสลับท่อป้องกันการเอ๋อ
-        for sym in unique_symbols:
-            # 1. จัดสรรกลุ่มอุตสาหกรรมดักไว้ล่วงหน้า
-            sectors[sym] = DEFAULT_SECTORS.get(sym, "Unknown (ETF/Other)")
-            
-            # 2. ค้นหาราคาจาก Webull ก่อน ถ้าไม่มีค่อยขอ Yahoo หรือขอดึงด่วนย้อนหลัง
-            if sym in webull_prices and webull_prices[sym] > 0:
-                live_prices[sym] = webull_prices[sym]
-            else:
-                try:
-                    t_data = yf.Ticker(sym)
-                    p = t_data.info.get('currentPrice') or t_data.info.get('regularMarketPrice') or t_data.fast_info.get('last_price')
-                    if not p:
-                        h = t_data.history(period="1d")
-                        if not h.empty: p = h['Close'].iloc[-1]
-                    live_prices[sym] = float(p) if p else 0.0
-                except:
-                    live_prices[sym] = 0.0
-                    
-        portfolio_data = []
-        for index, row in df_raw.iterrows():
-            sym = row['Symbol']
-            qty = row['Qty']
-            cost_in = row['Cost']
-            broker = row['Broker']
-            
-            # ตรวจสอบเรื่องสกุลเงินหุ้นไทย
-            is_thai = sym.endswith(".BK")
-            price_raw = live_prices.get(sym, cost_in) if live_prices.get(sym, 0) > 0 else cost_in
-            
-            if is_thai:
-                invested_usd = (qty * cost_in) / fx_rate
-                market_val_usd = (qty * price_raw) / fx_rate
-            else:
-                invested_usd = qty * cost_in
-                market_val_usd = qty * price_raw
-                
-            pnl_usd = market_val_usd - invested_usd
-            
-            portfolio_data.append({
-                "Symbol": sym,
-                "Sector": sectors.get(sym, "Unknown"),
-                "Broker": broker,
-                "Invested": invested_usd,
-                "Market Value": market_val_usd,
-                "PnL": pnl_usd
-            })
-            
-        df_port = pd.DataFrame(portfolio_data)
-        
-        grand_invested = df_port['Invested'].sum()
-        grand_market = df_port['Market Value'].sum()
-        grand_pnl = grand_market - grand_invested
-        grand_pnl_pct = (grand_pnl / grand_invested * 100) if grand_invested > 0 else 0
-        
-        pnl_class = "pnl-positive" if grand_pnl >= 0 else "pnl-negative"
-        pnl_prefix = "+" if grand_pnl >= 0 else ""
-        
-        c1, c2, c3 = st.columns(3)
-        with c1:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">💵 เงินลงทุนรวมทั้งสิ้น</div><div class="metric-value">${grand_invested:,.2f}</div></div>', unsafe_allow_html=True)
-        with c2:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">📈 มูลค่าตลาดรวม (Webull + Dime)</div><div class="metric-value">${grand_market:,.2f}</div></div>', unsafe_allow_html=True)
-        with c3:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">📊 กำไร / ขาดทุนสุทธิรวม</div><div class="metric-value {pnl_class}">{pnl_prefix}${grand_pnl:,.2f} ({grand_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
-        
-        st.markdown("<br><br>", unsafe_allow_html=True)
-        
+# --- 📊 ระบบวิเคราะห์พอร์ตด้วยกราฟแท่งแนวนอน (ดูง่ายสุดๆ ไม่บดบังกัน) ---
+        st.markdown("---")
         col1, col2 = st.columns(2)
+        
+        # 1. จัดการข้อมูลสำหรับสัดส่วนอุตสาหกรรม (เรียงจากมากไปน้อย)
         df_sector = df_port.groupby("Sector").sum(numeric_only=True).reset_index()
+        df_sector = df_sector.sort_values(by="Market Value", ascending=True) # เรียงเพื่อให้แท่งยาวอยู่บน
         
         with col1:
-            st.subheader("🥧 สัดส่วนพอร์ตแยกตามอุตสาหกรรม (Sector)")
-            fig_pie = px.pie(df_sector, values='Market Value', names='Sector', hole=0.4, 
-                             color_discrete_sequence=px.colors.sequential.Teal)
-            fig_pie.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white"))
-            st.plotly_chart(fig_pie, use_container_width=True)
+            st.subheader("🪵 สัดส่วนขนาดพอร์ตแยกตามอุตสาหกรรม")
+            fig_asset_bar = px.bar(
+                df_sector, 
+                x='Market Value', 
+                y='Sector', 
+                orientation='h',
+                text_auto='.2s',
+                title="มูลค่าถือครองปัจจุบัน ($ USD)",
+                color='Sector',
+                color_discrete_map={
+                    "Technology": "#0052FF",           # น้ำเงินเด่น
+                    "Financial Services": "#FF9900",    # ทอง/ส้ม
+                    "Consumer Defensive": "#00C853",    # เขียวเหนี่ยวทรัพย์
+                    "Unknown (ETF/Other)": "#7F8C8D"    # เทา
+                }
+            )
+            fig_asset_bar.update_traces(textposition='inside', insidetextanchor='end')
+            fig_asset_bar.update_layout(
+                showlegend=False,
+                paper_bgcolor="rgba(0,0,0,0)", 
+                plot_bgcolor="rgba(0,0,0,0)", 
+                font=dict(color="white", size=13),
+                xaxis=dict(title="มูลค่ารวม ($)", showgrid=True, gridcolor="#2a2e39"),
+                yaxis=dict(title="")
+            )
+            st.plotly_chart(fig_asset_bar, use_container_width=True)
             
+        # 2. จัดการข้อมูลสำหรับกำไร/ขาดทุน
+        df_pnl_sector = df_port.groupby("Sector").sum(numeric_only=True).reset_index()
+        df_pnl_sector = df_pnl_sector.sort_values(by="PnL", ascending=True)
+        df_pnl_sector['Color'] = df_pnl_sector['PnL'].apply(lambda x: 'Profit' if x >= 0 else 'Loss')
+        
         with col2:
-            st.subheader("📊 กำไร/ขาดทุน แยกตามอุตสาหกรรม (PnL by Sector)")
-            df_sector['Color'] = df_sector['PnL'].apply(lambda x: 'Profit' if x >= 0 else 'Loss')
-            color_map = {'Profit': '#00c853', 'Loss': '#ff3d00'}
-            
-            fig_bar = px.bar(df_sector, x='Sector', y='PnL', color='Color', color_discrete_map=color_map, text_auto='.2s')
-            fig_bar.update_layout(showlegend=False, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white"))
-            st.plotly_chart(fig_bar, use_container_width=True)
-    else:
-        st.info("ยังไม่มีข้อมูลหุ้นในพอร์ตโฟลิโอ")
+            st.subheader("📊 ยอดกำไร / ขาดทุนสุทธิแยกตามอุตสาหกรรม")
+            fig_pnl_bar = px.bar(
+                df_pnl_sector, 
+                x='PnL', 
+                y='Sector', 
+                orientation='h',
+                text_auto='.2s',
+                title="กำไรหรือขาดทุนที่เกิดขึ้นจริง ($ USD)",
+                color='Color', 
+                color_discrete_map={'Profit': '#00c853', 'Loss': '#ff3d00'}
+            )
+            # ตั้งให้ตัวเลขอยู่ข้างนอกแท็บถ้าติดลบ หรืออยู่ข้างในถ้าแท่งยาว
+            fig_pnl_bar.update_traces(textposition='outside')
+            fig_pnl_bar.update_layout(
+                showlegend=False, 
+                paper_bgcolor="rgba(0,0,0,0)", 
+                plot_bgcolor="rgba(0,0,0,0)", 
+                font=dict(color="white", size=13),
+                xaxis=dict(title="กำไร/ขาดทุนสุทธิ ($)", showgrid=True, gridcolor="#2a2e39"),
+                yaxis=dict(title="")
+            )
+            st.plotly_chart(fig_pnl_bar, use_container_width=True)
