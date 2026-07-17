@@ -8,7 +8,13 @@ import yfinance as yf
 st.title("🇹🇭 Dime! Portfolio Dashboard (Multi-Currency)")
 st.markdown("---")
 
-# ฟังก์ชันดึงอัตราแลกเปลี่ยนเรียลไทม์ (USD/THB)
+webull_config = st.secrets.get("Webull", {})
+APP_KEY = webull_config.get("AppKey", "").strip()
+APP_SECRET = webull_config.get("AppSecret", "").strip()
+ACCESS_TOKEN = webull_config.get("AccessToken", "").strip()
+ACCOUNT_ID = webull_config.get("AccountId", "").strip()
+HOST = "api.webull.co.th"
+
 @st.cache_data(ttl=60)
 def get_usd_thb_rate():
     try:
@@ -20,7 +26,27 @@ def get_usd_thb_rate():
 
 fx_rate = get_usd_thb_rate()
 
-# ฟังก์ชันโหลดข้อมูลพอร์ต Dime จาก Google Sheet
+def get_webull_live_prices():
+    path = "/openapi/assets/positions"
+    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+    nonce = uuid.uuid4().hex
+    signing_values = {"host": HOST, "x-app-key": APP_KEY, "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-signature-version": "1.0", "x-timestamp": timestamp, "account_id": ACCOUNT_ID}
+    string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
+    signature = base64.b64encode(hmac.new(f"{APP_SECRET}&".encode("utf-8"), urllib.parse.quote(f"{path}&{string_1}", safe="").encode("utf-8"), hashlib.sha1).digest()).decode("utf-8")
+    headers = {"Accept": "application/json", "x-app-key": APP_KEY, "x-timestamp": timestamp, "x-signature-version": "1.0", "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-version": "v2", "x-signature": signature, "x-access-token": ACCESS_TOKEN}
+    prices = {}
+    try:
+        conn = http.client.HTTPSConnection(HOST)
+        conn.request("GET", f"{path}?account_id={ACCOUNT_ID}", "", headers)
+        res = conn.getcall = conn.getresponse()
+        data = json.loads(res.read().decode("utf-8"))
+        if isinstance(data, list):
+            for p in data:
+                prices[str(p.get("symbol")).upper()] = float(p.get("last_price", 0))
+    except:
+        pass
+    return prices
+
 def load_dime_portfolio():
     try:
         google_secrets = st.secrets.get("Google", {})
@@ -28,10 +54,8 @@ def load_dime_portfolio():
         if not cred_base64:
             st.warning("⚠️ ไม่พบกุญแจ Google ใน Secrets")
             return []
-            
         cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
         gc = gspread.service_account_from_dict(cred_dict)
-        
         sh = gc.open("หุ้นของเรา")
         worksheet = sh.worksheet("Dime_Portfolio")
         return worksheet.get_all_records()
@@ -47,27 +71,25 @@ if records:
     table_rows = []
     
     symbols = [str(r.get("หุ้น (Ticker)", "")).strip().upper() for r in records if str(r.get("หุ้น (Ticker)", "")).strip()]
+    webull_prices = get_webull_live_prices()
     
     live_prices_orig = {}
     if symbols:
-        with st.spinner("⏳ กำลังดึงราคาล่าสุดอัปเดตตรงจากกระดาน..."):
+        with st.spinner("⏳ กำลังดึงราคาสดจากกระดาน..."):
             for sym in symbols:
-                try:
-                    ticker_data = yf.Ticker(sym)
-                    # ลองดึงจาก info ก่อน ถ้าไม่ได้ลองประทับตราดึงด่วนจาก fast_info หรือประวัติล่าสุด
-                    price = ticker_data.info.get('currentPrice') or ticker_data.info.get('regularMarketPrice')
-                    if not price:
-                        price = ticker_data.fast_info.get('last_price')
-                    if not price:
-                        # ดึงราคาปิดล่าสุดจากประวัติย้อนหลัง 1 วันดักไว้
-                        hist = ticker_data.history(period="1d")
-                        if not hist.empty:
-                            price = hist['Close'].iloc[-1]
-                            
-                    if price:
-                        live_prices_orig[sym] = float(price)
-                except:
-                    pass
+                if sym in webull_prices and webull_prices[sym] > 0:
+                    live_prices_orig[sym] = webull_prices[sym]
+                else:
+                    try:
+                        ticker_data = yf.Ticker(sym)
+                        price = ticker_data.info.get('currentPrice') or ticker_data.info.get('regularMarketPrice') or ticker_data.fast_info.get('last_price')
+                        if not price:
+                            hist = ticker_data.history(period="1d")
+                            if not hist.empty: price = hist['Close'].iloc[-1]
+                        if price:
+                            live_prices_orig[sym] = float(price)
+                    except:
+                        pass
 
     for r in records:
         symbol = str(r.get("หุ้น (Ticker)", "")).strip().upper()
@@ -77,11 +99,10 @@ if records:
         cost_input = float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0))
         
         is_thai_stock = symbol.endswith(".BK")
+        raw_live_price = live_prices_orig.get(symbol, 0)
+        if raw_live_price == 0:
+            raw_live_price = cost_input
         
-        # ดึงราคาจากกระดานสด ถ้า yfinance เอ๋อดึงไม่ได้ ให้ตั้งราคาตลาดเท่ากับราคาทุนไปก่อนชั่วคราว ข้อมูลจะได้ไม่หลุดหาย
-        raw_live_price = live_prices_orig.get(symbol, cost_input)
-        
-        # ปรับให้หลังบ้านเก็บค่าเป็น USD แท้ๆ เสมอ
         if is_thai_stock:
             cost_usd = cost_input / fx_rate
             price_usd = raw_live_price / fx_rate
@@ -100,8 +121,8 @@ if records:
         
         total_invested_usd += invested_usd
         total_market_value_usd += market_value_usd
-        pnl_sign = "🟢" if pnl_usd >= 0 else "🔴"
-        if pnl_usd == 0: pnl_sign = "⚪"
+        
+        pnl_sign = "🟢" if pnl_usd > 0.01 else ("🔴" if pnl_usd < -0.01 else "⚪")
         
         if is_thai_stock:
             display_invested = f"฿{qty * cost_input:,.2f}"
@@ -141,5 +162,3 @@ if records:
     st.markdown("<br>", unsafe_allow_html=True)
     st.subheader("📋 รายการสินทรัพย์ใน Dime! (แยกสกุลเงินอัตโนมัติ)")
     st.dataframe(pd.DataFrame(table_rows), use_container_width=True, hide_index=True)
-else:
-    st.info("💡 แท็บ 'Dime_Portfolio' ว่างเปล่า พิมพ์ข้อมูลลงกูเกิ้ลชีทได้เลยเพื่อน")
