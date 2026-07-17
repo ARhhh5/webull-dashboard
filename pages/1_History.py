@@ -63,7 +63,7 @@ def get_webull_orders():
         request_path = f"{path}?account_id={ACCOUNT_ID}"
         conn = http.client.HTTPSConnection(HOST)
         conn.request("GET", request_path, "", headers)
-        response = conn.getcall = conn.getcall if hasattr(conn, 'getcall') else conn.getcall = conn.getresponse()
+        response = conn.getresponse()
         res_body = response.read().decode("utf-8")
         if response.status == 200:
             return json.loads(res_body)
@@ -86,9 +86,8 @@ if ACCESS_TOKEN and ACCOUNT_ID:
     if combo_list:
         order_rows = []
         
-        # วิ่งลูปแกะกล่องชั้นนอกสุด (Combo Order / Normal Order)
+        # วิ่งลูปแกะกล่องชั้นนอกสุด
         for combo in combo_list:
-            # ดึงคำสั่งย่อยชั้นในสุดที่ Webull ซ่อนไว้
             inner_orders = combo.get("orders", []) if isinstance(combo, dict) else []
             
             # หากโครงสร้างเรียบไม่มี orders ซ่อน ให้ถอยมารับค่า combo ตัวมันเอง
