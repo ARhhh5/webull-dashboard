@@ -54,9 +54,16 @@ if records:
             for sym in symbols:
                 try:
                     ticker_data = yf.Ticker(sym)
+                    # ลองดึงจาก info ก่อน ถ้าไม่ได้ลองประทับตราดึงด่วนจาก fast_info หรือประวัติล่าสุด
                     price = ticker_data.info.get('currentPrice') or ticker_data.info.get('regularMarketPrice')
                     if not price:
                         price = ticker_data.fast_info.get('last_price')
+                    if not price:
+                        # ดึงราคาปิดล่าสุดจากประวัติย้อนหลัง 1 วันดักไว้
+                        hist = ticker_data.history(period="1d")
+                        if not hist.empty:
+                            price = hist['Close'].iloc[-1]
+                            
                     if price:
                         live_prices_orig[sym] = float(price)
                 except:
@@ -70,9 +77,11 @@ if records:
         cost_input = float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0))
         
         is_thai_stock = symbol.endswith(".BK")
+        
+        # ดึงราคาจากกระดานสด ถ้า yfinance เอ๋อดึงไม่ได้ ให้ตั้งราคาตลาดเท่ากับราคาทุนไปก่อนชั่วคราว ข้อมูลจะได้ไม่หลุดหาย
         raw_live_price = live_prices_orig.get(symbol, cost_input)
         
-        # 🎯 ปรับให้หลังบ้านเก็บค่าเป็น USD แท้ๆ เสมอ เพื่อนำไปคำนวณผลรวมด้านบนให้ถูกต้อง
+        # ปรับให้หลังบ้านเก็บค่าเป็น USD แท้ๆ เสมอ
         if is_thai_stock:
             cost_usd = cost_input / fx_rate
             price_usd = raw_live_price / fx_rate
@@ -89,10 +98,10 @@ if records:
         pnl_usd = market_value_usd - invested_usd
         pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd > 0 else 0.0
         
-        # บวกยอดรวมภาคหลังบ้านด้วยหน่วย USD ที่แปลงค่ามาแล้วอย่างถูกต้อง
         total_invested_usd += invested_usd
         total_market_value_usd += market_value_usd
         pnl_sign = "🟢" if pnl_usd >= 0 else "🔴"
+        if pnl_usd == 0: pnl_sign = "⚪"
         
         if is_thai_stock:
             display_invested = f"฿{qty * cost_input:,.2f}"
@@ -113,11 +122,10 @@ if records:
             "กำไร/ขาดทุน": display_pnl
         })
         
-    # คำนวณกำไร/ขาดทุนรวมของพอร์ตจากค่า USD ที่แปลงสมบูรณ์แล้ว
     total_pnl_usd = total_market_value_usd - total_invested_usd
     total_pnl_pct = (total_pnl_usd / total_invested_usd * 100) if total_invested_usd > 0 else 0.0
-    pnl_class = "color: #00c853;" if total_pnl_usd >= 0 else "color: #ff3d00;"
-    pnl_prefix = "+" if total_pnl_usd >= 0 else ""
+    pnl_class = "color: #00c853;" if total_pnl_usd > 0 else ("color: #ff3d00;" if total_pnl_usd < 0 else "color: #848e9c;")
+    pnl_prefix = "+" if total_pnl_usd > 0 else ""
     
     st.markdown(f"💡 *คำนวณด้วยอัตราแลกเปลี่ยนปัจจุบัน: 1 USD = {fx_rate:,.2f} THB*")
     st.markdown(f"""
