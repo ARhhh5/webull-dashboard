@@ -9,11 +9,12 @@ st.title("🇹🇭 Dime! Portfolio Dashboard (Multi-Currency)")
 st.markdown("---")
 
 # ฟังก์ชันดึงอัตราแลกเปลี่ยนเรียลไทม์ (USD/THB)
-@st.cache_data(ttl=3600)
+@st.cache_data(ttl=60) # รีเฟรชทุก 1 นาทีเพื่อความสดใหม่
 def get_usd_thb_rate():
     try:
         ticker = yf.Ticker("USDTHB=X")
-        rate = ticker.fast_info.get('last_price') or ticker.info.get('regularMarketPrice') or 35.0
+        # ใช้ท่อดึงข้อมูลที่หลากหลายป้องกันการค้าง
+        rate = ticker.info.get('regularMarketPrice') or ticker.info.get('currentPrice') or ticker.fast_info.get('last_price') or 35.0
         return float(rate)
     except:
         return 35.0
@@ -50,14 +51,19 @@ if records:
     
     live_prices_orig = {}
     if symbols:
-        with st.spinner("⏳ กำลังดึงราคาสดและคำนวณอัตราแลกเปลี่ยน..."):
-            try:
-                tickers_data = yf.Tickers(" ".join(symbols))
-                for sym in symbols:
-                    info = tickers_data.tickers[sym].fast_info
-                    live_prices_orig[sym] = float(info['last_price'])
-            except:
-                pass
+        with st.spinner("⏳ กำลังดึงราคาล่าสุดอัปเดตตรงจากกระดาน..."):
+            for sym in symbols:
+                try:
+                    ticker_data = yf.Ticker(sym)
+                    # ใช้ คีย์ .info ดึงราคาปัจจุบันตรงๆ (แม่นยำกว่า fast_info มากสำหรับหุ้นไทย)
+                    price = ticker_data.info.get('currentPrice') or ticker_data.info.get('regularMarketPrice')
+                    if not price:
+                        price = ticker_data.fast_info.get('last_price')
+                    
+                    if price:
+                        live_prices_orig[sym] = float(price)
+                except:
+                    pass
 
     for r in records:
         symbol = str(r.get("หุ้น (Ticker)", "")).strip().upper()
@@ -66,25 +72,20 @@ if records:
         qty = float(r.get("จำนวนหุ้น (Volume)", 0))
         cost_input = float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0))
         
-        # ตรวจสอบว่าคีย์ข้อมูลเป็นหุ้นไทยหรือไม่ (.BK)
         is_thai_stock = symbol.endswith(".BK")
         
-        # ดึงราคาดิบจากตลาด (หุ้นไทยจะได้เป็นบาท หุ้นนอกจะได้เป็นดอลลาร์)
+        # ดึงราคาจากกระดานสด ถ้าดึงไม่ได้ค่อยถอยไปใช้ราคาต้นทุนดักไว้
         raw_live_price = live_prices_orig.get(symbol, cost_input)
         
-        # 🎯 แปลงทุกอย่างให้เป็น USD เพื่อใช้เป็นฐานคำนวณหลังบ้าน
+        # แปลงเป็นหน่วย USD เพื่อรวมพอร์ตหลังบ้าน
         if is_thai_stock:
-            # หุ้นไทย: แปลงต้นทุน (บาท) และราคาตลาด (บาท) ให้เป็น USD โดยการหาร fx_rate
             cost_usd = cost_input / fx_rate
             price_usd = raw_live_price / fx_rate
-            currency_symbol = "฿"
             display_cost = f"฿{cost_input:,.2f}"
             display_live = f"฿{raw_live_price:,.2f}"
         else:
-            # หุ้นสหรัฐฯ: เป็น USD อยู่แล้ว ไม่ต้องแปลงอะไร
             cost_usd = cost_input
             price_usd = raw_live_price
-            currency_symbol = "$"
             display_cost = f"${cost_input:,.2f}"
             display_live = f"${raw_live_price:,.2f}"
             
@@ -97,7 +98,6 @@ if records:
         total_market_value_usd += market_value_usd
         pnl_sign = "🟢" if pnl_usd >= 0 else "🔴"
         
-        # แปลงมูลค่ารวมของหุ้นตัวนั้นๆ กลับมาแสดงผลตามสกุลเงินจริงในตารางให้ดูไม่งง
         if is_thai_stock:
             display_invested = f"฿{qty * cost_input:,.2f}"
             display_market = f"฿{qty * raw_live_price:,.2f}"
@@ -117,7 +117,6 @@ if records:
             "กำไร/ขาดทุน": display_pnl
         })
         
-    # สรุปยอดเงินในกล่องบนสุด (แปลงเป็นดอลลาร์รวมภาพใหญ่ให้ถูกต้อง)
     total_pnl_usd = total_market_value_usd - total_invested_usd
     total_pnl_pct = (total_pnl_usd / total_invested_usd * 100) if total_invested_usd > 0 else 0.0
     pnl_class = "color: #00c853;" if total_pnl_usd >= 0 else "color: #ff3d00;"
