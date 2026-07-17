@@ -63,7 +63,7 @@ def get_webull_orders():
         request_path = f"{path}?account_id={ACCOUNT_ID}"
         conn = http.client.HTTPSConnection(HOST)
         conn.request("GET", request_path, "", headers)
-        response = conn.getresponse()
+        response = conn.getcall = conn.getcall if hasattr(conn, 'getcall') else conn.getcall = conn.getresponse()
         res_body = response.read().decode("utf-8")
         if response.status == 200:
             return json.loads(res_body)
@@ -73,46 +73,58 @@ def get_webull_orders():
         return {"error": str(e)}
 
 if ACCESS_TOKEN and ACCOUNT_ID:
-    with st.spinner("⏳ กำลังดึงข้อมูล..."):
+    with st.spinner("⏳ กำลังแกะกล่องประวัติออเดอร์ย้อนหลัง..."):
         orders_data = get_webull_orders()
     
-    orders_list = []
+    # ดึงลิสต์ชั้นนอกสุดออกมาก่อน
+    combo_list = []
     if isinstance(orders_data, list):
-        orders_list = orders_data
+        combo_list = orders_data
     elif isinstance(orders_data, dict):
-        orders_list = orders_data.get("orders") or orders_data.get("data") or orders_data.get("item") or []
+        combo_list = orders_data.get("orders") or orders_data.get("data") or []
         
-    if orders_list:
+    if combo_list:
         order_rows = []
-        for order in orders_list:
-            # ดักจับคีย์แบบยืดหยุ่น (แก้ปัญหาระบบไทยใช้คีย์แปลก)
-            symbol = order.get("symbol") or order.get("ticker") or order.get("stockCode") or "-"
+        
+        # วิ่งลูปแกะกล่องชั้นนอกสุด (Combo Order / Normal Order)
+        for combo in combo_list:
+            # ดึงคำสั่งย่อยชั้นในสุดที่ Webull ซ่อนไว้
+            inner_orders = combo.get("orders", []) if isinstance(combo, dict) else []
             
-            # เช็คฝั่ง BUY / SELL
-            action = str(order.get("action") or order.get("side") or "").upper()
-            side_emoji = "🟢 BUY" if "BUY" in action or "ซื้อ" in action else "🔴 SELL"
-            
-            # ดักจับตัวเลขจำนวนและราคา
-            qty = float(order.get("filled_quantity") or order.get("filledQty") or order.get("quantity") or 0)
-            price = float(order.get("filled_price") or order.get("avgPrice") or order.get("price") or 0)
-            total_amount = qty * price
-            
-            time_str = order.get("filled_time") or order.get("filledTime") or order.get("placed_time") or "-"
-            
-            order_rows.append({
-                "เวลาที่สำเร็จ": time_str,
-                "หุ้น": symbol,
-                "ประเภทคำสั่ง": side_emoji,
-                "จำนวนหุ้น": f"{qty:,.2f}",
-                "ราคาต่อหุ้น": f"${price:,.2f}",
-                "มูลค่ารวม (USD)": f"${total_amount:,.2f}"
-            })
-            
-        st.dataframe(pd.DataFrame(order_rows), use_container_width=True, hide_index=True)
+            # หากโครงสร้างเรียบไม่มี orders ซ่อน ให้ถอยมารับค่า combo ตัวมันเอง
+            if not inner_orders and isinstance(combo, dict):
+                inner_orders = [combo]
+                
+            for order in inner_orders:
+                symbol = order.get("symbol") or order.get("ticker") or "-"
+                
+                # เช็คฝั่ง BUY / SELL
+                action = str(order.get("side") or order.get("action") or "").upper()
+                side_emoji = "🟢 BUY" if "BUY" in action else "🔴 SELL"
+                
+                # ดักจับจำนวนและราคาสรุป
+                qty = float(order.get("filled_quantity") or order.get("quantity") or 0)
+                price = float(order.get("filled_price") or order.get("price") or 0)
+                total_amount = qty * price
+                
+                time_str = order.get("filled_time") or order.get("placed_time") or "-"
+                
+                order_rows.append({
+                    "เวลาที่สำเร็จ": time_str,
+                    "หุ้น": symbol,
+                    "ประเภทคำสั่ง": side_emoji,
+                    "จำนวนหุ้น": f"{qty:,.2f}",
+                    "ราคาต่อหุ้น": f"${price:,.2f}",
+                    "มูลค่ารวม (USD)": f"${total_amount:,.2f}"
+                })
+        
+        if order_rows:
+            st.dataframe(pd.DataFrame(order_rows), use_container_width=True, hide_index=True)
+        else:
+            st.info("ℹ️ โครงสร้างซ้อนกันแต่ไม่พบคำสั่งย่อย")
     else:
         st.info("ℹ️ ไม่พบประวัติคำสั่งซื้อขาย")
         
-    # เปิดกล่องแฉ JSON ดิบไว้ข้างล่างเลย จะได้เห็นว่ารอบนี้ส่งอะไรมาบ้าง
     st.markdown("---")
     with st.expander("🔍 ดูกล่องข้อความดิบ (Raw JSON) เพื่อเช็คชื่อคีย์"):
         st.json(orders_data)
