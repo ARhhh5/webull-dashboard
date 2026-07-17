@@ -41,8 +41,8 @@ def sync_to_google_sheet(order_rows):
         # ล็อกอินเข้า Google Sheet
         gc = gspread.service_account_from_dict(cred_dict)
         
-        # เปิดชีทผ่านชื่อไฟล์ที่นายตั้งไว้
-        sh = gc.open("Webull_Order_History")
+        # 🎯 จุดเปลี่ยนสำคัญ: เปลี่ยนชื่อชีทให้ตรงกับที่ตั้งไว้จริงใน Google Drive ของนาย
+        sh = gc.open("หุ้นของเรา")
         worksheet = sh.get_worksheet(0)
         
         # ดึงข้อมูล Order ID ทั้งหมดที่มีอยู่แล้วในชีทมาเช็คซ้ำ
@@ -149,7 +149,10 @@ if ACCESS_TOKEN and ACCOUNT_ID:
                 
                 time_str = order.get("filled_time") or order.get("placed_time") or "-"
                 
-                order_id = combo.get("client_order_id") or order.get("order_id") or time_str
+                # ถ้า client_order_id เป็น NONE ให้สลับไปใช้เวลาและชื่อหุ้นสร้างรหัสแทนเพื่อไม่ให้ข้อมูลซ้ำพัง
+                order_id = combo.get("client_order_id") or order.get("order_id") or ""
+                if "NONE" in str(order_id).upper() or not order_id:
+                    order_id = f"{time_str}_{symbol}_{action}"
                 
                 raw_rows.append({
                     "Order ID": order_id,
