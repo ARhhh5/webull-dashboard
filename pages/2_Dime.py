@@ -9,11 +9,10 @@ st.title("🇹🇭 Dime! Portfolio Dashboard (Multi-Currency)")
 st.markdown("---")
 
 # ฟังก์ชันดึงอัตราแลกเปลี่ยนเรียลไทม์ (USD/THB)
-@st.cache_data(ttl=60) # รีเฟรชทุก 1 นาทีเพื่อความสดใหม่
+@st.cache_data(ttl=60)
 def get_usd_thb_rate():
     try:
         ticker = yf.Ticker("USDTHB=X")
-        # ใช้ท่อดึงข้อมูลที่หลากหลายป้องกันการค้าง
         rate = ticker.info.get('regularMarketPrice') or ticker.info.get('currentPrice') or ticker.fast_info.get('last_price') or 35.0
         return float(rate)
     except:
@@ -55,11 +54,9 @@ if records:
             for sym in symbols:
                 try:
                     ticker_data = yf.Ticker(sym)
-                    # ใช้ คีย์ .info ดึงราคาปัจจุบันตรงๆ (แม่นยำกว่า fast_info มากสำหรับหุ้นไทย)
                     price = ticker_data.info.get('currentPrice') or ticker_data.info.get('regularMarketPrice')
                     if not price:
                         price = ticker_data.fast_info.get('last_price')
-                    
                     if price:
                         live_prices_orig[sym] = float(price)
                 except:
@@ -73,11 +70,9 @@ if records:
         cost_input = float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0))
         
         is_thai_stock = symbol.endswith(".BK")
-        
-        # ดึงราคาจากกระดานสด ถ้าดึงไม่ได้ค่อยถอยไปใช้ราคาต้นทุนดักไว้
         raw_live_price = live_prices_orig.get(symbol, cost_input)
         
-        # แปลงเป็นหน่วย USD เพื่อรวมพอร์ตหลังบ้าน
+        # 🎯 ปรับให้หลังบ้านเก็บค่าเป็น USD แท้ๆ เสมอ เพื่อนำไปคำนวณผลรวมด้านบนให้ถูกต้อง
         if is_thai_stock:
             cost_usd = cost_input / fx_rate
             price_usd = raw_live_price / fx_rate
@@ -94,6 +89,7 @@ if records:
         pnl_usd = market_value_usd - invested_usd
         pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd > 0 else 0.0
         
+        # บวกยอดรวมภาคหลังบ้านด้วยหน่วย USD ที่แปลงค่ามาแล้วอย่างถูกต้อง
         total_invested_usd += invested_usd
         total_market_value_usd += market_value_usd
         pnl_sign = "🟢" if pnl_usd >= 0 else "🔴"
@@ -101,7 +97,7 @@ if records:
         if is_thai_stock:
             display_invested = f"฿{qty * cost_input:,.2f}"
             display_market = f"฿{qty * raw_live_price:,.2f}"
-            display_pnl = f"{pnl_sign} ฿{pnl_usd * fx_rate:,.2f} ({pnl_pct:+.2f}%)"
+            display_pnl = f"{pnl_sign} ฿{qty * (raw_live_price - cost_input):,.2f} ({pnl_pct:+.2f}%)"
         else:
             display_invested = f"${invested_usd:,.2f}"
             display_market = f"${market_value_usd:,.2f}"
@@ -117,6 +113,7 @@ if records:
             "กำไร/ขาดทุน": display_pnl
         })
         
+    # คำนวณกำไร/ขาดทุนรวมของพอร์ตจากค่า USD ที่แปลงสมบูรณ์แล้ว
     total_pnl_usd = total_market_value_usd - total_invested_usd
     total_pnl_pct = (total_pnl_usd / total_invested_usd * 100) if total_invested_usd > 0 else 0.0
     pnl_class = "color: #00c853;" if total_pnl_usd >= 0 else "color: #ff3d00;"
@@ -125,7 +122,7 @@ if records:
     st.markdown(f"💡 *คำนวณด้วยอัตราแลกเปลี่ยนปัจจุบัน: 1 USD = {fx_rate:,.2f} THB*")
     st.markdown(f"""
     <div style="background-color: #1e222d; padding: 20px; border-radius: 10px; border: 1px solid #2a2e39; text-align: center;">
-        <h4 style="color: #848e9c; margin: 0;">💰 มูลค่ารวมพอร์ต Dime! (แปลงเป็น USD แล้ว)</h4>
+        <h4 style="color: #848e9c; margin: 0;">💰 มูลค่ารวมพอร์ต Dime! (คำนวณค่าเงินถูกต้อง)</h4>
         <h2 style="color: white; margin: 10px 0;">${total_market_value_usd:,.2f} <span style="font-size: 18px; color: #848e9c;">(≈ ฿{total_market_value_usd * fx_rate:,.2f})</span></h2>
         <p style="{pnl_class} font-weight: bold; margin: 0; font-size: 18px;">
             กำไร/ขาดทุนสุทธิทั้งหมด: {pnl_prefix}${total_pnl_usd:,.2f} ({total_pnl_pct:+.2f}%)
