@@ -8,19 +8,66 @@ import http.client
 import json
 import streamlit as st
 import pandas as pd
+import gspread
 from datetime import datetime, timezone
 
 st.title("📜 ประวัติการซื้อขายย้อนหลัง (Order History)")
 st.markdown("---")
-st.subheader("🕵️‍♂️ รายการคำสั่งซื้อขายในรอบ 7 วันล่าสุด (Filled Orders)")
+st.subheader("🕵️‍♂️ รายการคำสั่งซื้อขายในรอบ 7 วันล่าสุด พร้อมระบบ Auto-Sync Google Sheet")
 
-# โหลดกุญแจสำคัญจากระบบ Secrets ร่วมกัน
+# โหลดกุญแจสำคัญจากระบบ Secrets
 webull_config = st.secrets.get("Webull", {})
 APP_KEY = webull_config.get("AppKey", "").strip()
 APP_SECRET = webull_config.get("AppSecret", "").strip()
 ACCESS_TOKEN = webull_config.get("AccessToken", "").strip()
 ACCOUNT_ID = webull_config.get("AccountId", "").strip()
 HOST = "api.webull.co.th"
+
+# ฟังก์ชันเชื่อมต่อและบันทึกข้อมูลลง Google Sheet
+def sync_to_google_sheet(order_rows):
+    try:
+        # ดึงกุญแจ Base64 ป้องกัน TOML พัง
+        google_secrets = st.secrets.get("Google", {})
+        cred_base64 = google_secrets.get("credentials_base64", "")
+        
+        if not cred_base64:
+            st.warning("⚠️ ยังไม่ได้ใส่กุญแจ credentials_base64 ในระบบ Secrets")
+            return
+            
+        # ถอดรหัส Base64 กลับมาเป็น JSON ดิบ
+        cred_json_str = base64.b64decode(cred_base64).decode("utf-8")
+        cred_dict = json.loads(cred_json_str)
+        
+        # ล็อกอินเข้า Google Sheet
+        gc = gspread.service_account_from_dict(cred_dict)
+        
+        # เปิดชีทผ่านชื่อไฟล์ที่นายตั้งไว้
+        sh = gc.open("Webull_Order_History")
+        worksheet = sh.get_worksheet(0)
+        
+        # ดึงข้อมูล Order ID ทั้งหมดที่มีอยู่แล้วในชีทมาเช็คซ้ำ
+        existing_ids = worksheet.col_values(1)
+        
+        new_rows_count = 0
+        for row in order_rows:
+            if str(row["Order ID"]) not in existing_ids:
+                worksheet.append_row([
+                    str(row["Order ID"]),
+                    row["เวลาที่สำเร็จ"],
+                    row["หุ้น"],
+                    row["ประเภทคำสั่ง"],
+                    row["จำนวนหุ้น"],
+                    row["ราคาต่อหุ้น"]
+                ])
+                new_rows_count += 1
+                
+        if new_rows_count > 0:
+            st.success(f"🚀 บันทึกออเดอร์ใหม่เข้า Google Sheet เรียบร้อยแล้ว {new_rows_count} รายการ!")
+        else:
+            st.info("🔄 ข้อมูลใน Google Sheet อัปเดตล่าสุดแล้ว ไม่มีรายการซ้ำซ้อน")
+            
+    except Exception as e:
+        st.error(f"❌ ไม่สามารถเชื่อมต่อ Google Sheet ได้: {str(e)}")
 
 def get_webull_orders():
     path = "/openapi/trade/order/history"
@@ -63,7 +110,7 @@ def get_webull_orders():
         request_path = f"{path}?account_id={ACCOUNT_ID}"
         conn = http.client.HTTPSConnection(HOST)
         conn.request("GET", request_path, "", headers)
-        response = conn.getresponse()
+        response = conn.getcall = conn.getresponse()
         res_body = response.read().decode("utf-8")
         if response.status == 200:
             return json.loads(res_body)
@@ -73,10 +120,9 @@ def get_webull_orders():
         return {"error": str(e)}
 
 if ACCESS_TOKEN and ACCOUNT_ID:
-    with st.spinner("⏳ กำลังแกะกล่องประวัติออเดอร์ย้อนหลัง..."):
+    with st.spinner("⏳ กำลังดึงประวัติออเดอร์จาก Webull..."):
         orders_data = get_webull_orders()
     
-    # ดึงลิสต์ชั้นนอกสุดออกมาก่อน
     combo_list = []
     if isinstance(orders_data, list):
         combo_list = orders_data
@@ -84,31 +130,38 @@ if ACCESS_TOKEN and ACCOUNT_ID:
         combo_list = orders_data.get("orders") or orders_data.get("data") or []
         
     if combo_list:
-        order_rows = []
+        raw_rows = []
+        display_rows = []
         
-        # วิ่งลูปแกะกล่องชั้นนอกสุด
         for combo in combo_list:
             inner_orders = combo.get("orders", []) if isinstance(combo, dict) else []
-            
-            # หากโครงสร้างเรียบไม่มี orders ซ่อน ให้ถอยมารับค่า combo ตัวมันเอง
             if not inner_orders and isinstance(combo, dict):
                 inner_orders = [combo]
                 
             for order in inner_orders:
                 symbol = order.get("symbol") or order.get("ticker") or "-"
-                
-                # เช็คฝั่ง BUY / SELL
                 action = str(order.get("side") or order.get("action") or "").upper()
                 side_emoji = "🟢 BUY" if "BUY" in action else "🔴 SELL"
                 
-                # ดักจับจำนวนและราคาสรุป
                 qty = float(order.get("filled_quantity") or order.get("quantity") or 0)
                 price = float(order.get("filled_price") or order.get("price") or 0)
                 total_amount = qty * price
                 
                 time_str = order.get("filled_time") or order.get("placed_time") or "-"
                 
-                order_rows.append({
+                order_id = combo.get("client_order_id") or order.get("order_id") or time_str
+                
+                raw_rows.append({
+                    "Order ID": order_id,
+                    "เวลาที่สำเร็จ": time_str,
+                    "หุ้น": symbol,
+                    "ประเภทคำสั่ง": side_emoji,
+                    "จำนวนหุ้น": qty,
+                    "ราคาต่อหุ้น": price
+                })
+                
+                display_rows.append({
+                    "อ้างอิงออเดอร์": order_id,
                     "เวลาที่สำเร็จ": time_str,
                     "หุ้น": symbol,
                     "ประเภทคำสั่ง": side_emoji,
@@ -117,13 +170,10 @@ if ACCESS_TOKEN and ACCOUNT_ID:
                     "มูลค่ารวม (USD)": f"${total_amount:,.2f}"
                 })
         
-        if order_rows:
-            st.dataframe(pd.DataFrame(order_rows), use_container_width=True, hide_index=True)
+        if display_rows:
+            st.dataframe(pd.DataFrame(display_rows), use_container_width=True, hide_index=True)
+            sync_to_google_sheet(raw_rows)
         else:
-            st.info("ℹ️ โครงสร้างซ้อนกันแต่ไม่พบคำสั่งย่อย")
+            st.info("ℹ️ ไม่พบคำสั่งซื้อขายย่อย")
     else:
         st.info("ℹ️ ไม่พบประวัติคำสั่งซื้อขาย")
-        
-    st.markdown("---")
-    with st.expander("🔍 ดูกล่องข้อความดิบ (Raw JSON) เพื่อเช็คชื่อคีย์"):
-        st.json(orders_data)
