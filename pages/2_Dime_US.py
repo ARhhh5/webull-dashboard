@@ -27,18 +27,35 @@ total_market_value_usd = 0.0
 us_rows = []
 
 if us_records:
-    with st.spinner("⏳ กำลังดึงราคาสดหุ้นสหรัฐฯ จากกระดาน..."):
+    with st.spinner("⏳ กำลังประมวลผลราคาหุ้นสหรัฐฯ..."):
         for r in us_records:
             symbol = str(r.get("หุ้น (Ticker)", "")).strip().upper()
             if not symbol: continue
             qty = float(r.get("จำนวนหุ้น (Volume)", 0))
             cost = float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0))
             
-            try:
-                t = yf.Ticker(symbol)
-                price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.fast_info.get('last_price') or cost
-            except:
-                price = cost
+            # 🎯 เช็คว่าในกูเกิ้ลชีทมีคีย์ล็อกราคาเองไหม (ฟิลด์คอลัมน์ที่ 4)
+            manual_p_input = r.get("ราคาปัจจุบันล็อก (Manual Price)", "")
+            
+            price = None
+            # ตรวจจับว่าคีย์ตัวเลขจริงที่ไม่ใช่ค่าว่าง
+            if manual_p_input != "" and manual_p_input is not None:
+                try:
+                    price = float(manual_p_input)
+                except:
+                    price = None
+            
+            # หากไม่มีการคีย์ล็อกราคาเอง ให้วิ่งไปถามตลาดโลกตามปกติ
+            if price == None:
+                try:
+                    t = yf.Ticker(symbol)
+                    price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.fast_info.get('last_price')
+                except:
+                    price = None
+            
+            # แผนสุดท้าย: ถ้าตลาดโลกก็ไม่มี (Delisted) และไม่ได้คีย์แมนนวล ให้มองเป็น 0 เพื่อสะท้อนความจริง
+            if price == None:
+                price = 0.0
                     
             invested = qty * cost
             market_val = qty * price
@@ -48,7 +65,10 @@ if us_records:
             total_invested_usd += invested
             total_market_value_usd += market_val
             
-            pnl_sign = "🟢" if pnl > 0.01 else ("🔴" if pnl < -0.01 else "⚪")
+            if pnl > 0.01: pnl_sign = "🟢"
+            elif pnl < -0.01: pnl_sign = "🔴"
+            else: pnl_sign = "⚪"
+            
             us_rows.append({
                 "หุ้น US": symbol, "จำนวนหุ้น": f"{qty:,.4f}",
                 "ต้นทุนเฉลี่ย": f"${cost:,.2f}", "ราคาตลาด": f"${price:,.2f}",
