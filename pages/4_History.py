@@ -48,65 +48,42 @@ def load_google_sheet_data():
         df_order = pd.DataFrame()
         df_dime_closed = pd.DataFrame()
         
-        # 1. โหลด Webull Order History
-        for name in ["Webull_Order_History", "Order History", "Webull_Orders"]:
-            if name in worksheet_list:
-                try:
-                    df_order = pd.DataFrame(sh.worksheet(name).get_all_records())
-                    if not df_order.empty: break
-                except: pass
-        if df_order.empty and len(worksheet_list) > 0:
-            for ws_name in worksheet_list:
-                try:
-                    temp = pd.DataFrame(sh.worksheet(ws_name).get_all_records())
-                    if 'Symbol' in temp.columns or 'Ticker' in temp.columns:
-                        df_order = temp
-                        break
-                except: pass
-
-        # 2. โหลด Dime Closed Orders
-        for name in ["Dime_Closed_Orders", "Closed_Orders", "Dime Closed"]:
-            if name in worksheet_list:
-                try:
-                    df_dime_closed = pd.DataFrame(sh.worksheet(name).get_all_records())
-                    if not df_dime_closed.empty: break
-                except: pass
-                
+        # 1. โหลด Webull Order History ตามชื่อจริงในชีท
+        if "Webull_Order_History" in worksheet_list:
+            df_order = pd.DataFrame(sh.worksheet("Webull_Order_History").get_all_records())
+            
+        # 2. โหลด Dime Closed Orders ตามชื่อจริงในชีท
+        if "Dime_Closed_Orders" in worksheet_list:
+            df_dime_closed = pd.DataFrame(sh.worksheet("Dime_Closed_Orders").get_all_records())
+            
         return df_order, df_dime_closed
     except Exception as e:
         return pd.DataFrame(), pd.DataFrame()
 
 df_webull_raw, df_dime_closed_raw = load_google_sheet_data()
 
-tab1, tab2 = st.tabs(["🎯 สรุปหุ้นที่ปิดขายแล้ว (Closed Trades)", "📋 ประวัติออเดอร์ดิบ (Raw Orders & Dime)"])
+tab1, tab2 = st.tabs(["🎯 สรุปหุ้นที่ปิดขายแล้ว (Closed Trades)", "📋 ประวัติออเดอร์ดิบ (Webull & Dime)"])
 
 with tab1:
     st.markdown("### สรุปผลกำไร/ขาดทุนจริง (Realized PnL)")
     
     realized_trades = []
     
-    # 1. คำนวณจาก Webull Order History ด้วยระบบ FIFO (จับคู่ซื้อ-ขายตามเวลาจริง)
+    # 1. คำนวณจาก Webull_Order_History ด้วย FIFO (จับคู่ซื้อ-ขายตามเวลาจริง)
     if not df_webull_raw.empty:
         df_w = df_webull_raw.copy()
         df_w.columns = [str(c).strip() for c in df_w.columns]
         
-        # Standardize columns
-        sym_col = next((c for c in df_w.columns if 'symbol' in c.lower() or 'ticker' in c.lower()), 'Symbol')
-        side_col = next((c for c in df_w.columns if 'side' in c.lower()), 'Side')
-        qty_col = next((c for c in df_w.columns if 'qty' in c.lower() or 'volume' in c.lower()), 'Qty')
-        price_col = next((c for c in df_w.columns if 'price' in c.lower()), 'Price')
-        time_col = next((c for c in df_w.columns if 'time' in c.lower() or 'date' in c.lower()), 'Time')
-        
-        if all(c in df_w.columns for c in [sym_col, side_col, qty_col, price_col]):
-            df_w['Time_Sort'] = pd.to_datetime(df_w[time_col], errors='coerce')
+        if all(c in df_w.columns for c in ['Symbol', 'Side', 'Qty', 'Price', 'Time']):
+            df_w['Time_Sort'] = pd.to_datetime(df_w['Time'], errors='coerce')
             df_w = df_w.sort_values(by='Time_Sort', na_position='last')
             
-            for symbol, group in df_w.groupby(sym_col):
+            for symbol, group in df_w.groupby('Symbol'):
                 buy_queue = []
                 for _, row in group.iterrows():
-                    side = str(row[side_col]).upper().strip()
-                    qty = pd.to_numeric(row[qty_col], errors='coerce')
-                    price = pd.to_numeric(row[price_col], errors='coerce')
+                    side = str(row['Side']).upper().strip()
+                    qty = pd.to_numeric(row['Qty'], errors='coerce')
+                    price = pd.to_numeric(row['Price'], errors='coerce')
                     
                     if pd.isna(qty) or pd.isna(price) or qty <= 0: continue
                     
@@ -117,7 +94,7 @@ with tab1:
                         while sell_qty > 0 and len(buy_queue) > 0:
                             b = buy_queue[0]
                             matched_qty = min(sell_qty, b['qty'])
-                            # คำนวณ PnL (ขาย - ซื้อ) * จำนวน -> ขายต่ำกว่าทุน ติดลบแดงแจ๋แน่นอน
+                            # สูตรถูกต้อง: (ราคาขาย - ราคาซื้อ) * จำนวนหุ้น -> ขายต่ำกว่าทุน ติดลบแดงแน่นอน
                             pnl = (price - b['price']) * matched_qty
                             return_pct = ((price - b['price']) / b['price'] * 100) if b['price'] > 0 else 0
                             
@@ -136,17 +113,17 @@ with tab1:
                             if b['qty'] <= 0:
                                 buy_queue.pop(0)
 
-    # 2. นำข้อมูลจาก Dime Closed Orders (ถ้ามีบันทึกเข้ามา)
+    # 2. คำนวณจาก Dime_Closed_Orders (ถ้ามีข้อมูลคีย์ไว้)
     if not df_dime_closed_raw.empty:
         df_d = df_dime_closed_raw.copy()
         df_d.columns = [str(c).strip() for c in df_d.columns]
         for _, row in df_d.iterrows():
-            symbol = row.get('หุ้น (Ticker)') or row.get('Ticker') or row.get('Symbol', 'UNKNOWN')
+            symbol = row.get('หุ้น (Ticker)') or row.get('Ticker') or row.get('Symbol', '')
             qty = pd.to_numeric(row.get('จำนวนหุ้น (Qty)') or row.get('Qty', 0), errors='coerce')
             buy_p = pd.to_numeric(row.get('ราคาซื้อเฉลี่ย (Buy Price)') or row.get('Buy Price', 0), errors='coerce')
             sell_p = pd.to_numeric(row.get('ราคาขายจริง (Sell Price)') or row.get('Sell Price', 0), errors='coerce')
             
-            if qty > 0 and buy_p > 0 and sell_p > 0:
+            if symbol and qty > 0 and buy_p > 0 and sell_p > 0:
                 pnl = (sell_p - buy_p) * qty
                 ret = ((sell_p - buy_p) / buy_p * 100)
                 realized_trades.append({
@@ -220,17 +197,17 @@ with tab1:
             use_container_width=True
         )
     else:
-        st.info("ยังไม่มีข้อมูลรายการปิดขายหุ้นที่จับคู่ได้")
+        st.info("ยังไม่มีข้อมูลรายการปิดขายหุ้นที่จับคู่ได้จาก Webull_Order_History หรือ Dime_Closed_Orders")
 
 with tab2:
-    st.markdown("### 📋 Webull Order History (ข้อมูลดิบอัตโนมัติ)")
+    st.markdown("### 📋 Webull Order History (ดึงออโต้)")
     if not df_webull_raw.empty:
         st.dataframe(df_webull_raw, use_container_width=True)
     else:
-        st.info("ไม่พบข้อมูลใน Webull_Order_History")
+        st.warning("ไม่พบชีท Webull_Order_History ใน Google Sheet")
         
-    st.markdown("### 📝 Dime Closed Orders (บันทึกมือ)")
+    st.markdown("### 📝 Dime Closed Orders (คีย์มือ)")
     if not df_dime_closed_raw.empty:
         st.dataframe(df_dime_closed_raw, use_container_width=True)
     else:
-        st.info("ตาราง Dime_Closed_Orders ยังว่างเปล่า (สามารถคีย์เพิ่มใน Google Sheet ได้ทันทีเมื่อมีการขายหุ้น Dime)")
+        st.info("ชีท Dime_Closed_Orders ยังว่างเปล่า (สามารถคีย์ข้อมูลเพิ่มใน Google Sheet ได้ทันที)")
