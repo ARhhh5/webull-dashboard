@@ -16,7 +16,6 @@ st.set_page_config(page_title="Trade History & Realized PnL", layout="wide")
 st.title("📜 ประวัติการเทรด & สรุปกำไร/ขาดทุนที่เกิดขึ้นจริง (Realized PnL)")
 st.markdown("---")
 
-# ดึง Config Webull
 webull_config = st.secrets.get("Webull", {})
 APP_KEY = webull_config.get("AppKey", "").strip()
 APP_SECRET = webull_config.get("AppSecret", "").strip()
@@ -24,7 +23,6 @@ ACCESS_TOKEN = webull_config.get("AccessToken", "").strip()
 ACCOUNT_ID = webull_config.get("AccountId", "").strip()
 HOST = "api.webull.co.th"
 
-# 1. ดึงประวัติ Webull (รองรับ Order Matching จับคู่ BUY/SELL)
 def get_webull_history():
     path = "/openapi/trade/v2/orders"
     timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
@@ -45,7 +43,7 @@ def get_webull_history():
                 orders.append({
                     "Date": o.get("filled_time", "")[:10],
                     "Symbol": str(o.get("symbol", "")).upper(),
-                    "Action": str(o.get("action", "")).upper(), # BUY / SELL
+                    "Action": str(o.get("action", "")).upper(),
                     "Qty": float(o.get("filled_quantity", 0)),
                     "Price": float(o.get("avg_filled_price", 0)),
                     "Broker": "Webull"
@@ -54,7 +52,6 @@ def get_webull_history():
         pass
     return orders
 
-# 2. ดึงประวัติไม้ที่ปิดขายแล้วจาก Dime Sheet
 def get_dime_closed_orders():
     closed_orders = []
     try:
@@ -92,22 +89,18 @@ def get_dime_closed_orders():
         pass
     return closed_orders
 
-with st.spinner("⏳ กำลังโหลดประวัติการซื้อขายและประมวลผล Realized PnL..."):
+with st.spinner("⏳ กำลังโหลดประวัติการซื้อขายทั้งหมด..."):
     webull_orders = get_webull_history()
     dime_closed = get_dime_closed_orders()
 
-# TAB 1: ตารางเปรียบเทียบไม้ที่ปิดขายแล้ว (Realized PnL)
-tab1, tab2 = st.tabs(["💰 สรุปไม้ที่ปิดขายแล้ว (Realized PnL)", "📑 ประวัติออเดอร์ทั้งหมด (Raw Logs)"])
+tab1, tab2 = st.tabs(["💰 สรุปไม้ที่ปิดขายแล้ว (Realized PnL)", "📑 ประวัติออเดอร์สั่งซื้อทั้งหมด (Buy / Sell Logs)"])
 
 with tab1:
     st.subheader("📊 เปรียบเทียบราคาซื้อ vs ราคาขายจริง (Closed Trades)")
-    
-    # ประมวลผล Order Matching สำหรับ Webull (ถ้ามีไม้ขายเกิดขึ้น)
     webull_matched = []
     if webull_orders:
         df_w = pd.DataFrame(webull_orders)
         symbols = df_w['Symbol'].unique()
-        
         for sym in symbols:
             df_sym = df_w[df_w['Symbol'] == sym].sort_values("Date")
             buys = df_sym[df_sym['Action'] == "BUY"].to_dict('records')
@@ -116,12 +109,10 @@ with tab1:
             for sell in sells:
                 s_qty = sell['Qty']
                 s_price = sell['Price']
-                # คิดต้นทุนซื้อเฉลี่ยเรียบง่าย
                 if buys:
                     avg_b_price = sum(b['Price'] * b['Qty'] for b in buys) / sum(b['Qty'] for b in buys) if sum(b['Qty'] for b in buys) > 0 else s_price
                     pnl = (s_price - avg_b_price) * s_qty
                     pnl_pct = ((s_price - avg_b_price) / avg_b_price * 100) if avg_b_price > 0 else 0
-                    
                     webull_matched.append({
                         "Date": sell['Date'],
                         "Symbol": sym,
@@ -134,11 +125,8 @@ with tab1:
                     })
 
     all_closed = dime_closed + webull_matched
-    
     if all_closed:
         df_closed = pd.DataFrame(all_closed)
-        
-        # กล่องสรุปสถิติสำคัญ
         total_realized_pnl = df_closed['Realized PnL ($)'].sum()
         win_trades = df_closed[df_closed['Realized PnL ($)'] > 0]
         win_rate = (len(win_trades) / len(df_closed) * 100) if len(df_closed) > 0 else 0
@@ -147,10 +135,7 @@ with tab1:
         m1.metric("💰 กำไร/ขาดทุนสะสมจริงทั้งหมด", f"${total_realized_pnl:,.2f}", delta=f"{total_realized_pnl:,.2f}")
         m2.metric("🎯 จำนวนไม้ที่ปิดขายแล้ว", f"{len(df_closed)} ไม้")
         m3.metric("🔥 อัตราการชนะ (Win Rate)", f"{win_rate:.1f}%")
-        
         st.markdown("---")
-        
-        # แสดงตารางผลตอบแทน
         st.dataframe(
             df_closed.style.format({
                 "Qty": "{:,.2f}",
@@ -161,21 +146,25 @@ with tab1:
             }).map(lambda val: 'color: #00c853' if val > 0 else 'color: #ff3d00', subset=['Realized PnL ($)', 'Return (%)']),
             use_container_width=True
         )
-        
-        # กราฟแท่งผลตอบแทนตามรายไม้
-        fig_pnl = px.bar(
-            df_closed, x='Symbol', y='Realized PnL ($)', color='Broker',
-            title="กำไร/ขาดทุนสะสมแยกรายหุ้น ($)",
-            text_auto='.2f'
-        )
-        st.plotly_chart(fig_pnl, use_container_width=True)
     else:
         st.info("ยังไม่มีประวัติรายการที่ปิดขาย (Sell Orders) ในระบบ")
 
 with tab2:
-    st.subheader("📑 ประวัติรายการสั่งซื้อขายดิบ (Raw Trade Logs)")
+    st.subheader("📑 ประวัติออเดอร์การสั่งซื้อ/ขายทั้งหมด")
     if webull_orders:
         df_raw = pd.DataFrame(webull_orders)
-        st.dataframe(df_raw, use_container_width=True)
+        
+        # เพิ่มตัวกรองค้นหาชื่อหุ้น EOSE หรือหุ้นตัวอื่นๆ
+        search_sym = st.text_input("🔍 ค้นหาชื่อหุ้น (เช่น EOSE, NVDA):", "").strip().upper()
+        if search_sym:
+            df_raw = df_raw[df_raw['Symbol'].str.contains(search_sym)]
+            
+        st.dataframe(
+            df_raw.style.format({
+                "Qty": "{:,.2f}",
+                "Price": "${:,.2f}"
+            }),
+            use_container_width=True
+        )
     else:
-        st.write("ไม่พบประวัติออเดอร์ดิบจาก Webull")
+        st.warning("ไม่พบข้อมูลประวัติออเดอร์สดจาก Webull API (กรณีซื้อไว้นานแล้ว ข้อมูล API อาจหมดระยะส่ง ยอดปัจจุบันดูได้ที่หน้า Webull Portfolio)")
