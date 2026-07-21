@@ -3,7 +3,6 @@ import pandas as pd
 import json
 import base64
 import gspread
-from webull import webull # สมมติฐานว่าใช้ไลบรารีนี้ หรือเปลี่ยนตามที่นายใช้อยู่
 
 # ==========================================
 # ตั้งค่าหน้าเพจ Dashboard
@@ -28,51 +27,21 @@ def init_gsheet():
         return None
 
 # ==========================================
-# 2. ฟังก์ชันดึงข้อมูลพอร์ต Webull (ผ่าน API ของจริง)
+# 2. ฟังก์ชันดึงข้อมูลพอร์ต Webull 
 # ==========================================
 @st.cache_data(ttl=60)
 def get_webull_positions():
+    # -------------------------------------------------------------------
+    # 🚨 จุดที่ต้องแก้: เอาระบบดึง API Webull ของนาย มาใส่แทนตรงนี้! 🚨
+    # -------------------------------------------------------------------
     try:
-        # [!] โค้ดสำหรับ Login Webull (ดึง credentials จาก st.secrets)
-        wb = webull()
-        webull_email = st.secrets["Webull"]["email"]
-        webull_password = st.secrets["Webull"]["password"]
-        webull_mfa = st.secrets["Webull"].get("mfa_code", "") # ถ้ามี
-        
-        # ถ้านายใช้ token/did แทนการ login ด้วยรหัสผ่าน ให้ปรับตรงนี้นะ
-        wb.login(webull_email, webull_password, 'my_device', webull_mfa)
-        
-        # ดึงสถานะพอร์ต
-        positions = wb.get_positions()
-        
-        if not positions:
-            return pd.DataFrame(), 0.0, 0.0
-
-        pos_list = []
+        # เพื่อไม่ให้แอปพังระหว่างรอดึง API ผมสร้าง Data แบบว่างๆ ไว้ให้ก่อน
+        df_webull = pd.DataFrame(columns=[
+            "Symbol", "Qty", "Avg Price ($)", "Current Price ($)", "Market Value ($)", "Unrealized PnL ($)"
+        ])
         total_market_value = 0.0
         total_unrealized_pnl = 0.0
         
-        for pos in positions:
-            ticker = pos.get('ticker', {}).get('symbol', 'N/A')
-            qty = float(pos.get('position', 0))
-            avg_price = float(pos.get('costPrice', 0))
-            last_price = float(pos.get('lastPrice', 0))
-            market_value = float(pos.get('marketValue', 0))
-            unrealized_pnl = float(pos.get('unrealizedProfitLoss', 0))
-            
-            pos_list.append({
-                "Symbol": ticker,
-                "Qty": qty,
-                "Avg Price ($)": avg_price,
-                "Current Price ($)": last_price,
-                "Market Value ($)": market_value,
-                "Unrealized PnL ($)": unrealized_pnl
-            })
-            
-            total_market_value += market_value
-            total_unrealized_pnl += unrealized_pnl
-            
-        df_webull = pd.DataFrame(pos_list)
         return df_webull, total_market_value, total_unrealized_pnl
         
     except Exception as e:
@@ -131,7 +100,7 @@ def main():
             use_container_width=True
         )
     else:
-        st.info("ไม่พบสถานะหุ้นที่ถืออยู่ใน Webull ตอนนี้")
+        st.info("กำลังรอข้อมูล Webull... (อย่าลืมเอาโค้ด API เดิมของนายมาใส่ในฟังก์ชัน get_webull_positions นะเพื่อน)")
         
     st.divider()
 
