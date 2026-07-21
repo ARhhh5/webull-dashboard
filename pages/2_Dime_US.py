@@ -1,97 +1,139 @@
-import base64
-import json
 import streamlit as st
 import pandas as pd
-import gspread
 import yfinance as yf
+import json
+import base64
+import gspread
 
-st.title("🇺🇸 Dime! US Portfolio Dashboard")
+st.set_page_config(page_title="Dime! US Portfolio", layout="wide")
+
+st.markdown("""
+    <style>
+    .metric-container {
+        background-color: #1e222d;
+        padding: 20px;
+        border-radius: 10px;
+        border: 1px solid #2a2e39;
+        text-align: center;
+    }
+    .metric-label { color: #848e9c; font-size: 16px; font-weight: 500; margin-bottom: 8px; }
+    .metric-value { color: #ffffff; font-size: 32px; font-weight: 700; }
+    .pnl-positive { color: #00c853 !important; }
+    .pnl-negative { color: #ff3d00 !important; }
+    </style>
+""", unsafe_allow_html=True)
+
+st.title("🇺🇸 พอร์ตหุ้นสหรัฐฯ (Dime!)")
 st.markdown("---")
 
-def load_sheet_data(sheet_name):
+def get_dime_us_data():
+    holdings = []
     try:
         google_secrets = st.secrets.get("Google", {})
         cred_base64 = google_secrets.get("credentials_base64", "")
-        if not cred_base64: return []
-        cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
-        gc = gspread.service_account_from_dict(cred_dict)
-        sh = gc.open("หุ้นของเรา")
-        worksheet = sh.worksheet(sheet_name)
-        return worksheet.get_all_records()
-    except:
-        return []
+        if cred_base64:
+            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
+            gc = gspread.service_account_from_dict(cred_dict)
+            sh = gc.open("หุ้นของเรา")
+            worksheet = sh.worksheet("Dime_Portfolio")
+            records = worksheet.get_all_records()
+            for r in records:
+                sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
+                if sym:
+                    holdings.append({
+                        "Symbol": sym,
+                        "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
+                        "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
+                        "Manual_Price": r.get("ราคาปัจจุบันล็อก (Manual Price)", "")
+                    })
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ Google Sheet: {e}")
+    return holdings
 
-us_records = load_sheet_data("Dime_Portfolio")
-total_invested_usd = 0.0
-total_market_value_usd = 0.0
-us_rows = []
-
-if us_records:
-    with st.spinner("⏳ กำลังประมวลผลราคาหุ้นสหรัฐฯ..."):
-        for r in us_records:
-            symbol = str(r.get("หุ้น (Ticker)", "")).strip().upper()
-            if not symbol: continue
-            qty = float(r.get("จำนวนหุ้น (Volume)", 0))
-            cost = float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0))
+with st.spinner("⏳ กำลังดึงราคาสดหุ้นสหรัฐฯ..."):
+    holdings = get_dime_us_data()
+    
+    if holdings:
+        data = []
+        for h in holdings:
+            sym = h["Symbol"]
+            qty = h["Qty"]
+            cost = h["Cost"]
+            manual_price = h["Manual_Price"]
             
-            # 🎯 เช็คว่าในกูเกิ้ลชีทมีคีย์ล็อกราคาเองไหม (ฟิลด์คอลัมน์ที่ 4)
-            manual_p_input = r.get("ราคาปัจจุบันล็อก (Manual Price)", "")
+            price = 0.0
             
-            price = None
-            # ตรวจจับว่าคีย์ตัวเลขจริงที่ไม่ใช่ค่าว่าง
-            if manual_p_input != "" and manual_p_input is not None:
+            # 1. เช็ก Manual Price จาก Sheet ก่อน
+            if manual_price != "" and manual_price is not None:
                 try:
-                    price = float(manual_p_input)
+                    price = float(manual_price)
                 except:
-                    price = None
+                    price = 0.0
             
-            # หากไม่มีการคีย์ล็อกราคาเอง ให้วิ่งไปถามตลาดโลกตามปกติ
-            if price == None:
+            # 2. ถ้าไม่มี Manual Price ให้ดึงจาก yfinance แบบปลอดภัยหลายชั้น
+            if price == 0.0:
                 try:
-                    t = yf.Ticker(symbol)
-                    price = t.info.get('currentPrice') or t.info.get('regularMarketPrice') or t.fast_info.get('last_price')
-                except:
-                    price = None
-            
-            # แผนสุดท้าย: ถ้าตลาดโลกก็ไม่มี (Delisted) และไม่ได้คีย์แมนนวล ให้มองเป็น 0 เพื่อสะท้อนความจริง
-            if price == None:
-                price = 0.0
+                    ticker = yf.Ticker(sym)
+                    # ลองหาจาก fast_info / info ก่อน
+                    p = ticker.fast_info.get('last_price') or ticker.info.get('currentPrice') or ticker.info.get('regularMarketPrice')
                     
+                    # ถ้ายังไม่ได้ ให้ดึงจากประวัติราคาล่าสุด (history)
+                    if not p or float(p) == 0.0:
+                        hist = ticker.history(period="5d")
+                        if not hist.empty:
+                            p = hist['Close'].iloc[-1]
+                            
+                    price = float(p) if p else cost # ถ้าดึงไม่ได้จริงๆ ให้ใช้ราคาต้นทุนแทน $0.00
+                except:
+                    price = cost
+            
             invested = qty * cost
             market_val = qty * price
             pnl = market_val - invested
-            pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
+            pnl_pct = (pnl / invested * 100) if invested > 0 else 0
             
-            total_invested_usd += invested
-            total_market_value_usd += market_val
-            
-            if pnl > 0.01: pnl_sign = "🟢"
-            elif pnl < -0.01: pnl_sign = "🔴"
-            else: pnl_sign = "⚪"
-            
-            us_rows.append({
-                "หุ้น US": symbol, "จำนวนหุ้น": f"{qty:,.4f}",
-                "ต้นทุนเฉลี่ย": f"${cost:,.2f}", "ราคาตลาด": f"${price:,.2f}",
-                "เงินลงทุน": f"${invested:,.2f}", "มูลค่าปัจจุบัน": f"${market_val:,.2f}",
-                "กำไร/ขาดทุน": f"{pnl_sign} ${pnl:,.2f} ({pnl_pct:+.2f}%)"
+            data.append({
+                "หุ้น US": sym,
+                "จำนวนหุ้น": qty,
+                "ต้นทุนเฉลี่ย": cost,
+                "ราคาตลาด": price,
+                "เงินลงทุน": invested,
+                "มูลค่าปัจจุบัน": market_val,
+                "PnL": pnl,
+                "PnL_Pct": pnl_pct
             })
-
-if us_rows:
-    total_pnl_usd = total_market_value_usd - total_invested_usd
-    total_pnl_pct = (total_pnl_usd / total_invested_usd * 100) if total_invested_usd > 0 else 0.0
-    pnl_class = "color: #00c853;" if total_pnl_usd > 0 else ("color: #ff3d00;" if total_pnl_usd < 0 else "color: #848e9c;")
-    pnl_prefix = "+" if total_pnl_usd > 0 else ""
-
-    st.markdown(f"""
-    <div style="background-color: #1e222d; padding: 20px; border-radius: 10px; border: 1px solid #2a2e39; text-align: center;">
-        <h4 style="color: #848e9c; margin: 0;">💵 มูลค่ารวมพอร์ต Dime! สหรัฐฯ</h4>
-        <h2 style="color: white; margin: 10px 0;">${total_market_value_usd:,.2f}</h2>
-        <p style="{pnl_class} font-weight: bold; margin: 0; font-size: 18px;">
-            กำไร/ขาดทุนสุทธิ: {pnl_prefix}${total_pnl_usd:,.2f} ({total_pnl_pct:+.2f}%)
-        </p>
-    </div>
-    """, unsafe_allow_html=True)
-    st.markdown("<br>", unsafe_allow_html=True)
-    st.dataframe(pd.DataFrame(us_rows), use_container_width=True, hide_index=True)
-else:
-    st.info("ℹ️ ไม่พบข้อมูลหุ้นสหรัฐฯ ในแท็บ 'Dime_Portfolio'")
+            
+        df = pd.DataFrame(data)
+        
+        total_invested = df["เงินลงทุน"].sum()
+        total_market = df["มูลค่าปัจจุบัน"].sum()
+        total_pnl = total_market - total_invested
+        total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
+        
+        pnl_class = "pnl-positive" if total_pnl >= 0 else "pnl-negative"
+        pnl_prefix = "+" if total_pnl >= 0 else ""
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(f'<div class="metric-container"><div class="metric-label">💵 มูลค่ารวมพอร์ต Dime! สหรัฐฯ</div><div class="metric-value">${total_market:,.2f}</div></div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'<div class="metric-container"><div class="metric-label">📊 กำไร / ขาดทุนสุทธิ</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_pnl:,.2f} ({total_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
+            
+        st.markdown("---")
+        
+        # ตารางแสดงผลสวยงาม
+        df_display = df.copy()
+        df_display["กำไร/ขาดทุน"] = df_display.apply(lambda r: f"{'+' if r['PnL']>=0 else ''}${r['PnL']:,.2f} ({r['PnL_Pct']:+.2f}%)", axis=1)
+        
+        st.dataframe(
+            df_display[["หุ้น US", "จำนวนหุ้น", "ต้นทุนเฉลี่ย", "ราคาตลาด", "เงินลงทุน", "มูลค่าปัจจุบัน", "กำไร/ขาดทุน"]].style.format({
+                "จำนวนหุ้น": "{:,.4f}",
+                "ต้นทุนเฉลี่ย": "${:,.2f}",
+                "ราคาตลาด": "${:,.2f}",
+                "เงินลงทุน": "${:,.2f}",
+                "มูลค่าปัจจุบัน": "${:,.2f}"
+            }),
+            use_container_width=True
+        )
+    else:
+        st.info("ไม่พบข้อมูลหุ้นสหรัฐฯ ใน Google Sheet")
