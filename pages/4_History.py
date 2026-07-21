@@ -207,11 +207,17 @@ if not df_realized.empty or not df_unrealized.empty:
         net_class = "pnl-positive" if grand_total_net >= 0 else "pnl-negative"
         net_prefix = "+" if grand_total_net >= 0 else ""
         
+        realized_class = "pnl-positive" if total_realized >= 0 else "pnl-negative"
+        realized_prefix = "+" if total_realized >= 0 else ""
+        
+        unrealized_class = "pnl-positive" if total_unrealized >= 0 else "pnl-negative"
+        unrealized_prefix = "+" if total_unrealized >= 0 else ""
+        
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไรที่ปิดไปแล้ว (อดีต)</div><div class="metric-value pnl-positive">+${total_realized:,.2f}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไรที่ปิดไปแล้ว (อดีต)</div><div class="metric-value {realized_class}">{realized_prefix}${total_realized:,.2f}</div></div>', unsafe_allow_html=True)
         with c2:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">📉 สถานะติดดอย (ปัจจุบัน)</div><div class="metric-value pnl-negative">${total_unrealized:,.2f}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">📉 สถานะติดดอย (ปัจจุบัน)</div><div class="metric-value {unrealized_class}">{unrealized_prefix}${total_unrealized:,.2f}</div></div>', unsafe_allow_html=True)
         with c3:
             st.markdown(f'<div class="metric-container"><div class="metric-label">⚖️ ผลประกอบการสุทธิของแท้!</div><div class="metric-value {net_class}">{net_prefix}${grand_total_net:,.2f}</div></div>', unsafe_allow_html=True)
             
