@@ -22,7 +22,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📜 ประวัติการเทรด & ผลประกอบการที่แท้จริง (True Net PnL)")
+st.title("📜 ประวัติการเทรด & ผลประกอบการสุทธิที่แท้จริง (True Net PnL)")
 st.markdown("---")
 
 @st.cache_resource
@@ -39,7 +39,7 @@ def init_gsheet():
         return None
 
 # ==========================================
-# 1. ฟังก์ชันดึงประวัติออเดอร์ (Realized PnL) แบบปลอดภัย 100%
+# 1. ดึงประวัติที่ปิดไปแล้ว (Realized PnL) แบบยืดหยุ่นสูง
 # ==========================================
 def get_historical_realized_pnl(gc):
     if not gc: return pd.DataFrame()
@@ -50,20 +50,15 @@ def get_historical_realized_pnl(gc):
         records = worksheet.get_all_records()
         
         for r in records:
-            # ดึงข้อมูลผ่านคอลัมน์ชื่อต่างๆ รองรับทุกลักษณะการตั้งชื่อ
             sym = str(r.get("Symbol") or r.get("Symbol & Name") or r.get("หุ้น (Ticker)") or "").strip().upper()
-            if not sym:
-                continue
+            if not sym: continue
             if " " in sym:
-                sym = sym.split(" ")[0] # ตัดเอาเฉพาะชื่อย่อหุ้น
+                sym = sym.split(" ")[0] # ตัดเอาชื่อย่อหุ้น
                 
             raw_side = str(r.get("Side") or r.get("Buy/Sell") or "").strip().upper()
-            if "BUY" in raw_side:
-                side = "BUY"
-            elif "SELL" in raw_side:
-                side = "SELL"
-            else:
-                continue
+            if "BUY" in raw_side: side = "BUY"
+            elif "SELL" in raw_side: side = "SELL"
+            else: continue
                 
             try:
                 qty = float(str(r.get("Qty") or r.get("Quantity") or r.get("จำนวนหุ้น (Volume)") or 0).replace(",", ""))
@@ -85,13 +80,12 @@ def get_historical_realized_pnl(gc):
         st.warning(f"อ่านชีท Webull_Order_History ไม่สำเร็จ: {e}")
         
     df_orders = pd.DataFrame(orders)
-    if df_orders.empty:
-        return pd.DataFrame()
+    if df_orders.empty: return pd.DataFrame()
     
     df_sorted = df_orders.sort_values(by=["Time"], ascending=True).copy()
     closed_trades = []
     
-    # ระบบ FIFO Matching
+    # FIFO Matching Engine
     for symbol, group in df_sorted.groupby("Symbol"):
         buy_queue = []
         for _, row in group.iterrows():
@@ -127,7 +121,7 @@ def get_historical_realized_pnl(gc):
     return pd.DataFrame()
 
 # ==========================================
-# 2. ฟังก์ชันดึงสถานะติดดอยปัจจุบัน (Unrealized PnL)
+# 2. ดึงสถานะติดดอยปัจจุบัน (Unrealized PnL)
 # ==========================================
 def get_current_unrealized_pnl(gc):
     if not gc: return pd.DataFrame()
@@ -177,10 +171,11 @@ def color_pnl(val):
     color = '#00c853' if val > 0 else ('#ff3d00' if val < 0 else '#848e9c')
     return f'color: {color}; font-weight: bold;'
 
-# ดึงข้อมูลทั้งหมดมาประมวลผล
-gc = init_gsheet()
-df_realized = get_historical_realized_pnl(gc)
-df_unrealized = get_current_unrealized_pnl(gc)
+# ประมวลผลข้อมูล
+with st.spinner("⏳ กำลังคำนวณข้อมูล True Net PnL ทั้งหมด..."):
+    gc = init_gsheet()
+    df_realized = get_historical_realized_pnl(gc)
+    df_unrealized = get_current_unrealized_pnl(gc)
 
 if not df_realized.empty or not df_unrealized.empty:
     if df_realized.empty:
@@ -192,16 +187,16 @@ if not df_realized.empty or not df_unrealized.empty:
     else:
         df_net = pd.merge(df_realized, df_unrealized, on="Symbol", how="outer").fillna(0.0)
         
+    # 💥 สมการความจริง: กำไรอดีต + ขาดทุนปัจจุบัน = สุทธิที่แท้จริง
     df_net["True Net PnL ($)"] = df_net["Realized PnL ($)"] + df_net["Unrealized PnL ($)"]
     
-    # บังคับโชว์ทุกหุ้นที่มีข้อมูล
     df_net = df_net.sort_values(by="True Net PnL ($)", ascending=False)
     
     total_realized = df_net["Realized PnL ($)"].sum()
     total_unrealized = df_net["Unrealized PnL ($)"].sum()
     grand_total_net = df_net["True Net PnL ($)"].sum()
     
-    tab1, tab2 = st.tabs(["🔥 สรุปความจริงรายหุ้น (True Net PnL)", "📜 ข้อมูลดิบที่ระบบอ่านได้"])
+    tab1, tab2 = st.tabs(["🔥 ผลประกอบการสุทธิรายหุ้น (True Net PnL)", "📜 ข้อมูลแยกส่วน (Realized vs Unrealized)"])
     
     with tab1:
         net_class = "pnl-positive" if grand_total_net >= 0 else "pnl-negative"
@@ -216,7 +211,7 @@ if not df_realized.empty or not df_unrealized.empty:
             st.markdown(f'<div class="metric-container"><div class="metric-label">⚖️ ผลประกอบการสุทธิของแท้!</div><div class="metric-value {net_class}">{net_prefix}${grand_total_net:,.2f}</div></div>', unsafe_allow_html=True)
             
         st.markdown("---")
-        st.markdown("*(ตารางนี้รวม **กำไรอดีต** เข้ากับ **ขาดทุนปัจจุบัน** เพื่อแสดง Net PnL ที่แท้จริงรายตัว)*")
+        st.markdown("*(ตารางนี้รวม **กำไรอดีต** เข้ากับ **ขาดทุนปัจจุบัน** ออกมาเป็น Net PnL สุทธิของหุ้นแต่ละตัว)*")
         
         df_show = df_net[["Symbol", "Realized PnL ($)", "Unrealized PnL ($)", "True Net PnL ($)"]]
         df_show.columns = ["ชื่อหุ้น", "กำไรอดีต (ปิดแล้ว)", "สถานะปัจจุบัน (ติดดอย/กำไร)", "สุทธิของแท้ (Net PnL)"]
