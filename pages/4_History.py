@@ -3,6 +3,7 @@ import pandas as pd
 import json
 import base64
 import gspread
+import yfinance as yf
 
 st.set_page_config(page_title="Trade History & True Net Performance", layout="wide")
 
@@ -39,7 +40,7 @@ def init_gsheet():
         return None
 
 # ==========================================
-# 1. ฟังก์ชันดึงประวัติออเดอร์ (Realized PnL) แบบปลอดภัย 100%
+# 1. ฟังก์ชันดึงประวัติออเดอร์ (Realized PnL) แบบ FIFO
 # ==========================================
 def get_historical_realized_pnl(gc):
     if not gc: return pd.DataFrame()
@@ -50,26 +51,19 @@ def get_historical_realized_pnl(gc):
         records = worksheet.get_all_records()
         
         for r in records:
-            # ดึงข้อมูลผ่านคอลัมน์ชื่อต่างๆ รองรับทุกลักษณะการตั้งชื่อ
             sym = str(r.get("Symbol") or r.get("Symbol & Name") or r.get("หุ้น (Ticker)") or "").strip().upper()
-            if not sym:
-                continue
-            if " " in sym:
-                sym = sym.split(" ")[0] # ตัดเอาเฉพาะชื่อย่อหุ้น
+            if not sym: continue
+            if " " in sym: sym = sym.split(" ")[0]
                 
             raw_side = str(r.get("Side") or r.get("Buy/Sell") or "").strip().upper()
-            if "BUY" in raw_side:
-                side = "BUY"
-            elif "SELL" in raw_side:
-                side = "SELL"
-            else:
-                continue
+            if "BUY" in raw_side: side = "BUY"
+            elif "SELL" in raw_side: side = "SELL"
+            else: continue
                 
             try:
                 qty = float(str(r.get("Qty") or r.get("Quantity") or r.get("จำนวนหุ้น (Volume)") or 0).replace(",", ""))
                 price = float(str(r.get("Price") or r.get("Traded Price") or r.get("ราคาซื้อเฉลี่ย (Buy Price)") or 0).replace(",", ""))
-            except:
-                continue
+            except: continue
                 
             time_val = str(r.get("Time") or r.get("Trade Date") or r.get("วันที่ปิดไม้ (Date)") or "2025-01-01")
             
@@ -85,13 +79,11 @@ def get_historical_realized_pnl(gc):
         st.warning(f"อ่านชีท Webull_Order_History ไม่สำเร็จ: {e}")
         
     df_orders = pd.DataFrame(orders)
-    if df_orders.empty:
-        return pd.DataFrame()
+    if df_orders.empty: return pd.DataFrame()
     
     df_sorted = df_orders.sort_values(by=["Time"], ascending=True).copy()
     closed_trades = []
     
-    # ระบบ FIFO Matching
     for symbol, group in df_sorted.groupby("Symbol"):
         buy_queue = []
         for _, row in group.iterrows():
@@ -117,7 +109,6 @@ def get_historical_realized_pnl(gc):
                     
                     sell_qty_left -= matched_qty
                     first_buy["qty"] -= matched_qty
-                    
                     if first_buy["qty"] <= 0:
                         buy_queue.pop(0)
                         
@@ -127,8 +118,22 @@ def get_historical_realized_pnl(gc):
     return pd.DataFrame()
 
 # ==========================================
-# 2. ฟังก์ชันดึงสถานะติดดอยปัจจุบัน (Unrealized PnL)
+# 2. ฟังก์ชันคำนวณ Unrealized PnL จากราคาตลาดจริง (yfinance)
 # ==========================================
+@st.cache_data(ttl=300)
+def fetch_live_prices(symbols):
+    prices = {}
+    for sym in symbols:
+        try:
+            # แปลงสัญลักษณ์สำหรับหุ้นไทยถ้ามี
+            ticker_sym = sym if not sym.isalpha() or len(sym) <= 5 else sym
+            t = yf.Ticker(ticker_sym)
+            price = t.fast_info.get('lastPrice') or t.info.get('regularMarketPrice') or 0.0
+            prices[sym] = float(price)
+        except:
+            prices[sym] = 0.0
+    return prices
+
 def get_current_unrealized_pnl(gc):
     if not gc: return pd.DataFrame()
     unrealized_data = []
@@ -138,34 +143,46 @@ def get_current_unrealized_pnl(gc):
             try:
                 ws = sh.worksheet(sheet_name)
                 records = ws.get_all_records()
-                for r in records:
-                    sym = str(r.get("หุ้น (Ticker)") or r.get("Symbol") or r.get("Symbol & Name") or "").strip().upper()
+                if not records: continue
+                
+                df_rec = pd.DataFrame(records)
+                
+                # ค้นหาคอลัมน์ Ticker / Qty / AvgCost
+                sym_col = next((c for c in df_rec.columns if 'ticker' in str(c).lower() or 'symbol' in str(c).lower() or 'หุ้น' in str(c)), None)
+                qty_col = next((c for c in df_rec.columns if 'volume' in str(c).lower() or 'qty' in str(c).lower() or 'จำนวน' in str(c)), None)
+                cost_col = next((c for c in df_rec.columns if 'cost' in str(c).lower() or 'ต้นทุน' in str(c)), None)
+                
+                if not sym_col or not qty_col or not cost_col: continue
+                
+                # ดึงลิสต์หุ้นเพื่อไปเอาราคาจริง
+                symbols = [str(s).strip().upper().split(" ")[0] for s in df_rec[sym_col] if str(s).strip()]
+                live_prices = fetch_live_prices(list(set(symbols)))
+                
+                for _, r in df_rec.iterrows():
+                    sym = str(r.get(sym_col, "")).strip().upper()
                     if not sym: continue
-                    if " " in sym:
-                        sym = sym.split(" ")[0]
-                        
+                    if " " in sym: sym = sym.split(" ")[0]
+                    
                     try:
-                        qty = float(str(r.get("จำนวนหุ้น (Volume)") or r.get("Quantity") or r.get("Qty") or 0).replace(",", ""))
-                        avg_cost = float(str(r.get("ต้นทุนเฉลี่ย (Avg Cost)") or r.get("AVERAGE PRICE") or r.get("Cost") or 0).replace(",", ""))
-                        current_price = float(str(r.get("ราคาปัจจุบัน") or r.get("Closing Price") or r.get("Last Price") or avg_cost).replace(",", ""))
+                        qty = float(str(r.get(qty_col, 0)).replace(",", ""))
+                        avg_cost = float(str(r.get(cost_col, 0)).replace(",", ""))
                         
-                        unrealized_pnl = (current_price - avg_cost) * qty
+                        if qty <= 0 or avg_cost <= 0: continue
                         
-                        raw_pnl = r.get("Unrealized P/L") or r.get("PnL")
-                        if raw_pnl != "" and raw_pnl is not None:
-                            try: unrealized_pnl = float(str(raw_pnl).replace(",", ""))
-                            except: pass
+                        current_price = live_prices.get(sym, avg_cost)
+                        # คำนวณ PnL จริง: (ราคาปัจจุบัน - ต้นทุนเฉลี่ย) * จำนวนหุ้น
+                        if current_price > 0:
+                            unrealized_pnl = (current_price - avg_cost) * qty
+                        else:
+                            unrealized_pnl = 0.0
                             
                         unrealized_data.append({
                             "Symbol": sym,
                             "Unrealized PnL ($)": unrealized_pnl
                         })
-                    except:
-                        continue
-            except:
-                continue
-    except:
-        pass
+                    except: continue
+            except: continue
+    except: pass
     
     df_unrealized = pd.DataFrame(unrealized_data)
     if not df_unrealized.empty:
@@ -193,8 +210,6 @@ if not df_realized.empty or not df_unrealized.empty:
         df_net = pd.merge(df_realized, df_unrealized, on="Symbol", how="outer").fillna(0.0)
         
     df_net["True Net PnL ($)"] = df_net["Realized PnL ($)"] + df_net["Unrealized PnL ($)"]
-    
-    # บังคับโชว์ทุกหุ้นที่มีข้อมูล
     df_net = df_net.sort_values(by="True Net PnL ($)", ascending=False)
     
     total_realized = df_net["Realized PnL ($)"].sum()
@@ -217,12 +232,11 @@ if not df_realized.empty or not df_unrealized.empty:
         with c1:
             st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไรที่ปิดไปแล้ว (อดีต)</div><div class="metric-value {realized_class}">{realized_prefix}${total_realized:,.2f}</div></div>', unsafe_allow_html=True)
         with c2:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">📉 สถานะติดดอย (ปัจจุบัน)</div><div class="metric-value {unrealized_class}">{unrealized_prefix}${total_unrealized:,.2f}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">📉 สถานะติดดอย/กำไร (ปัจจุบัน)</div><div class="metric-value {unrealized_class}">{unrealized_prefix}${total_unrealized:,.2f}</div></div>', unsafe_allow_html=True)
         with c3:
             st.markdown(f'<div class="metric-container"><div class="metric-label">⚖️ ผลประกอบการสุทธิของแท้!</div><div class="metric-value {net_class}">{net_prefix}${grand_total_net:,.2f}</div></div>', unsafe_allow_html=True)
             
         st.markdown("---")
-        st.markdown("*(ตารางนี้รวม **กำไรอดีต** เข้ากับ **ขาดทุนปัจจุบัน** เพื่อแสดง Net PnL ที่แท้จริงรายตัว)*")
         
         df_show = df_net[["Symbol", "Realized PnL ($)", "Unrealized PnL ($)", "True Net PnL ($)"]]
         df_show.columns = ["ชื่อหุ้น", "กำไรอดีต (ปิดแล้ว)", "สถานะปัจจุบัน (ติดดอย/กำไร)", "สุทธิของแท้ (Net PnL)"]
@@ -243,4 +257,4 @@ if not df_realized.empty or not df_unrealized.empty:
         st.subheader("สถานะ Unrealized แยกรายตัว")
         st.dataframe(df_unrealized, use_container_width=True)
 else:
-    st.error("⚠️ ไม่สามารถดึงข้อมูลหุ้นจาก Google Sheet ได้ กรุณาตรวจสอบชื่อแท็บ (Webull_Order_History, Dime_Portfolio) หรือสิทธิ์การเข้าถึงอีกครั้งครับ!")
+    st.error("⚠️ ไม่สามารถดึงข้อมูลหุ้นจาก Google Sheet ได้ กรุณาตรวจสอบชื่อแท็บ (Webull_Order_History, Dime_Portfolio) อีกครั้งครับ!")
