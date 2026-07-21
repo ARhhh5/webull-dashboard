@@ -39,7 +39,7 @@ def init_gsheet():
         return None
 
 # ==========================================
-# 1. ดึงประวัติที่ปิดไปแล้ว (Realized PnL) แบบปลอดภัยไร้ Error
+# 1. ฟังก์ชันดึงประวัติออเดอร์ (Realized PnL) แบบปลอดภัย 100%
 # ==========================================
 def get_historical_realized_pnl(gc):
     if not gc: return pd.DataFrame()
@@ -48,42 +48,50 @@ def get_historical_realized_pnl(gc):
         sh = gc.open("หุ้นของเรา")
         worksheet = sh.worksheet("Webull_Order_History")
         records = worksheet.get_all_records()
+        
         for r in records:
-            # 🔍 ค้นหาคอลัมน์ชื่อหุ้นและด้านการซื้อขายแบบยืดหยุ่น (ป้องกกันปัญหา Key Error)
+            # ดึงข้อมูลผ่านคอลัมน์ชื่อต่างๆ รองรับทุกลักษณะการตั้งชื่อ
             sym = str(r.get("Symbol") or r.get("Symbol & Name") or r.get("หุ้น (Ticker)") or "").strip().upper()
+            if not sym:
+                continue
             if " " in sym:
-                sym = sym.split(" ")[0] # ตัดเอาเฉพาะชื่อย่อหุ้น เช่น "AAPL APPLE INC" -> "AAPL"
+                sym = sym.split(" ")[0] # ตัดเอาเฉพาะชื่อย่อหุ้น
                 
             raw_side = str(r.get("Side") or r.get("Buy/Sell") or "").strip().upper()
+            if "BUY" in raw_side:
+                side = "BUY"
+            elif "SELL" in raw_side:
+                side = "SELL"
+            else:
+                continue
+                
+            try:
+                qty = float(str(r.get("Qty") or r.get("Quantity") or r.get("จำนวนหุ้น (Volume)") or 0).replace(",", ""))
+                price = float(str(r.get("Price") or r.get("Traded Price") or r.get("ราคาซื้อเฉลี่ย (Buy Price)") or 0).replace(",", ""))
+            except:
+                continue
+                
+            time_val = str(r.get("Time") or r.get("Trade Date") or r.get("วันที่ปิดไม้ (Date)") or "2025-01-01")
             
-            if "BUY" in raw_side: side = "BUY"
-            elif "SELL" in raw_side: side = "SELL"
-            else: side = ""
-                
-            if sym and side:
-                # ดึงจำนวนและราคาโดยเช็คหลายชื่อคอลัมน์
-                qty = float(r.get("Qty") or r.get("Quantity") or r.get("จำนวนหุ้น (Volume)") or 0)
-                price = float(r.get("Price") or r.get("Traded Price") or r.get("ราคาซื้อเฉลี่ย (Buy Price)") or 0)
-                time_val = str(r.get("Time") or r.get("Trade Date") or r.get("วันที่ปิดไม้ (Date)") or "")
-                
+            if qty > 0 and price > 0:
                 orders.append({
                     "Time": time_val,
                     "Symbol": sym,
                     "Side": side,
                     "Qty": qty,
-                    "Price": price,
-                    "Broker": "Webull"
+                    "Price": price
                 })
     except Exception as e:
-        st.warning(f"คำเตือนการอ่านชีท Webull_Order_History: {e}")
+        st.warning(f"อ่านชีท Webull_Order_History ไม่สำเร็จ: {e}")
         
     df_orders = pd.DataFrame(orders)
-    if df_orders.empty: return pd.DataFrame()
+    if df_orders.empty:
+        return pd.DataFrame()
     
     df_sorted = df_orders.sort_values(by=["Time"], ascending=True).copy()
     closed_trades = []
     
-    # FIFO Calculation
+    # ระบบ FIFO Matching
     for symbol, group in df_sorted.groupby("Symbol"):
         buy_queue = []
         for _, row in group.iterrows():
@@ -119,7 +127,7 @@ def get_historical_realized_pnl(gc):
     return pd.DataFrame()
 
 # ==========================================
-# 2. ดึงสถานะติดดอยปัจจุบัน (Unrealized PnL)
+# 2. ฟังก์ชันดึงสถานะติดดอยปัจจุบัน (Unrealized PnL)
 # ==========================================
 def get_current_unrealized_pnl(gc):
     if not gc: return pd.DataFrame()
@@ -132,17 +140,18 @@ def get_current_unrealized_pnl(gc):
                 records = ws.get_all_records()
                 for r in records:
                     sym = str(r.get("หุ้น (Ticker)") or r.get("Symbol") or r.get("Symbol & Name") or "").strip().upper()
+                    if not sym: continue
                     if " " in sym:
                         sym = sym.split(" ")[0]
                         
-                    if sym:
-                        qty = float(r.get("จำนวนหุ้น (Volume)") or r.get("Quantity") or r.get("Qty") or 0)
-                        avg_cost = float(r.get("ต้นทุนเฉลี่ย (Avg Cost)") or r.get("AVERAGE PRICE") or r.get("Cost") or 0)
-                        current_price = float(r.get("ราคาปัจจุบัน") or r.get("Closing Price") or r.get("Last Price") or avg_cost)
+                    try:
+                        qty = float(str(r.get("จำนวนหุ้น (Volume)") or r.get("Quantity") or r.get("Qty") or 0).replace(",", ""))
+                        avg_cost = float(str(r.get("ต้นทุนเฉลี่ย (Avg Cost)") or r.get("AVERAGE PRICE") or r.get("Cost") or 0).replace(",", ""))
+                        current_price = float(str(r.get("ราคาปัจจุบัน") or r.get("Closing Price") or r.get("Last Price") or avg_cost).replace(",", ""))
                         
                         unrealized_pnl = (current_price - avg_cost) * qty
                         
-                        raw_pnl = r.get("Unrealized P/L") or r.get("PnL") or r.get("Unrealized P/L")
+                        raw_pnl = r.get("Unrealized P/L") or r.get("PnL")
                         if raw_pnl != "" and raw_pnl is not None:
                             try: unrealized_pnl = float(str(raw_pnl).replace(",", ""))
                             except: pass
@@ -151,6 +160,8 @@ def get_current_unrealized_pnl(gc):
                             "Symbol": sym,
                             "Unrealized PnL ($)": unrealized_pnl
                         })
+                    except:
+                        continue
             except:
                 continue
     except:
@@ -166,62 +177,64 @@ def color_pnl(val):
     color = '#00c853' if val > 0 else ('#ff3d00' if val < 0 else '#848e9c')
     return f'color: {color}; font-weight: bold;'
 
-with st.spinner("⏳ กำลังรวมข้อมูลอดีตและปัจจุบันเพื่อหาความจริง..."):
-    gc = init_gsheet()
-    
-    df_realized = get_historical_realized_pnl(gc)
-    df_unrealized = get_current_unrealized_pnl(gc)
-    
-    if not df_realized.empty or not df_unrealized.empty:
-        if df_realized.empty:
-            df_net = df_unrealized.copy()
-            df_net["Realized PnL ($)"] = 0.0
-        elif df_unrealized.empty:
-            df_net = df_realized.copy()
-            df_net["Unrealized PnL ($)"] = 0.0
-        else:
-            df_net = pd.merge(df_realized, df_unrealized, on="Symbol", how="outer").fillna(0.0)
-            
-        df_net["True Net PnL ($)"] = df_net["Realized PnL ($)"] + df_net["Unrealized PnL ($)"]
-        
-        df_net = df_net[(df_net["Realized PnL ($)"] != 0) | (df_net["Unrealized PnL ($)"] != 0)]
-        df_net = df_net.sort_values(by="True Net PnL ($)", ascending=False)
-        
-        total_realized = df_net["Realized PnL ($)"].sum()
-        total_unrealized = df_net["Unrealized PnL ($)"].sum()
-        grand_total_net = df_net["True Net PnL ($)"].sum()
-        
-        tab1, tab2 = st.tabs(["🔥 สรุปความจริงรายหุ้น (True Net PnL)", "📜 ประวัติออเดอร์ดิบ"])
-        
-        with tab1:
-            net_class = "pnl-positive" if grand_total_net >= 0 else "pnl-negative"
-            net_prefix = "+" if grand_total_net >= 0 else ""
-            
-            c1, c2, c3 = st.columns(3)
-            with c1:
-                st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไรที่ปิดไปแล้ว (อดีต)</div><div class="metric-value pnl-positive">+${total_realized:,.2f}</div></div>', unsafe_allow_html=True)
-            with c2:
-                st.markdown(f'<div class="metric-container"><div class="metric-label">📉 สถานะติดดอย (ปัจจุบัน)</div><div class="metric-value pnl-negative">${total_unrealized:,.2f}</div></div>', unsafe_allow_html=True)
-            with c3:
-                st.markdown(f'<div class="metric-container"><div class="metric-label">⚖️ ผลประกอบการสุทธิของแท้!</div><div class="metric-value {net_class}">{net_prefix}${grand_total_net:,.2f}</div></div>', unsafe_allow_html=True)
-                
-            st.markdown("---")
-            st.markdown("*(ตารางนี้รวม **กำไรที่เคยได้ในอดีต** เข้ากับ **ขาดทุนที่ถืออยู่ในปัจจุบัน** เพื่อหาว่าหุ้นตัวไหนสูบเงินคุณไปจริงๆ)*")
-            
-            df_show = df_net[["Symbol", "Realized PnL ($)", "Unrealized PnL ($)", "True Net PnL ($)"]]
-            df_show.columns = ["ชื่อหุ้น", "กำไรอดีต (ปิดแล้ว)", "สถานะปัจจุบัน (ติดดอย/กำไร)", "สุทธิของแท้ (Net PnL)"]
-            
-            st.dataframe(
-                df_show.style.map(color_pnl, subset=["กำไรอดีต (ปิดแล้ว)", "สถานะปัจจุบัน (ติดดอย/กำไร)", "สุทธิของแท้ (Net PnL)"])
-                .format({
-                    "กำไรอดีต (ปิดแล้ว)": "${:,.2f}",
-                    "สถานะปัจจุบัน (ติดดอย/กำไร)": "${:,.2f}",
-                    "สุทธิของแท้ (Net PnL)": "${:,.2f}"
-                }),
-                use_container_width=True
-            )
-            
-        with tab2:
-            st.info("ระบบกำลังแสดงผลแบบ Net PnL (ไปดูที่แท็บแรกได้เลยครับ)")
+# ดึงข้อมูลทั้งหมดมาประมวลผล
+gc = init_gsheet()
+df_realized = get_historical_realized_pnl(gc)
+df_unrealized = get_current_unrealized_pnl(gc)
+
+if not df_realized.empty or not df_unrealized.empty:
+    if df_realized.empty:
+        df_net = df_unrealized.copy()
+        df_net["Realized PnL ($)"] = 0.0
+    elif df_unrealized.empty:
+        df_net = df_realized.copy()
+        df_net["Unrealized PnL ($)"] = 0.0
     else:
-        st.warning("ไม่พบข้อมูลการเทรด หรือยังไม่มีการระบุสถานะพอร์ตปัจจุบันใน Google Sheet")
+        df_net = pd.merge(df_realized, df_unrealized, on="Symbol", how="outer").fillna(0.0)
+        
+    df_net["True Net PnL ($)"] = df_net["Realized PnL ($)"] + df_net["Unrealized PnL ($)"]
+    
+    # บังคับโชว์ทุกหุ้นที่มีข้อมูล
+    df_net = df_net.sort_values(by="True Net PnL ($)", ascending=False)
+    
+    total_realized = df_net["Realized PnL ($)"].sum()
+    total_unrealized = df_net["Unrealized PnL ($)"].sum()
+    grand_total_net = df_net["True Net PnL ($)"].sum()
+    
+    tab1, tab2 = st.tabs(["🔥 สรุปความจริงรายหุ้น (True Net PnL)", "📜 ข้อมูลดิบที่ระบบอ่านได้"])
+    
+    with tab1:
+        net_class = "pnl-positive" if grand_total_net >= 0 else "pnl-negative"
+        net_prefix = "+" if grand_total_net >= 0 else ""
+        
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไรที่ปิดไปแล้ว (อดีต)</div><div class="metric-value pnl-positive">+${total_realized:,.2f}</div></div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'<div class="metric-container"><div class="metric-label">📉 สถานะติดดอย (ปัจจุบัน)</div><div class="metric-value pnl-negative">${total_unrealized:,.2f}</div></div>', unsafe_allow_html=True)
+        with c3:
+            st.markdown(f'<div class="metric-container"><div class="metric-label">⚖️ ผลประกอบการสุทธิของแท้!</div><div class="metric-value {net_class}">{net_prefix}${grand_total_net:,.2f}</div></div>', unsafe_allow_html=True)
+            
+        st.markdown("---")
+        st.markdown("*(ตารางนี้รวม **กำไรอดีต** เข้ากับ **ขาดทุนปัจจุบัน** เพื่อแสดง Net PnL ที่แท้จริงรายตัว)*")
+        
+        df_show = df_net[["Symbol", "Realized PnL ($)", "Unrealized PnL ($)", "True Net PnL ($)"]]
+        df_show.columns = ["ชื่อหุ้น", "กำไรอดีต (ปิดแล้ว)", "สถานะปัจจุบัน (ติดดอย/กำไร)", "สุทธิของแท้ (Net PnL)"]
+        
+        st.dataframe(
+            df_show.style.map(color_pnl, subset=["กำไรอดีต (ปิดแล้ว)", "สถานะปัจจุบัน (ติดดอย/กำไร)", "สุทธิของแท้ (Net PnL)"])
+            .format({
+                "กำไรอดีต (ปิดแล้ว)": "${:,.2f}",
+                "สถานะปัจจุบัน (ติดดอย/กำไร)": "${:,.2f}",
+                "สุทธิของแท้ (Net PnL)": "${:,.2f}"
+            }),
+            use_container_width=True
+        )
+        
+    with tab2:
+        st.subheader("ประวัติ Realized แยกรายตัว")
+        st.dataframe(df_realized, use_container_width=True)
+        st.subheader("สถานะ Unrealized แยกรายตัว")
+        st.dataframe(df_unrealized, use_container_width=True)
+else:
+    st.error("⚠️ ไม่สามารถดึงข้อมูลหุ้นจาก Google Sheet ได้ กรุณาตรวจสอบชื่อแท็บ (Webull_Order_History, Dime_Portfolio) หรือสิทธิ์การเข้าถึงอีกครั้งครับ!")
