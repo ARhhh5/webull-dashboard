@@ -42,9 +42,9 @@ def load_google_sheet_data():
     if not gc:
         return pd.DataFrame(), pd.DataFrame()
     try:
-        sh = gc.open("Webull_Portfolio") # ชื่อชีทหลักตามระบบ
+        sh = gc.open("Webull_Portfolio")
         
-        # โหลด Closed Trades ถ้ามี
+        # โหลด Closed_Trades
         try:
             worksheet_closed = sh.worksheet("Closed_Trades")
             data_closed = worksheet_closed.get_all_records()
@@ -74,26 +74,25 @@ with tab1:
     if not df_closed_raw.empty:
         df = df_closed_raw.copy()
         
-        # แปลงข้อมูลตัวเลขให้ชัวร์
+        # แปลงข้อมูลตัวเลขให้ปลอดภัย
         for col in ["Qty", "Buy_Price", "Sell_Price", "Realized_PnL"]:
             if col in df.columns:
                 df[col] = pd.to_numeric(df[col], errors="coerce").fillna(0.0)
             else:
                 df[col] = 0.0
                 
-        # หากลุ่มคำนวณตาม Symbol
-        # สูตรที่ถูกต้อง: Realized PnL = (ราคาขาย - ราคาซื้อ) * จำนวนหุ้น (ปรับตามทิศทาง Buy/Sell จริง)
+        # จัดกลุ่มคำนวณตาม Symbol
         grouped_data = []
         for symbol, group in df.groupby("Symbol"):
             total_qty = group["Qty"].sum()
-            # คำนวณราคาเฉลี่ยถ่วงน้ำหนัก
             total_buy_val = (group["Buy_Price"] * group["Qty"]).sum()
             total_sell_val = (group["Sell_Price"] * group["Qty"]).sum()
             
             avg_buy = total_buy_val / total_qty if total_qty > 0 else 0
             avg_sell = total_sell_val / total_qty if total_qty > 0 else 0
             
-            # คำนวณกำไรขาดทุนที่แท้จริง (ขาย - ซื้อ) * จำนวน
+            # สูตรคำนวณกำไร/ขาดทุนที่ถูกต้อง: (ราคาขาย - ราคาซื้อ) * จำนวนหุ้น
+            # ถ้าขายต่ำกว่าซื้อ ตัวเลขจะติดลบอัตโนมัติอย่างถูกต้อง
             total_pnl = (avg_sell - avg_buy) * total_qty
             return_pct = ((avg_sell - avg_buy) / avg_buy * 100) if avg_buy > 0 else 0.0
             
@@ -149,6 +148,12 @@ with tab2:
     st.markdown("### ประวัติออเดอร์ทั้งหมดจาก Google Sheet")
     if not df_webull_raw.empty:
         df_raw_display = df_webull_raw.sort_values(by="Time", ascending=False).copy()
-        st.dataframe(df_raw_display, use_container_width=True)
+        st.dataframe(
+            df_raw_display.style.format({
+                "Qty": "{:,.2f}" if "Qty" in df_raw_display.columns else "{}",
+                "Price": "${:,.2f}" if "Price" in df_raw_display.columns else "{}"
+            }), 
+            use_container_width=True
+        )
     else:
         st.info("ไม่พบข้อมูลออเดอร์ดิบในระบบ")
