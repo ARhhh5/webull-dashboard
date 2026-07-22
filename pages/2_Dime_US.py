@@ -26,18 +26,26 @@ st.markdown("""
 st.title("🇺🇸 พอร์ตหุ้นสหรัฐฯ (Dime!)")
 st.markdown("---")
 
-# ==========================================
-# ฟังก์ชันดึงราคาตลาดปัจจุบันสดๆ แบบ Bulk Download
-# ==========================================
+def clean_num(val):
+    """ฟังก์ชันแปลงข้อความตัวเลขให้เป็น float ที่ปลอดภัย 100%"""
+    if pd.isna(val) or val is None:
+        return 0.0
+    try:
+        s = str(val).replace("$", "").replace(",", "").strip()
+        return float(s)
+    except:
+        return 0.0
+
 @st.cache_data(ttl=120)
 def fetch_us_live_prices(symbols):
+    """ดึงราคาตลาดปัจจุบันสดๆ รองรับหุ้นทุกตัวรวมถึง IMN"""
     prices = {}
     if not symbols:
         return prices
         
-    clean_syms = list(set([str(s).upper().strip() for s in symbols if s]))
+    clean_syms = list(set([str(s).upper().strip() for s in symbols if str(s).strip()]))
     
-    # 1. Bulk Download
+    # 1. ลอง Bulk Download
     try:
         data = yf.download(tickers=clean_syms, period="5d", interval="1d", progress=False)
         if not data.empty and 'Close' in data:
@@ -52,33 +60,27 @@ def fetch_us_live_prices(symbols):
                         prices[sym] = float(val)
                 except:
                     pass
-    except Exception as e:
+    except Exception:
         pass
 
-    # 2. Backup Fallback
+    # 2. Fallback สแกนรายตัวแบบละเอียดถ้า Bulk ไม่เจอราคา
     for sym in clean_syms:
         if prices.get(sym, 0.0) == 0.0:
             try:
-                ticker = yf.Ticker(sym)
-                hist = ticker.history(period="5d")
-                if not hist.empty:
-                    last_price = float(hist['Close'].iloc[-1])
-                    if last_price > 0:
-                        prices[sym] = last_price
+                t = yf.Ticker(sym)
+                price = t.fast_info.get('last_price') or t.info.get('regularMarketPrice') or t.info.get('currentPrice')
+                if price and float(price) > 0:
+                    prices[sym] = float(price)
+                else:
+                    hist = t.history(period="5d")
+                    if not hist.empty:
+                        last_p = float(hist['Close'].iloc[-1])
+                        if last_p > 0:
+                            prices[sym] = last_p
             except:
                 pass
                 
     return prices
-
-def clean_num(val):
-    """ฟังก์ชันแปลงข้อความตัวเลขให้เป็น float ที่ปลอดภัย 100%"""
-    if pd.isna(val) or val is None:
-        return 0.0
-    try:
-        s = str(val).replace("$", "").replace(",", "").strip()
-        return float(s)
-    except:
-        return 0.0
 
 def get_dime_us_data():
     holdings = []
@@ -119,10 +121,10 @@ def get_dime_us_data():
                     
                     if qty <= 0: continue
                     
-                    # ดึงราคาตลาดเรียลไทม์
+                    # ดึงราคาปัจจุบัน
                     current_price = live_prices.get(sym, 0.0)
                     if current_price == 0.0:
-                        current_price = avg_cost # กรณีหาไม่เจอจริงๆ
+                        current_price = avg_cost # ดักกรณีหาไม่เจอจริงๆ
                     
                     invested = qty * avg_cost
                     market_val = qty * current_price
@@ -141,7 +143,7 @@ def get_dime_us_data():
                         "PnL": pnl,
                         "PnL_Pct": pnl_pct
                     })
-                except Exception as e:
+                except Exception:
                     continue
                     
     except Exception as e:
@@ -149,11 +151,14 @@ def get_dime_us_data():
         
     return pd.DataFrame(holdings)
 
-def color_pnl(val):
-    if isinstance(val, (int, float)):
-        color = '#00c853' if val > 0 else ('#ff3d00' if val < 0 else '#848e9c')
-        return f'color: {color}; font-weight: bold;'
-    return ''
+def color_pnl_text(val):
+    """ฟังก์ชันใส่สีข้อความตามค่าบวก/ลบ"""
+    if isinstance(val, str):
+        if val.startswith("+"):
+            return 'color: #00c853; font-weight: bold;'
+        elif val.startswith("-"):
+            return 'color: #ff3d00; font-weight: bold;'
+    return 'color: #848e9c;'
 
 # โหลดข้อมูลพอร์ต Dime US
 with st.spinner("⏳ กำลังดึงราคาหุ้นสหรัฐฯ เรียลไทม์..."):
@@ -180,11 +185,14 @@ if not df.empty:
     
     # จัดตารางแสดงผลเรียงตามมูลค่าตลาด
     df_display = df.sort_values(by="มูลค่าตลาด ($)", ascending=False).copy()
-    df_display["กำไร/ขาดทุนสุทธิ"] = df_display.apply(lambda r: f"{'+' if r['PnL']>=0 else ''}${r['PnL']:,.2f} ({r['PnL_Pct']:+.2f}%)", axis=1)
+    df_display["กำไร/ขาดทุนสุทธิ"] = df_display.apply(
+        lambda r: f"{'+' if r['PnL']>0 else ('' if r['PnL']==0 else '-')}${abs(r['PnL']):,.2f} ({r['PnL_Pct']:+.2f}%)", 
+        axis=1
+    )
     
     st.dataframe(
         df_display[["หุ้น US", "จำนวนหุ้น", "ต้นทุนเฉลี่ย", "ราคาปัจจุบัน", "มูลค่าลงทุน ($)", "มูลค่าตลาด ($)", "กำไร/ขาดทุนสุทธิ"]]
-        .style.map(color_pnl, subset=["กำไร/ขาดทุนสุทธิ"])
+        .style.map(color_pnl_text, subset=["กำไร/ขาดทุนสุทธิ"])
         .format({
             "จำนวนหุ้น": "{:,.4f}",
             "ต้นทุนเฉลี่ย": "${:,.2f}",
