@@ -1,11 +1,20 @@
-import streamlit as st
-import pandas as pd
-import yfinance as yf
+import os
 import json
 import base64
+import urllib.parse
+import http.client
+import uuid
+import hmac
+import hashlib
+import streamlit as st
+import pandas as pd
+import plotly.express as px
+import yfinance as yf
 import gspread
+from datetime import datetime, timezone
 
-st.set_page_config(page_title="Dime! Thai Portfolio", layout="wide")
+# 1. ตั้งค่าหน้าตา Dashboard
+st.set_page_config(page_title="Master Portfolio Dashboard", layout="wide")
 
 st.markdown("""
     <style>
@@ -14,6 +23,7 @@ st.markdown("""
         padding: 20px;
         border-radius: 10px;
         border: 1px solid #2a2e39;
+        box-shadow: 0 4px 6px rgba(0, 0, 0, 0.1);
         text-align: center;
     }
     .metric-label { color: #848e9c; font-size: 16px; font-weight: 500; margin-bottom: 8px; }
@@ -23,196 +33,195 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🇹🇭 พอร์ตหุ้นไทย (Dime!)")
+st.title("📊 Master Dashboard: วิเคราะห์พอร์ตโฟลิโอรวม")
 st.markdown("---")
 
 def clean_num(val):
-    """ฟังก์ชันแปลงข้อความตัวเลขให้เป็น float ที่ปลอดภัย 100%"""
     if pd.isna(val) or val is None:
         return 0.0
     try:
-        s = str(val).replace("฿", "").replace(",", "").strip()
+        s = str(val).replace("$", "").replace("฿", "").replace(",", "").strip()
         return float(s)
     except:
         return 0.0
 
-@st.cache_data(ttl=120)
-def fetch_th_live_prices(symbols):
-    """ดึงราคาตลาดปัจจุบันสดๆ ของหุ้นไทยผ่าน yfinance (เติม .BK อัตโนมัติ)"""
-    prices = {}
-    if not symbols:
-        return prices
-        
-    clean_syms = []
-    sym_map = {}
-    for s in symbols:
-        raw_s = str(s).upper().strip()
-        if raw_s:
-            yf_sym = raw_s if raw_s.endswith(".BK") else f"{raw_s}.BK"
-            clean_syms.append(yf_sym)
-            sym_map[yf_sym] = raw_s
-            
-    # 1. Bulk Download
+@st.cache_data(ttl=3600)
+def get_usd_thb_rate():
     try:
-        data = yf.download(tickers=clean_syms, period="5d", interval="1d", progress=False)
-        if not data.empty and 'Close' in data:
-            close_df = data['Close']
-            for yf_s in clean_syms:
-                orig_s = sym_map[yf_s]
-                try:
-                    if len(clean_syms) == 1:
-                        val = close_df.dropna().iloc[-1]
-                    else:
-                        val = close_df[yf_s].dropna().iloc[-1]
-                    if pd.notna(val) and float(val) > 0:
-                        prices[orig_s] = float(val)
-                except:
-                    pass
-    except Exception:
-        pass
+        ticker = yf.Ticker("USDTHB=X")
+        rate = ticker.fast_info.get('last_price') or ticker.info.get('regularMarketPrice') or 35.0
+        return float(rate)
+    except:
+        return 35.0
 
-    # 2. Fallback สแกนรายตัวกรณี Bulk ดึงไม่ได้
-    for yf_s in clean_syms:
-        orig_s = sym_map[yf_s]
-        if prices.get(orig_s, 0.0) == 0.0:
-            try:
-                t = yf.Ticker(yf_s)
-                price = t.fast_info.get('last_price') or t.info.get('regularMarketPrice') or t.info.get('currentPrice')
-                if price and float(price) > 0:
-                    prices[orig_s] = float(price)
-                else:
-                    hist = t.history(period="5d")
-                    if not hist.empty:
-                        last_p = float(hist['Close'].iloc[-1])
-                        if last_p > 0:
-                            prices[orig_s] = last_p
-            except:
-                pass
-                
-    return prices
+fx_rate = get_usd_thb_rate()
 
-def get_dime_th_data():
-    holdings = []
+@st.cache_resource
+def init_gsheet():
     try:
         google_secrets = st.secrets.get("Google", {})
         cred_base64 = google_secrets.get("credentials_base64", "")
-        if cred_base64:
-            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
-            gc = gspread.service_account_from_dict(cred_dict)
-            sh = gc.open("หุ้นของเรา")
-            worksheet = sh.worksheet("Dime_TH_Portfolio")
-            records = worksheet.get_all_records()
-            
-            if not records:
-                return pd.DataFrame()
-                
-            df_raw = pd.DataFrame(records)
-            
-            sym_col = next((c for c in df_raw.columns if 'ticker' in str(c).lower() or 'symbol' in str(c).lower() or 'หุ้น' in str(c)), None)
-            qty_col = next((c for c in df_raw.columns if 'volume' in str(c).lower() or 'qty' in str(c).lower() or 'จำนวน' in str(c)), None)
-            cost_col = next((c for c in df_raw.columns if 'cost' in str(c).lower() or 'ต้นทุน' in str(c)), None)
-            
-            if not sym_col or not qty_col or not cost_col:
-                st.error("❌ ไม่พบคอลัมน์ข้อมูลหุ้น/จำนวน/ต้นทุน ในชีท Dime_TH_Portfolio")
-                return pd.DataFrame()
+        if not cred_base64: return None
+        cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
+        gc = gspread.service_account_from_dict(cred_dict)
+        return gc.open("หุ้นของเรา")
+    except Exception as e:
+        st.error(f"⚠️ เกิดข้อผิดพลาดในการเชื่อมต่อ Google Sheets: {e}")
+        return None
 
-            symbols = [str(r[sym_col]).strip().upper().split(" ")[0] for _, r in df_raw.iterrows() if str(r[sym_col]).strip()]
-            live_prices = fetch_th_live_prices(symbols)
+sh = init_gsheet()
 
-            for _, r in df_raw.iterrows():
-                sym = str(r.get(sym_col, "")).strip().upper()
-                if not sym: continue
-                if " " in sym: sym = sym.split(" ")[0]
-                
+# --- ดึงข้อมูลจากโบรกเกอร์ต่างๆ ---
+def load_all_portfolios():
+    all_holdings = []
+    
+    if not sh:
+        return pd.DataFrame()
+
+    # 1. ดึงข้อมูล Dime US
+    try:
+        ws_us = sh.worksheet("Dime_Portfolio")
+        rec_us = ws_us.get_all_records()
+        if rec_us:
+            df_us = pd.DataFrame(rec_us)
+            sym_col = next((c for c in df_us.columns if 'ticker' in str(c).lower() or 'symbol' in str(c).lower() or 'หุ้น' in str(c)), None)
+            qty_col = next((c for c in df_us.columns if 'volume' in str(c).lower() or 'qty' in str(c).lower() or 'จำนวน' in str(c)), None)
+            cost_col = next((c for c in df_us.columns if 'cost' in str(c).lower() or 'ต้นทุน' in str(c)), None)
+
+            if sym_col and qty_col and cost_col:
+                syms = [str(r[sym_col]).strip().upper() for _, r in df_us.iterrows() if str(r[sym_col]).strip()]
+                prices = {}
                 try:
-                    qty = clean_num(r.get(qty_col, 0))
-                    avg_cost = clean_num(r.get(cost_col, 0))
-                    
+                    t_data = yf.download(tickers=syms, period="5d", interval="1d", progress=False)
+                    if not t_data.empty and 'Close' in t_data:
+                        for s in syms:
+                            try:
+                                val = t_data['Close'][s].dropna().iloc[-1] if len(syms) > 1 else t_data['Close'].dropna().iloc[-1]
+                                prices[s] = float(val)
+                            except: pass
+                except: pass
+
+                for _, r in df_us.iterrows():
+                    sym = str(r[sym_col]).strip().upper()
+                    if not sym: continue
+                    qty = clean_num(r[qty_col])
+                    avg_cost = clean_num(r[cost_col])
                     if qty <= 0: continue
                     
-                    current_price = live_prices.get(sym, 0.0)
-                    if current_price == 0.0:
-                        current_price = avg_cost # กรณีหาไม่เจอใช้ต้นทุนสำรอง
-                    
+                    p_now = prices.get(sym, avg_cost)
                     invested = qty * avg_cost
-                    market_val = qty * current_price
-                    
+                    market_val = qty * p_now
                     pnl = market_val - invested
                     pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
-                    
-                    holdings.append({
-                        "หุ้น TH": sym,
-                        "จำนวนหุ้น": qty,
-                        "ต้นทุนเฉลี่ย": avg_cost,
-                        "ราคาปัจจุบัน": current_price,
-                        "มูลค่าลงทุน (฿)": invested,
-                        "มูลค่าตลาด (฿)": market_val,
+
+                    all_holdings.append({
+                        "Broker": "Dime US",
+                        "Symbol": sym,
+                        "Qty": qty,
+                        "Avg_Cost": avg_cost,
+                        "Current_Price": p_now,
+                        "Invested_USD": invested,
+                        "Market_Val_USD": market_val,
                         "PnL": pnl,
-                        "PnL_Pct": pnl_pct
+                        "PnL_Pct": pnl_pct,
+                        "Sector": "US Equities"
                     })
-                except Exception:
-                    continue
-                    
     except Exception as e:
-        st.error(f"⚠️ เกิดข้อผิดพลาดในการโหลดข้อมูล Dime TH: {e}")
-        
-    return pd.DataFrame(holdings)
+        pass
 
-# โหลดข้อมูลพอร์ต Dime TH
-with st.spinner("⏳ กำลังดึงราคาหุ้นไทยเรียลไทม์..."):
-    df = get_dime_th_data()
+    # 2. ดึงข้อมูล Dime TH (แปลงเป็น USD เพื่อสรุป Master Dashboard)
+    try:
+        ws_th = sh.worksheet("Dime_TH_Portfolio")
+        rec_th = ws_th.get_all_records()
+        if rec_th:
+            df_th = pd.DataFrame(rec_th)
+            sym_col = next((c for c in df_th.columns if 'ticker' in str(c).lower() or 'symbol' in str(c).lower() or 'หุ้น' in str(c)), None)
+            qty_col = next((c for c in df_th.columns if 'volume' in str(c).lower() or 'qty' in str(c).lower() or 'จำนวน' in str(c)), None)
+            cost_col = next((c for c in df_th.columns if 'cost' in str(c).lower() or 'ต้นทุน' in str(c)), None)
 
-if not df.empty:
-    total_invested = df["มูลค่าลงทุน (฿)"].sum()
-    total_market = df["มูลค่าตลาด (฿)"].sum()
-    total_pnl = total_market - total_invested
+            if sym_col and qty_col and cost_col:
+                syms = [f"{str(r[sym_col]).strip().upper()}.BK" for _, r in df_th.iterrows() if str(r[sym_col]).strip()]
+                prices = {}
+                try:
+                    t_data = yf.download(tickers=syms, period="5d", interval="1d", progress=False)
+                    if not t_data.empty and 'Close' in t_data:
+                        for s in syms:
+                            orig = s.replace(".BK", "")
+                            try:
+                                val = t_data['Close'][s].dropna().iloc[-1] if len(syms) > 1 else t_data['Close'].dropna().iloc[-1]
+                                prices[orig] = float(val)
+                            except: pass
+                except: pass
+
+                for _, r in df_th.iterrows():
+                    sym = str(r[sym_col]).strip().upper()
+                    if not sym: continue
+                    qty = clean_num(r[qty_col])
+                    avg_cost_thb = clean_num(r[cost_col])
+                    if qty <= 0: continue
+                    
+                    p_now_thb = prices.get(sym, avg_cost_thb)
+                    invested_thb = qty * avg_cost_thb
+                    market_val_thb = qty * p_now_thb
+                    pnl_thb = market_val_thb - invested_thb
+                    pnl_pct = (pnl_thb / invested_thb * 100) if invested_thb > 0 else 0.0
+
+                    all_holdings.append({
+                        "Broker": "Dime TH",
+                        "Symbol": sym,
+                        "Qty": qty,
+                        "Avg_Cost": avg_cost_thb / fx_rate,
+                        "Current_Price": p_now_thb / fx_rate,
+                        "Invested_USD": invested_thb / fx_rate,
+                        "Market_Val_USD": market_val_thb / fx_rate,
+                        "PnL": pnl_thb / fx_rate,
+                        "PnL_Pct": pnl_pct,
+                        "Sector": "Thai Equities"
+                    })
+    except Exception as e:
+        pass
+
+    return pd.DataFrame(all_holdings)
+
+# โหลดข้อมูลพอร์ตทั้งหมด
+with st.spinner("⏳ กำลังโหลดและประมวลผลข้อมูลพอร์ตโฟลิโอภาพรวม..."):
+    df_port = load_all_portfolios()
+
+if not df_port.empty:
+    total_invested = df_port["Invested_USD"].sum()
+    total_market_val = df_port["Market_Val_USD"].sum()
+    total_pnl = total_market_val - total_invested
     total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0.0
-    
+
     pnl_class = "pnl-positive" if total_pnl >= 0 else "pnl-negative"
     pnl_prefix = "+" if total_pnl >= 0 else ""
-    
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        st.markdown(f'<div class="metric-container"><div class="metric-label">💵 เงินลงทุนรวม</div><div class="metric-value">฿{total_invested:,.2f}</div></div>', unsafe_allow_html=True)
-    with c2:
-        st.markdown(f'<div class="metric-container"><div class="metric-label">📈 มูลค่าตลาดรวม (ปัจจุบัน)</div><div class="metric-value">฿{total_market:,.2f}</div></div>', unsafe_allow_html=True)
-    with c3:
-        st.markdown(f'<div class="metric-container"><div class="metric-label">📊 กำไร / ขาดทุนสุทธิ</div><div class="metric-value {pnl_class}">{pnl_prefix}฿{total_pnl:,.2f} ({total_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
-        
-    st.markdown("---")
-    
-    # จัดตารางแสดงผลเรียงตามมูลค่าตลาด
-    df_display = df.sort_values(by="มูลค่าตลาด (฿)", ascending=False).copy()
-    
-    # ฟอร์แมตข้อความแสดงผล
-    df_display["กำไร/ขาดทุนสุทธิ"] = df_display.apply(
-        lambda r: f"{'+' if r['PnL']>0 else ('' if r['PnL']==0 else '-') }฿{abs(r['PnL']):,.2f} ({r['PnL_Pct']:+.2f}%)", 
-        axis=1
-    )
-    
-    # ฟังก์ชันใส่สีตารางระดับ Element-wise อิงจากค่า PnL จริง
-    def apply_color(row):
-        pnl_val = row["PnL"]
-        if pnl_val > 0:
-            color = 'color: #00c853; font-weight: bold;'
-        elif pnl_val < 0:
-            color = 'color: #ff3d00; font-weight: bold;'
-        else:
-            color = 'color: #848e9c;'
-        
-        return [color if col == "กำไร/ขาดทุนสุทธิ" else '' for col in row.index]
 
-    st.dataframe(
-        df_display[["หุ้น TH", "จำนวนหุ้น", "ต้นทุนเฉลี่ย", "ราคาปัจจุบัน", "มูลค่าลงทุน (฿)", "มูลค่าตลาด (฿)", "กำไร/ขาดทุนสุทธิ"]]
-        .style.apply(apply_color, axis=1)
-        .format({
-            "จำนวนหุ้น": "{:,.2f}",
-            "ต้นทุนเฉลี่ย": "฿{:,.2f}",
-            "ราคาปัจจุบัน": "฿{:,.2f}",
-            "มูลค่าลงทุน (฿)": "฿{:,.2f}",
-            "มูลค่าตลาด (฿)": "฿{:,.2f}"
-        }),
-        use_container_width=True
-    )
-else:
-    st.info("⚠️ ไม่พบข้อมูลหุ้นในพอร์ต Dime TH หรือยังไม่ได้บันทึกข้อมูลใน Google Sheets แท็บ Dime_TH_Portfolio")
+    col1, col2, col3 = st.columns(3)
+    with col1:
+        st.markdown(f'<div class="metric-container"><div class="metric-label">💵 เงินลงทุนรวมทั้งหมด ($ USD)</div><div class="metric-value">${total_invested:,.2f}</div></div>', unsafe_allow_html=True)
+    with col2:
+        st.markdown(f'<div class="metric-container"><div class="metric-label">📈 มูลค่าพอร์ตรวมปัจจุบัน ($ USD)</div><div class="metric-value">${total_market_val:,.2f}</div></div>', unsafe_allow_html=True)
+    with col3:
+        st.markdown(f'<div class="metric-container"><div class="metric-label">📊 กำไร / ขาดทุนสุทธิรวม</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_pnl:,.2f} ({total_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
+
+    st.markdown("---")
+
+    # --- กราฟวิเคราะห์พอร์ต ---
+    col1, col2 = st.columns(2)
+    with col1:
+        st.subheader("🥧 สัดส่วนเงินลงทุนแยกตามโบรกเกอร์ / พอร์ต")
+        df_broker = df_port.groupby("Broker")["Market_Val_USD"].sum().reset_index()
+        fig_broker = px.pie(
+            df_broker, 
+            values='Market_Val_USD', 
+            names='Broker', 
+            hole=0.4,
+            color_discrete_sequence=px.colors.sequential.Tealgrn
+        )
+        fig_broker.update_layout(paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)", font=dict(color="white"))
+        st.plotly_chart(fig_broker, use_container_width=True)
+
+    with col2:
+        st.subheader("📊 ยอดกำไร / ขาดทุนสุทธิแยกตามโบรกเกอร์")
+        df_pnl_broker = df_port.groupby("Broker")["PnL"].sum().reset_index()
+        df_pnl_broker['Color'] = df_
