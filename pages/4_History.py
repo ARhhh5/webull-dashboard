@@ -9,8 +9,9 @@ import hashlib
 import streamlit as st
 import pandas as pd
 import gspread
+from datetime import datetime, timezone
 
-st.set_page_config(page_title="Trade History & Closed Positions", layout="wide")
+st.set_page_config(page_title="Trade History & Realized PnL", layout="wide")
 
 st.markdown("""
     <style>
@@ -28,7 +29,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📜 ประวัติการเทรด & หุ้นที่ขายปิดจบแล้ว")
+st.title("📜 ประวัติการขาย & กำไร/ขาดทุนที่เกิดขึ้นจริง (Realized PnL)")
 st.markdown("---")
 
 # ==========================================
@@ -220,15 +221,15 @@ def load_all_history_sheets():
 df_webull, df_dime_closed, df_dime_us, df_dime_th = load_all_history_sheets()
 
 tab_closed_only, tab_raw_logs = st.tabs([
-    "🎯 1. หุ้นที่ซื้อขายจบแล้ว (Realized PnL)", 
-    "📜 2. ประวัติคำสั่งซื้อขายแยกตาม Sheet"
+    "🎯 1. ตารางสรุปกำไรจากการขายจริง (Realized PnL)", 
+    "📜 2. ประวัติคำสั่งซื้อขายดิบแยกตาม Sheet"
 ])
 
 # ==========================================
-# แถบที่ 1: สรุปผล Realized PnL
+# แถบที่ 1: เฉพาะหุ้นที่มีการขายเกิดขึ้นจริง (แนวทาง A)
 # ==========================================
 with tab_closed_only:
-    st.markdown("### 📊 สรุปผลกำไร/ขาดทุนจริงสะสมจากการขายหุ้น (Realized PnL)")
+    st.markdown("### 📊 กำไร/ขาดทุนสุทธิเฉพาะไม้ออเดอร์ที่ขายปิดจบแล้ว (Realized PnL)")
     
     closed_summary = []
     
@@ -236,7 +237,6 @@ with tab_closed_only:
         df_w = df_webull.copy()
         df_w.columns = [str(c).strip() for c in df_w.columns]
         
-        # ค้นหาคอลัมน์ชื่อหุ้น, ฝั่งซื้อขาย, จำนวน, และราคา
         sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Symbol')
         side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
         qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
@@ -299,19 +299,24 @@ with tab_closed_only:
                             if b['qty'] <= 0:
                                 buy_queue.pop(0)
                                 
+                # 🎯 สลักสำคัญของแนวทาง A: จะต้องมีจำนวนหุ้นที่ขายจบแล้ว (total_matched_qty > 0) เท่านั้นถึงจะโชว์!
                 if total_matched_qty > 0:
                     avg_buy = total_buy_cost / total_matched_qty
                     avg_sell = total_sell_rev / total_matched_qty
                     ret_pct = (total_realized_pnl / total_buy_cost * 100) if total_buy_cost > 0 else 0.0
                     
+                    remaining_in_queue = sum(b['qty'] for b in buy_queue)
+                    status_text = "ปิดขายเกลี้ยงแล้ว" if remaining_in_queue <= 0.0001 else "ขายแล้วบางส่วน"
+                    
                     closed_summary.append({
                         "ชื่อหุ้น": symbol_clean,
                         "โบรกเกอร์": "Webull",
-                        "จำนวนหุ้นปิดขาย": total_matched_qty,
+                        "จำนวนหุ้นที่ปิดขายแล้ว": total_matched_qty,
                         "ราคาซื้อเฉลี่ย": avg_buy,
                         "ราคาขายเฉลี่ย": avg_sell,
                         "กำไร/ขาดทุนสุทธิ ($)": total_realized_pnl,
-                        "ผลตอบแทน (%)": ret_pct
+                        "ผลตอบแทน (%)": ret_pct,
+                        "สถานะ": status_text
                     })
 
     if not df_dime_closed.empty:
@@ -333,11 +338,12 @@ with tab_closed_only:
                 closed_summary.append({
                     "ชื่อหุ้น": sym,
                     "โบรกเกอร์": "Dime",
-                    "จำนวนหุ้นปิดขาย": qty,
+                    "จำนวนหุ้นที่ปิดขายแล้ว": qty,
                     "ราคาซื้อเฉลี่ย": buy_p,
                     "ราคาขายเฉลี่ย": sell_p,
                     "กำไร/ขาดทุนสุทธิ ($)": pnl,
-                    "ผลตอบแทน (%)": ret_pct
+                    "ผลตอบแทน (%)": ret_pct,
+                    "สถานะ": "ปิดขายเกลี้ยงแล้ว"
                 })
 
     if closed_summary:
@@ -349,9 +355,9 @@ with tab_closed_only:
         
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไร/ขาดทุนสะสมรวม (Realized PnL)</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_pnl:,.2f}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไร/ขาดทุนสะสมรวมจากการขายจริง (Realized PnL)</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_pnl:,.2f}</div></div>', unsafe_allow_html=True)
         with c2:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">🎯 จำนวนหุ้นทั้งหมดที่มีประวัติปิดขาย</div><div class="metric-value">{len(df_closed_res)} ตัว</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">🎯 จำนวนหุ้นที่มีรายการขายสะสม</div><div class="metric-value">{len(df_closed_res)} ตัว</div></div>', unsafe_allow_html=True)
             
         st.markdown("---")
         
@@ -364,7 +370,7 @@ with tab_closed_only:
         st.dataframe(
             df_closed_res.style.map(color_pnl, subset=["กำไร/ขาดทุนสุทธิ ($)", "ผลตอบแทน (%)"])
             .format({
-                "จำนวนหุ้นปิดขาย": "{:,.2f}",
+                "จำนวนหุ้นที่ปิดขายแล้ว": "{:,.2f}",
                 "ราคาซื้อเฉลี่ย": "${:,.2f}",
                 "ราคาขายเฉลี่ย": "${:,.2f}",
                 "กำไร/ขาดทุนสุทธิ ($)": "${:,.2f}",
@@ -373,7 +379,7 @@ with tab_closed_only:
             use_container_width=True
         )
     else:
-        st.info("💡 ยังไม่พบรายการหุ้นที่มีประวัติการขายใน Google Sheet")
+        st.info("💡 ไม่พบรายการหุ้นที่มีการขายเกิดขึ้นในประวัติ")
 
 # ==========================================
 # แถบที่ 2: แสดงข้อมูลดิบจาก 4 Sheets
