@@ -226,7 +226,7 @@ tab_closed_only, tab_raw_logs = st.tabs([
 ])
 
 # ==========================================
-# แถบที่ 1: คำนวณ PnL ตาม Cash Flow จริง ชัดเจน 100%
+# แถบที่ 1: ระบบจับคู่ FIFO บริสุทธิ์ ( First-In, First-Out )
 # ==========================================
 with tab_closed_only:
     st.markdown("### 📊 กำไร/ขาดทุนสุทธิเฉพาะไม้ออเดอร์ที่ขายปิดจบแล้ว (Realized PnL)")
@@ -241,19 +241,23 @@ with tab_closed_only:
         side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
         qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
         price_c = next((c for c in df_w.columns if 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Price')
+        time_c = next((c for c in df_w.columns if 'time' in str(c).lower() or 'date' in str(c).lower() or 'วัน' in str(c)), 'Time')
         
         if all(c in df_w.columns for c in [sym_c, side_c, qty_c, price_c]):
+            # เรียงตามลำดับรายการจริงใน Google Sheet
             for symbol, group in df_w.groupby(sym_c):
                 symbol_clean = str(symbol).strip().upper()
                 if not symbol_clean or symbol_clean == 'NAN': continue
                 
-                total_buy_cash = 0.0
-                total_buy_qty = 0.0
-                total_sell_cash = 0.0
-                total_sell_qty = 0.0
+                buy_queue = []
+                total_realized_pnl = 0.0
+                total_matched_qty = 0.0
+                total_buy_cost = 0.0
+                total_sell_rev = 0.0
                 
                 for _, row in group.iterrows():
                     raw_side = str(row[side_c]).upper().strip()
+                    time_str = str(row.get(time_c, ""))
                     
                     try:
                         qty = float(str(row[qty_c]).replace(",", "").replace("$", "").strip())
@@ -261,33 +265,58 @@ with tab_closed_only:
                     except: continue
                     
                     if qty <= 0 or price <= 0: continue
-                    trade_val = qty * price
+                    
+                    # ปรับอัตราส่วน Reverse Split 1:10 สำหรับ ULTY
+                    if symbol_clean == "ULTY":
+                        is_pre_split = False
+                        try:
+                            order_date = pd.to_datetime(time_str)
+                            if order_date < pd.to_datetime("2025-12-01"):
+                                is_pre_split = True
+                        except:
+                            if "2025" in time_str or len(time_str) > 10:
+                                is_pre_split = True
+                                
+                        if is_pre_split and ("BUY" in raw_side or "ซื้อ" in raw_side):
+                            qty = qty / 10.0
+                            price = price * 10.0
 
                     if "BUY" in raw_side or "ซื้อ" in raw_side:
-                        total_buy_cash += trade_val
-                        total_buy_qty += qty
+                        buy_queue.append({'qty': qty, 'price': price})
                     elif "SELL" in raw_side or "ขาย" in raw_side:
-                        total_sell_cash += trade_val
-                        total_sell_qty += qty
-                
-                # มีรายการขายเกิดขึ้นจริง
-                if total_sell_qty > 0:
-                    avg_sell = total_sell_cash / total_sell_qty if total_sell_qty > 0 else 0.0
-                    avg_buy = (total_buy_cash / total_buy_qty) if total_buy_qty > 0 else avg_sell
-
-                    # สรุปผลกำไร/ขาดทุนจากเงินสดเข้า-ออกจริง
-                    realized_pnl = total_sell_cash - total_buy_cash
-                    ret_pct = (realized_pnl / total_buy_cash * 100) if total_buy_cash > 0 else 0.0
+                        sell_qty_left = qty
+                        while sell_qty_left > 0 and buy_queue:
+                            b = buy_queue[0]
+                            matched_qty = min(sell_qty_left, b['qty'])
+                            
+                            pnl = matched_qty * (price - b['price'])
+                            total_realized_pnl += pnl
+                            total_matched_qty += matched_qty
+                            total_buy_cost += (matched_qty * b['price'])
+                            total_sell_rev += (matched_qty * price)
+                            
+                            sell_qty_left -= matched_qty
+                            b['qty'] -= matched_qty
+                            if b['qty'] <= 0:
+                                buy_queue.pop(0)
+                                
+                if total_matched_qty > 0:
+                    avg_buy = total_buy_cost / total_matched_qty
+                    avg_sell = total_sell_rev / total_matched_qty
+                    ret_pct = (total_realized_pnl / total_buy_cost * 100) if total_buy_cost > 0 else 0.0
+                    
+                    remaining_in_queue = sum(b['qty'] for b in buy_queue)
+                    status_text = "ปิดขายเกลี้ยงแล้ว" if remaining_in_queue < 1.0 else "ขายแล้วบางส่วน"
                     
                     closed_summary.append({
                         "ชื่อหุ้น": symbol_clean,
                         "โบรกเกอร์": "Webull",
-                        "จำนวนหุ้นที่ปิดขายแล้ว": total_sell_qty,
+                        "จำนวนหุ้นที่ปิดขายแล้ว": total_matched_qty,
                         "ราคาซื้อเฉลี่ย": avg_buy,
                         "ราคาขายเฉลี่ย": avg_sell,
-                        "กำไร/ขาดทุนสุทธิ ($)": realized_pnl,
+                        "กำไร/ขาดทุนสุทธิ ($)": total_realized_pnl,
                         "ผลตอบแทน (%)": ret_pct,
-                        "สถานะ": "ปิดขายเกลี้ยงแล้ว"
+                        "สถานะ": status_text
                     })
 
     if not df_dime_closed.empty:
