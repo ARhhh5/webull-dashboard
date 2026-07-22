@@ -9,7 +9,6 @@ import hashlib
 import streamlit as st
 import pandas as pd
 import gspread
-from datetime import datetime, timezone
 
 st.set_page_config(page_title="Trade History & Closed Positions", layout="wide")
 
@@ -61,7 +60,8 @@ def sync_webull_to_gsheet():
             if oid:
                 existing_ids.add(oid)
             
-            combo = f"{str(row.get('Time',''))}_{str(row.get('Symbol',''))}_{str(row.get('Side',''))}_{str(row.get('Qty',''))}_{str(row.get('Price',''))}"
+            combo = f"{str(row.get('Time',''))}_{str(row.get('Symbol',''))}_{str(row.get('Buy/Sell', row.get('Side','')))}_\
+{str(row.get('Qty',''))}_{str(row.get('Price',''))}"
             existing_combos.add(combo)
 
     webull_config = st.secrets.get("Webull", {})
@@ -146,12 +146,12 @@ def sync_webull_to_gsheet():
         return True, "ℹ️ ข้อมูลล่าสุดตรงกันแล้ว ไม่มีรายการใหม่ต้องเพิ่ม"
 
 # ==========================================
-# 🎯 ส่วนปุ่ม Auto Sync ด้านบนสุดของหน้า History
+# 🎯 ส่วนปุ่ม Auto Sync ด้านบนสุด
 # ==========================================
 with st.expander("🔄 แผงควบคุม Auto Sync ข้อมูลจาก Webull API", expanded=False):
     col_sync1, col_sync2 = st.columns([3, 1])
     with col_sync1:
-        st.write("กดปุ่มเพื่อดึงออเดอร์ล่าสุดจาก Webull บันทึกเติมลง Google Sheet อัตโนมัติ (เช็ครายการซ้ำให้เรียบร้อย)")
+        st.write("กดปุ่มเพื่อดึงออเดอร์ล่าสุดจาก Webull บันทึกเติมลง Google Sheet อัตโนมัติ")
     with col_sync2:
         if st.button("🚀 กด Sync ตอนนี้", type="primary", use_container_width=True):
             with st.spinner("⏳ กำลัง Sync ออเดอร์..."):
@@ -182,13 +182,12 @@ def init_gsheet():
 def load_all_history_sheets():
     gc = init_gsheet()
     if not gc:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), set()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
     df_webull_orders = pd.DataFrame()
     df_dime_closed = pd.DataFrame()
     df_dime_us_port = pd.DataFrame()
     df_dime_th_port = pd.DataFrame()
-    active_symbols = set()
     
     try:
         sh = gc.open("หุ้นของเรา")
@@ -206,51 +205,30 @@ def load_all_history_sheets():
         try:
             ws3 = sh.worksheet("Dime_Portfolio")
             df_dime_us_port = pd.DataFrame(ws3.get_all_records())
-            if not df_dime_us_port.empty:
-                sym_col = next((c for c in df_dime_us_port.columns if 'ticker' in str(c).lower() or 'symbol' in str(c).lower() or 'หุ้น' in str(c)), None)
-                qty_col = next((c for c in df_dime_us_port.columns if 'volume' in str(c).lower() or 'qty' in str(c).lower() or 'จำนวน' in str(c)), None)
-                if sym_col and qty_col:
-                    for _, r in df_dime_us_port.iterrows():
-                        try:
-                            q = float(str(r[qty_col]).replace(",", ""))
-                            s = str(r[sym_col]).strip().upper()
-                            if q > 0 and s: active_symbols.add(s)
-                        except: pass
         except: pass
         
         try:
             ws4 = sh.worksheet("Dime_TH_Portfolio")
             df_dime_th_port = pd.DataFrame(ws4.get_all_records())
-            if not df_dime_th_port.empty:
-                sym_col = next((c for c in df_dime_th_port.columns if 'ticker' in str(c).lower() or 'symbol' in str(c).lower() or 'หุ้น' in str(c)), None)
-                qty_col = next((c for c in df_dime_th_port.columns if 'volume' in str(c).lower() or 'qty' in str(c).lower() or 'จำนวน' in str(c)), None)
-                if sym_col and qty_col:
-                    for _, r in df_dime_th_port.iterrows():
-                        try:
-                            q = float(str(r[qty_col]).replace(",", ""))
-                            s = str(r[sym_col]).strip().upper()
-                            if q > 0 and s: active_symbols.add(s)
-                        except: pass
         except: pass
 
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการโหลดข้อมูลจาก Google Sheet: {e}")
 
-    return df_webull_orders, df_dime_closed, df_dime_us_port, df_dime_th_port, active_symbols
+    return df_webull_orders, df_dime_closed, df_dime_us_port, df_dime_th_port
 
-df_webull, df_dime_closed, df_dime_us, df_dime_th, active_syms = load_all_history_sheets()
+df_webull, df_dime_closed, df_dime_us, df_dime_th = load_all_history_sheets()
 
-# สร้าง 2 แถบหลัก
 tab_closed_only, tab_raw_logs = st.tabs([
-    "🎯 1. หุ้นที่ซื้อขายจบแล้ว (ไม่มีใน Port แล้ว)", 
+    "🎯 1. หุ้นที่ซื้อขายจบแล้ว (Realized PnL)", 
     "📜 2. ประวัติคำสั่งซื้อขายแยกตาม Sheet"
 ])
 
 # ==========================================
-# แถบที่ 1: เฉพาะหุ้นที่เคลียร์พอร์ตหมดแล้ว
+# แถบที่ 1: สรุปผล Realized PnL
 # ==========================================
 with tab_closed_only:
-    st.markdown("### 📊 สรุปผลกำไร/ขาดทุนจริงเฉพาะหุ้นที่ขายหมดพอร์ตแล้ว (Realized PnL)")
+    st.markdown("### 📊 สรุปผลกำไร/ขาดทุนจริงสะสมจากการขายหุ้น (Realized PnL)")
     
     closed_summary = []
     
@@ -258,23 +236,18 @@ with tab_closed_only:
         df_w = df_webull.copy()
         df_w.columns = [str(c).strip() for c in df_w.columns]
         
-        sym_c = next((c for c in df_w.columns if 'symbol' in str(c).lower() or 'ticker' in str(c).lower()), 'Symbol')
-        side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower()), 'Side')
-        qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower()), 'Qty')
-        price_c = next((c for c in df_w.columns if 'price' in str(c).lower()), 'Price')
-        time_c = next((c for c in df_w.columns if 'time' in str(c).lower() or 'date' in str(c).lower()), 'Time')
+        # ค้นหาคอลัมน์ชื่อหุ้น, ฝั่งซื้อขาย, จำนวน, และราคา
+        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Symbol')
+        side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
+        qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
+        price_c = next((c for c in df_w.columns if 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Price')
+        time_c = next((c for c in df_w.columns if 'time' in str(c).lower() or 'date' in str(c).lower() or 'วัน' in str(c)), 'Time')
         
         if all(c in df_w.columns for c in [sym_c, side_c, qty_c, price_c]):
-            df_w['Time_Sort'] = pd.to_datetime(df_w[time_c], errors='coerce')
-            df_w = df_w.sort_values(by='Time_Sort', na_position='first')
-            
             for symbol, group in df_w.groupby(sym_c):
                 symbol_clean = str(symbol).strip().upper()
-                if not symbol_clean: continue
+                if not symbol_clean or symbol_clean == 'NAN': continue
                 
-                if symbol_clean in active_syms:
-                    continue
-                    
                 buy_queue = []
                 total_realized_pnl = 0.0
                 total_matched_qty = 0.0
@@ -282,12 +255,12 @@ with tab_closed_only:
                 total_sell_rev = 0.0
                 
                 for _, row in group.iterrows():
-                    side = str(row[side_c]).upper().strip()
-                    time_str = str(row[time_c])
+                    raw_side = str(row[side_c]).upper().strip()
+                    time_str = str(row.get(time_c, ""))
                     
                     try:
-                        qty = float(str(row[qty_c]).replace(",", ""))
-                        price = float(str(row[price_c]).replace(",", ""))
+                        qty = float(str(row[qty_c]).replace(",", "").replace("$", "").strip())
+                        price = float(str(row[price_c]).replace(",", "").replace("$", "").strip())
                     except: continue
                     
                     if qty <= 0 or price <= 0: continue
@@ -300,16 +273,16 @@ with tab_closed_only:
                             if order_date < pd.to_datetime("2025-12-01"):
                                 is_pre_split = True
                         except:
-                            if "2025" in time_str:
+                            if "2025" in time_str or len(time_str) > 10:
                                 is_pre_split = True
                                 
-                        if is_pre_split and "BUY" in side:
+                        if is_pre_split and "BUY" in raw_side:
                             qty = qty / 10.0
                             price = price * 10.0
 
-                    if "BUY" in side:
+                    if "BUY" in raw_side or "ซื้อ" in raw_side:
                         buy_queue.append({'qty': qty, 'price': price})
-                    elif "SELL" in side:
+                    elif "SELL" in raw_side or "ขาย" in raw_side:
                         sell_qty_left = qty
                         while sell_qty_left > 0 and buy_queue:
                             b = buy_queue[0]
@@ -346,12 +319,12 @@ with tab_closed_only:
         df_dc.columns = [str(c).strip() for c in df_dc.columns]
         for _, r in df_dc.iterrows():
             sym = str(r.get('หุ้น (Ticker)') or r.get('Ticker') or r.get('Symbol', '')).strip().upper()
-            if sym in active_syms or not sym: continue
+            if not sym: continue
             
             try:
-                qty = float(str(r.get('จำนวนหุ้น (Qty)') or r.get('Qty', 0)).replace(",", ""))
-                buy_p = float(str(r.get('ราคาซื้อเฉลี่ย (Buy Price)') or r.get('Buy Price', 0)).replace(",", ""))
-                sell_p = float(str(r.get('ราคาขายจริง (Sell Price)') or r.get('Sell Price', 0)).replace(",", ""))
+                qty = float(str(r.get('จำนวนหุ้น (Qty)') or r.get('Qty', 0)).replace(",", "").replace("$", ""))
+                buy_p = float(str(r.get('ราคาซื้อเฉลี่ย (Buy Price)') or r.get('Buy Price', 0)).replace(",", "").replace("$", ""))
+                sell_p = float(str(r.get('ราคาขายจริง (Sell Price)') or r.get('Sell Price', 0)).replace(",", "").replace("$", ""))
             except: continue
             
             if qty > 0 and buy_p > 0 and sell_p > 0:
@@ -376,9 +349,9 @@ with tab_closed_only:
         
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไร/ขาดทุนสะสมรวม (หุ้นที่ขายหมดแล้ว)</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_pnl:,.2f}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไร/ขาดทุนสะสมรวม (Realized PnL)</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_pnl:,.2f}</div></div>', unsafe_allow_html=True)
         with c2:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">🎯 จำนวนหุ้นเก่าที่เคยเทรดจบไปแล้ว</div><div class="metric-value">{len(df_closed_res)} ตัว</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">🎯 จำนวนหุ้นทั้งหมดที่มีประวัติปิดขาย</div><div class="metric-value">{len(df_closed_res)} ตัว</div></div>', unsafe_allow_html=True)
             
         st.markdown("---")
         
@@ -400,7 +373,7 @@ with tab_closed_only:
             use_container_width=True
         )
     else:
-        st.info("💡 ยังไม่พบรายการหุ้นที่ปิดขายเกลี้ยงพอร์ต 100% หรือหุ้นทั้งหมดกำลังถือครองอยู่ในพอร์ตปัจจุบัน")
+        st.info("💡 ยังไม่พบรายการหุ้นที่มีประวัติการขายใน Google Sheet")
 
 # ==========================================
 # แถบที่ 2: แสดงข้อมูลดิบจาก 4 Sheets
