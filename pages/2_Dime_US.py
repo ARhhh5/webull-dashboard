@@ -27,18 +27,47 @@ st.title("🇺🇸 พอร์ตหุ้นสหรัฐฯ (Dime!)")
 st.markdown("---")
 
 # ==========================================
-# ฟังก์ชันดึงราคาตลาดปัจจุบันสดๆ ผ่าน yfinance
+# ฟังก์ชันดึงราคาตลาดปัจจุบันสดๆ แบบ Bulk Download
 # ==========================================
-@st.cache_data(ttl=60)
+@st.cache_data(ttl=120)
 def fetch_us_live_prices(symbols):
     prices = {}
-    for sym in symbols:
-        try:
-            ticker = yf.Ticker(sym)
-            price = ticker.fast_info.get('lastPrice') or ticker.info.get('regularMarketPrice') or 0.0
-            prices[sym] = float(price)
-        except:
-            prices[sym] = 0.0
+    if not symbols:
+        return prices
+        
+    clean_syms = list(set([s.upper().strip() for s in symbols if s]))
+    
+    # 1. ลองดึงแบบ Bulk Download รวดเดียวจบ
+    try:
+        data = yf.download(tickers=clean_syms, period="5d", interval="1d", progress=False)
+        if not data.empty and 'Close' in data:
+            close_df = data['Close']
+            for sym in clean_syms:
+                try:
+                    if len(clean_syms) == 1:
+                        val = close_df.dropna().iloc[-1]
+                    else:
+                        val = close_df[sym].dropna().iloc[-1]
+                    if pd.notna(val) and float(val) > 0:
+                        prices[sym] = float(val)
+                except:
+                    pass
+    except Exception as e:
+        pass
+
+    # 2. Backup Fallback กรณีตัวไหนยังไม่ได้ราคา ให้ยิงผ่าน history
+    for sym in clean_syms:
+        if prices.get(sym, 0.0) == 0.0:
+            try:
+                ticker = yf.Ticker(sym)
+                hist = ticker.history(period="5d")
+                if not hist.empty:
+                    last_price = float(hist['Close'].iloc[-1])
+                    if last_price > 0:
+                        prices[sym] = last_price
+            except:
+                pass
+                
     return prices
 
 def get_dime_us_data():
@@ -59,8 +88,8 @@ def get_dime_us_data():
             df_raw = pd.DataFrame(records)
             
             # ค้นหาคอลัมน์ชื่อหุ้น, จำนวน, และต้นทุน
-            sym_col = next((c for c in df_raw.columns if 'ticker' in str(c).lower() or 'หุ้น' in str(c)), None)
-            qty_col = next((c for c in df_raw.columns if 'volume' in str(c).lower() or 'จำนวน' in str(c)), None)
+            sym_col = next((c for c in df_raw.columns if 'ticker' in str(c).lower() or 'symbol' in str(c).lower() or 'หุ้น' in str(c)), None)
+            qty_col = next((c for c in df_raw.columns if 'volume' in str(c).lower() or 'qty' in str(c).lower() or 'จำนวน' in str(c)), None)
             cost_col = next((c for c in df_raw.columns if 'cost' in str(c).lower() or 'ต้นทุน' in str(c)), None)
             
             if not sym_col or not qty_col or not cost_col:
@@ -68,8 +97,8 @@ def get_dime_us_data():
                 return pd.DataFrame()
 
             # ดึงรายชื่อหุ้นทั้งหมดเพื่อไปเอาราคาเรียลไทม์
-            clean_symbols = [str(r[sym_col]).strip().upper().split(" ")[0] for _, r in df_raw.iterrows() if str(r[sym_col]).strip()]
-            live_prices = fetch_us_live_prices(list(set(clean_symbols)))
+            symbols = [str(r[sym_col]).strip().upper().split(" ")[0] for _, r in df_raw.iterrows() if str(r[sym_col]).strip()]
+            live_prices = fetch_us_live_prices(symbols)
 
             for _, r in df_raw.iterrows():
                 sym = str(r.get(sym_col, "")).strip().upper()
@@ -82,8 +111,10 @@ def get_dime_us_data():
                     
                     if qty <= 0: continue
                     
-                    # เอาราคาเรียลไทม์ (ถ้าดึงไม่ได้ให้ใช้ราคาต้นทุนชั่วคราว)
+                    # เอาราคาเรียลไทม์
                     current_price = live_prices.get(sym, 0.0)
+                    
+                    # ถ้าราคาเรียลไทม์ดึงไม่ได้จริงๆ ให้คงราคาต้นทุนไว้ แต่เตือนผู้ใช้
                     if current_price == 0.0:
                         current_price = avg_cost
                     
@@ -117,7 +148,8 @@ def color_pnl(val):
     return ''
 
 # โหลดข้อมูลพอร์ต Dime US
-df = get_dime_us_data()
+with st.spinner("⏳ กำลังดึงราคาหุ้นสหรัฐฯ เรียลไทม์..."):
+    df = get_dime_us_data()
 
 if not df.empty:
     total_invested = df["มูลค่าลงทุน ($)"].sum()
