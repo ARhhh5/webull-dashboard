@@ -226,7 +226,7 @@ tab_closed_only, tab_raw_logs = st.tabs([
 ])
 
 # ==========================================
-# แถบที่ 1: คำนวณ PnL ตามมูลค่าเงินลงทุนและเงินขายจริง (Cash Flow Accurate)
+# แถบที่ 1: คำนวณ PnL ตาม Cash Flow จริง ชัดเจน 100%
 # ==========================================
 with tab_closed_only:
     st.markdown("### 📊 กำไร/ขาดทุนสุทธิเฉพาะไม้ออเดอร์ที่ขายปิดจบแล้ว (Realized PnL)")
@@ -261,7 +261,6 @@ with tab_closed_only:
                     except: continue
                     
                     if qty <= 0 or price <= 0: continue
-                    
                     trade_val = qty * price
 
                     if "BUY" in raw_side or "ซื้อ" in raw_side:
@@ -271,27 +270,14 @@ with tab_closed_only:
                         total_sell_cash += trade_val
                         total_sell_qty += qty
                 
-                # มีการขายออกเกิดขึ้นจริง
+                # มีรายการขายเกิดขึ้นจริง
                 if total_sell_qty > 0:
                     avg_sell = total_sell_cash / total_sell_qty if total_sell_qty > 0 else 0.0
-                    
-                    # กรณีพิเศษ ULTY หรือหุ้นที่ขายออกหมดพอร์ตจริง (เงินที่ได้จากการขาย - เงินที่ซื้อมาทั้งหมด)
-                    if total_buy_qty > 0:
-                        avg_buy = total_buy_cash / total_buy_qty
-                    else:
-                        avg_buy = avg_sell
+                    avg_buy = (total_buy_cash / total_buy_qty) if total_buy_qty > 0 else avg_sell
 
-                    # คำนวณ PnL อิงจากสัดส่วนเงินลงทุนฝั่งซื้อที่ตรงกับปริมาณขาย (หรือคิดเงินสดรวมถ้าขายหมดเกลี้ยง)
-                    # ถ้าปริมาณขายมากกว่าหรือใกล้เคียงฝั่งซื้อ (กรณี Reverse Split) ให้ใช้ต้นทุนซื้อรวมทั้งหมดคิด PnL
-                    if total_sell_qty >= total_buy_qty * 0.8 and total_buy_qty > 0:
-                        total_cost_matched = total_buy_cash
-                    else:
-                        total_cost_matched = total_sell_qty * avg_buy
-
-                    realized_pnl = total_sell_cash - total_cost_matched
-                    ret_pct = (realized_pnl / total_cost_matched * 100) if total_cost_matched > 0 else 0.0
-                    
-                    status_text = "ปิดขายเกลี้ยงแล้ว" if total_sell_qty >= total_buy_qty * 0.8 else "ขายแล้วบางส่วน"
+                    # สรุปผลกำไร/ขาดทุนจากเงินสดเข้า-ออกจริง
+                    realized_pnl = total_sell_cash - total_buy_cash
+                    ret_pct = (realized_pnl / total_buy_cash * 100) if total_buy_cash > 0 else 0.0
                     
                     closed_summary.append({
                         "ชื่อหุ้น": symbol_clean,
@@ -301,7 +287,7 @@ with tab_closed_only:
                         "ราคาขายเฉลี่ย": avg_sell,
                         "กำไร/ขาดทุนสุทธิ ($)": realized_pnl,
                         "ผลตอบแทน (%)": ret_pct,
-                        "สถานะ": status_text
+                        "สถานะ": "ปิดขายเกลี้ยงแล้ว"
                     })
 
     if not df_dime_closed.empty:
