@@ -26,6 +26,21 @@ st.markdown("""
 st.title("🇺🇸 พอร์ตหุ้นสหรัฐฯ (Dime!)")
 st.markdown("---")
 
+# ==========================================
+# ฟังก์ชันดึงราคาตลาดปัจจุบันสดๆ ผ่าน yfinance
+# ==========================================
+@st.cache_data(ttl=60)
+def fetch_us_live_prices(symbols):
+    prices = {}
+    for sym in symbols:
+        try:
+            ticker = yf.Ticker(sym)
+            price = ticker.fast_info.get('lastPrice') or ticker.info.get('regularMarketPrice') or 0.0
+            prices[sym] = float(price)
+        except:
+            prices[sym] = 0.0
+    return prices
+
 def get_dime_us_data():
     holdings = []
     try:
@@ -37,103 +52,107 @@ def get_dime_us_data():
             sh = gc.open("หุ้นของเรา")
             worksheet = sh.worksheet("Dime_Portfolio")
             records = worksheet.get_all_records()
-            for r in records:
-                sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
-                if sym:
-                    holdings.append({
-                        "Symbol": sym,
-                        "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
-                        "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
-                        "Manual_Price": r.get("ราคาปัจจุบันล็อก (Manual Price)", "")
-                    })
-    except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในการเชื่อมต่อ Google Sheet: {e}")
-    return holdings
+            
+            if not records:
+                return pd.DataFrame()
+                
+            df_raw = pd.DataFrame(records)
+            
+            # ค้นหาคอลัมน์ชื่อหุ้น, จำนวน, และต้นทุน
+            sym_col = next((c for c in df_raw.columns if 'ticker' in str(c).lower() or 'หุ้น' in str(c)), None)
+            qty_col = next((c for c in df_raw.columns if 'volume' in str(c).lower() or 'จำนวน' in str(c)), None)
+            cost_col = next((c for c in df_raw.columns if 'cost' in str(c).lower() or 'ต้นทุน' in str(c)), None)
+            
+            if not sym_col or not qty_col or not cost_col:
+                st.error("❌ ไม่พบคอลัมน์ข้อมูลหุ้น/จำนวน/ต้นทุน ในชีท Dime_Portfolio")
+                return pd.DataFrame()
 
-with st.spinner("⏳ กำลังดึงราคาสดหุ้นสหรัฐฯ..."):
-    holdings = get_dime_us_data()
-    
-    if holdings:
-        data = []
-        for h in holdings:
-            sym = h["Symbol"]
-            qty = h["Qty"]
-            cost = h["Cost"]
-            manual_price = h["Manual_Price"]
-            
-            price = 0.0
-            
-            # 1. เช็ก Manual Price จาก Sheet ก่อน
-            if manual_price != "" and manual_price is not None:
+            # ดึงรายชื่อหุ้นทั้งหมดเพื่อไปเอาราคาเรียลไทม์
+            clean_symbols = [str(r[sym_col]).strip().upper().split(" ")[0] for _, r in df_raw.iterrows() if str(r[sym_col]).strip()]
+            live_prices = fetch_us_live_prices(list(set(clean_symbols)))
+
+            for _, r in df_raw.iterrows():
+                sym = str(r.get(sym_col, "")).strip().upper()
+                if not sym: continue
+                if " " in sym: sym = sym.split(" ")[0]
+                
                 try:
-                    price = float(manual_price)
-                except:
-                    price = 0.0
-            
-            # 2. ถ้าไม่มี Manual Price ให้ดึงจาก yfinance แบบปลอดภัยหลายชั้น
-            if price == 0.0:
-                try:
-                    ticker = yf.Ticker(sym)
-                    # ลองหาจาก fast_info / info ก่อน
-                    p = ticker.fast_info.get('last_price') or ticker.info.get('currentPrice') or ticker.info.get('regularMarketPrice')
+                    qty = float(str(r.get(qty_col, 0)).replace(",", ""))
+                    avg_cost = float(str(r.get(cost_col, 0)).replace(",", ""))
                     
-                    # ถ้ายังไม่ได้ ให้ดึงจากประวัติราคาล่าสุด (history)
-                    if not p or float(p) == 0.0:
-                        hist = ticker.history(period="5d")
-                        if not hist.empty:
-                            p = hist['Close'].iloc[-1]
-                            
-                    price = float(p) if p else cost # ถ้าดึงไม่ได้จริงๆ ให้ใช้ราคาต้นทุนแทน $0.00
-                except:
-                    price = cost
-            
-            invested = qty * cost
-            market_val = qty * price
-            pnl = market_val - invested
-            pnl_pct = (pnl / invested * 100) if invested > 0 else 0
-            
-            data.append({
-                "หุ้น US": sym,
-                "จำนวนหุ้น": qty,
-                "ต้นทุนเฉลี่ย": cost,
-                "ราคาตลาด": price,
-                "เงินลงทุน": invested,
-                "มูลค่าปัจจุบัน": market_val,
-                "PnL": pnl,
-                "PnL_Pct": pnl_pct
-            })
-            
-        df = pd.DataFrame(data)
+                    if qty <= 0: continue
+                    
+                    # เอาราคาเรียลไทม์ (ถ้าดึงไม่ได้ให้ใช้ราคาต้นทุนชั่วคราว)
+                    current_price = live_prices.get(sym, 0.0)
+                    if current_price == 0.0:
+                        current_price = avg_cost
+                    
+                    invested = qty * avg_cost
+                    market_val = qty * current_price
+                    pnl = market_val - invested
+                    pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
+                    
+                    holdings.append({
+                        "หุ้น US": sym,
+                        "จำนวนหุ้น": qty,
+                        "ต้นทุนเฉลี่ย": avg_cost,
+                        "ราคาปัจจุบัน": current_price,
+                        "มูลค่าลงทุน ($)": invested,
+                        "มูลค่าตลาด ($)": market_val,
+                        "PnL": pnl,
+                        "PnL_Pct": pnl_pct
+                    })
+                except Exception as e:
+                    continue
+                    
+    except Exception as e:
+        st.error(f"⚠️ เกิดข้อผิดพลาดในการโหลดข้อมูล Dime US: {e}")
         
-        total_invested = df["เงินลงทุน"].sum()
-        total_market = df["มูลค่าปัจจุบัน"].sum()
-        total_pnl = total_market - total_invested
-        total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0
+    return pd.DataFrame(holdings)
+
+def color_pnl(val):
+    if isinstance(val, (int, float)):
+        color = '#00c853' if val > 0 else ('#ff3d00' if val < 0 else '#848e9c')
+        return f'color: {color}; font-weight: bold;'
+    return ''
+
+# โหลดข้อมูลพอร์ต Dime US
+df = get_dime_us_data()
+
+if not df.empty:
+    total_invested = df["มูลค่าลงทุน ($)"].sum()
+    total_market = df["มูลค่าตลาด ($)"].sum()
+    total_pnl = total_market - total_invested
+    total_pnl_pct = (total_pnl / total_invested * 100) if total_invested > 0 else 0.0
+    
+    pnl_class = "pnl-positive" if total_pnl >= 0 else "pnl-negative"
+    pnl_prefix = "+" if total_pnl >= 0 else ""
+    
+    c1, c2, c3 = st.columns(3)
+    with c1:
+        st.markdown(f'<div class="metric-container"><div class="metric-label">💵 เงินลงทุนรวม</div><div class="metric-value">${total_invested:,.2f}</div></div>', unsafe_allow_html=True)
+    with c2:
+        st.markdown(f'<div class="metric-container"><div class="metric-label">📈 มูลค่าตลาดรวม (ปัจจุบัน)</div><div class="metric-value">${total_market:,.2f}</div></div>', unsafe_allow_html=True)
+    with c3:
+        st.markdown(f'<div class="metric-container"><div class="metric-label">📊 กำไร / ขาดทุนสุทธิ</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_pnl:,.2f} ({total_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
         
-        pnl_class = "pnl-positive" if total_pnl >= 0 else "pnl-negative"
-        pnl_prefix = "+" if total_pnl >= 0 else ""
-        
-        c1, c2 = st.columns(2)
-        with c1:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">💵 มูลค่ารวมพอร์ต Dime! สหรัฐฯ</div><div class="metric-value">${total_market:,.2f}</div></div>', unsafe_allow_html=True)
-        with c2:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">📊 กำไร / ขาดทุนสุทธิ</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_pnl:,.2f} ({total_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
-            
-        st.markdown("---")
-        
-        # ตารางแสดงผลสวยงาม
-        df_display = df.copy()
-        df_display["กำไร/ขาดทุน"] = df_display.apply(lambda r: f"{'+' if r['PnL']>=0 else ''}${r['PnL']:,.2f} ({r['PnL_Pct']:+.2f}%)", axis=1)
-        
-        st.dataframe(
-            df_display[["หุ้น US", "จำนวนหุ้น", "ต้นทุนเฉลี่ย", "ราคาตลาด", "เงินลงทุน", "มูลค่าปัจจุบัน", "กำไร/ขาดทุน"]].style.format({
-                "จำนวนหุ้น": "{:,.4f}",
-                "ต้นทุนเฉลี่ย": "${:,.2f}",
-                "ราคาตลาด": "${:,.2f}",
-                "เงินลงทุน": "${:,.2f}",
-                "มูลค่าปัจจุบัน": "${:,.2f}"
-            }),
-            use_container_width=True
-        )
-    else:
-        st.info("ไม่พบข้อมูลหุ้นสหรัฐฯ ใน Google Sheet")
+    st.markdown("---")
+    
+    # จัดตารางแสดงผลเรียงตามมูลค่าตลาด
+    df_display = df.sort_values(by="มูลค่าตลาด ($)", ascending=False).copy()
+    df_display["กำไร/ขาดทุนสุทธิ"] = df_display.apply(lambda r: f"{'+' if r['PnL']>=0 else ''}${r['PnL']:,.2f} ({r['PnL_Pct']:+.2f}%)", axis=1)
+    
+    st.dataframe(
+        df_display[["หุ้น US", "จำนวนหุ้น", "ต้นทุนเฉลี่ย", "ราคาปัจจุบัน", "มูลค่าลงทุน ($)", "มูลค่าตลาด ($)", "กำไร/ขาดทุนสุทธิ"]]
+        .style.map(color_pnl, subset=["PnL"])
+        .format({
+            "จำนวนหุ้น": "{:,.4f}",
+            "ต้นทุนเฉลี่ย": "${:,.2f}",
+            "ราคาปัจจุบัน": "${:,.2f}",
+            "มูลค่าลงทุน ($)": "${:,.2f}",
+            "มูลค่าตลาด ($)": "${:,.2f}"
+        }),
+        use_container_width=True
+    )
+else:
+    st.info("⚠️ ไม่พบข้อมูลหุ้นในพอร์ต Dime US หรือยังไม่ได้บันทึกข้อมูลใน Google Sheets แท็บ Dime_Portfolio")
