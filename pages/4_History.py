@@ -1,8 +1,8 @@
 import streamlit as st
 import pandas as pd
 import numpy as np
-import plotly.express as px
-from datetime import datetime
+import gspread
+from google.oauth2.service_account import Credentials
 
 st.set_page_config(page_title="Trade History & Realized P/L", layout="wide")
 
@@ -16,10 +16,9 @@ def calculate_fifo_pnl(df_symbol):
     คำนวณ Realized P/L ด้วยเกณฑ์ FIFO (ซื้อก่อน ขายก่อน)
     เรียงตามลำดับเวลาอย่างถูกต้อง
     """
-    # แปลง Time เป็น datetime และเรียงลำดับจากอดีตไปปัจจุบัน
     df_sorted = df_symbol.copy()
     
-    # รองรับการแปลง Timestamp หรือ Date String
+    # แปลงเวลาให้รองรับทั้ง Timestamp และ Date String
     if pd.api.types.is_numeric_dtype(df_sorted['Time']):
         df_sorted['DateTime'] = pd.to_datetime(df_sorted['Time'], unit='ms', errors='coerce')
     else:
@@ -27,15 +26,18 @@ def calculate_fifo_pnl(df_symbol):
         
     df_sorted = df_sorted.sort_values(by='DateTime', ascending=True)
 
-    buy_queue = []  # เก็บรายการซื้อ [{'qty': float, 'price': float}]
+    buy_queue = []
     closed_qty = 0.0
     total_cost_closed = 0.0
     total_revenue_closed = 0.0
 
     for _, row in df_sorted.iterrows():
         side = str(row['Side']).strip().upper()
-        qty = float(row['Qty'])
-        price = float(row['Price'])
+        try:
+            qty = float(row['Qty'])
+            price = float(row['Price'])
+        except (ValueError, TypeError):
+            continue
 
         if 'BUY' in side:
             buy_queue.append({'qty': qty, 'price': price})
@@ -46,7 +48,6 @@ def calculate_fifo_pnl(df_symbol):
                 earliest_buy = buy_queue[0]
                 
                 if earliest_buy['qty'] <= qty_to_sell:
-                    # ขายหมดล็อตนี้
                     matched_qty = earliest_buy['qty']
                     qty_to_sell -= matched_qty
                     cost = matched_qty * earliest_buy['price']
@@ -57,7 +58,6 @@ def calculate_fifo_pnl(df_symbol):
                     total_revenue_closed += revenue
                     buy_queue.pop(0)
                 else:
-                    # ขายบางส่วนของล็อตนี้
                     matched_qty = qty_to_sell
                     earliest_buy['qty'] -= matched_qty
                     qty_to_sell = 0
@@ -94,14 +94,31 @@ def calculate_fifo_pnl(df_symbol):
     }
 
 # -----------------------------------------------------------------------------
-# Data Loader (จาก Session State หรือไฟล์ตัวอย่าง)
+# Data Loading Strategy (Session State -> Direct Load Fallback)
 # -----------------------------------------------------------------------------
-if 'webull_df' in st.session_state:
+df = None
+
+if 'webull_df' in st.session_state and st.session_state['webull_df'] is not None:
     df = st.session_state['webull_df']
 else:
-    st.info("💡 กรุณาอัปโหลดไฟล์ หรือเชื่อมต่อ Google Sheets ในหน้าหลักก่อนครับ")
-    st.stop()
+    # โหลดตรงจาก Google Sheets / Local Cache หากใน Session State ไม่มีข้อมูล
+    try:
+        scope = ["https://spreadsheets.google.com/feeds", "https://www.googleapis.com/auth/drive"]
+        
+        # ลองดึงคีย์จาก Streamlit Secrets
+        if "gcp_service_account" in st.secrets:
+            creds = Credentials.from_service_account_info(st.secrets["gcp_service_account"], scopes=scope)
+            client = gspread.authorize(creds)
+            sheet = client.open("หุ้นของเรา").worksheet("Webull_Order_History")
+            data = sheet.get_all_records()
+            df = pd.DataFrame(data)
+            st.session_state['webull_df'] = df
+    except Exception as e:
+        df = None
 
+# -----------------------------------------------------------------------------
+# Render UI
+# -----------------------------------------------------------------------------
 if df is not None and not df.empty:
     symbols = df['Symbol'].unique()
     results = []
@@ -110,7 +127,7 @@ if df is not None and not df.empty:
         df_sym = df[df['Symbol'] == sym]
         res = calculate_fifo_pnl(df_sym)
         
-        if res['closed_qty'] > 0:  # แสดงเฉพาะหุ้นที่มีการปิดขายแล้ว
+        if res['closed_qty'] > 0:
             results.append({
                 'ชื่อหุ้น': sym,
                 'โบรกเกอร์': 'Webull',
@@ -125,16 +142,14 @@ if df is not None and not df.empty:
     report_df = pd.DataFrame(results)
 
     if not report_df.empty:
-        # Style Table
         def highlight_pnl(val):
             color = '#00E676' if val > 0 else ('#FF5252' if val < 0 else 'white')
             return f'color: {color}; font-weight: bold;'
 
         st.subheader("📊 ตารางสรุปผลกำไร/ขาดทุนจากการขายจริง (FIFO Method)")
         
-        # Display Metrics
         total_pnl = report_df['กำไร/ขาดทุนสุทธิ ($)'].sum()
-        col1, col2, col3 = st.st_columns if hasattr(st, 'st_columns') else st.columns(3)
+        col1, col2, col3 = st.columns(3)
         col1.metric("กำไร/ขาดทุนรวมทั้งหมด", f"${total_pnl:,.2f}", delta=f"{total_pnl:,.2f}")
         col2.metric("จำนวนหุ้นที่เคยขายปิดรอบ", f"{len(report_df)} ตัว")
         col3.metric("หุ้นที่ชนะ (Win Trade)", f"{len(report_df[report_df['กำไร/ขาดทุนสุทธิ ($)'] > 0])} ตัว")
@@ -151,3 +166,5 @@ if df is not None and not df.empty:
         )
     else:
         st.warning("ไม่พบประวัติการขายหุ้นในระบบ")
+else:
+    st.info("💡 ไม่พบข้อมูลในระบบ กรุณาตรวจสอบการเชื่อมต่อ Google Sheets หรืออัปโหลดไฟล์ในหน้าหลัก (app.py) อีกครั้งครับ")
