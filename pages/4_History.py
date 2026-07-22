@@ -240,7 +240,7 @@ tab_normal, tab_raw_logs, tab_split_stocks = st.tabs([
 ])
 
 # ==========================================
-# แท็บที่ 1: หุ้นปกติ (ไม่มี Reverse Split) - คิด FIFO ปกติ
+# แท็บที่ 1: หุ้นปกติ (ไม่มี Reverse Split) - คิด FIFO ปกติแบบเรียงลำดับเวลา
 # ==========================================
 with tab_normal:
     st.markdown("### 📊 กำไร/ขาดทุนสุทธิเฉพาะไม้ออเดอร์ที่ขายปิดจบแล้ว (หุ้นปกติ)")
@@ -255,6 +255,7 @@ with tab_normal:
         side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
         qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
         price_c = next((c for c in df_w.columns if 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Price')
+        time_c = next((c for c in df_w.columns if 'time' in str(c).lower() or 'date' in str(c).lower() or 'เวลา' in str(c).lower()), 'Time')
         
         if all(c in df_w.columns for c in [sym_c, side_c, qty_c, price_c]):
             for symbol, group in df_w.groupby(sym_c):
@@ -264,13 +265,22 @@ with tab_normal:
                 # ข้ามหุ้นกลุ่ม Split เอาไปคิดในแท็บ 3
                 if symbol_clean in SPLIT_STOCKS: continue
                 
+                group_sorted = group.copy()
+                # แปลงเวลาและจัดเรียงลำดับจากอดีตไปปัจจุบันเพื่อความถูกต้องของ FIFO
+                if time_c in group_sorted.columns:
+                    if pd.api.types.is_numeric_dtype(group_sorted[time_c]):
+                        group_sorted['parsed_time'] = pd.to_datetime(group_sorted[time_c], unit='ms', errors='coerce')
+                    else:
+                        group_sorted['parsed_time'] = pd.to_datetime(group_sorted[time_c], errors='coerce')
+                    group_sorted = group_sorted.sort_values(by='parsed_time', ascending=True)
+
                 buy_queue = []
                 total_realized_pnl = 0.0
                 total_matched_qty = 0.0
                 total_buy_cost = 0.0
                 total_sell_rev = 0.0
                 
-                for _, row in group.iterrows():
+                for _, row in group_sorted.iterrows():
                     raw_side = str(row[side_c]).upper().strip()
                     try:
                         qty = float(str(row[qty_c]).replace(",", "").replace("$", "").strip())
