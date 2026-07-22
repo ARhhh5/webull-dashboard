@@ -35,262 +35,233 @@ def init_gsheet():
         cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
         gc = gspread.service_account_from_dict(cred_dict)
         return gc
-    except Exception as e:
+    except Exception:
         return None
 
-def load_all_history_sheets():
+def load_all_sheets():
     gc = init_gsheet()
     if not gc:
-        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     
-    df_webull_orders = pd.DataFrame()
-    df_dime_closed = pd.DataFrame()
-    df_dime_us_port = pd.DataFrame()
-    df_dime_th_port = pd.DataFrame()
-    
+    df_webull, df_dime_us, df_dime_th = pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
     try:
         sh = gc.open("หุ้นของเรา")
-        
         try:
             ws1 = sh.worksheet("Webull_Order_History")
-            df_webull_orders = pd.DataFrame(ws1.get_all_records())
-        except: pass
-        
+            df_webull = pd.DataFrame(ws1.get_all_records())
+        except Exception: pass
         try:
-            ws2 = sh.worksheet("Dime_Closed_Orders")
-            df_dime_closed = pd.DataFrame(ws2.get_all_records())
-        except: pass
-        
+            ws2 = sh.worksheet("Dime_Portfolio")
+            df_dime_us = pd.DataFrame(ws2.get_all_records())
+        except Exception: pass
         try:
-            ws3 = sh.worksheet("Dime_Portfolio")
-            df_dime_us_port = pd.DataFrame(ws3.get_all_records())
-        except: pass
-        
-        try:
-            ws4 = sh.worksheet("Dime_TH_Portfolio")
-            df_dime_th_port = pd.DataFrame(ws4.get_all_records())
-        except: pass
-
+            ws3 = sh.worksheet("Dime_TH_Portfolio")
+            df_dime_th = pd.DataFrame(ws3.get_all_records())
+        except Exception: pass
     except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในการโหลดข้อมูลจาก Google Sheet: {e}")
+        st.error(f"เกิดข้อผิดพลาดในการโหลดข้อมูล Google Sheet: {e}")
+        
+    return df_webull, df_dime_us, df_dime_th
 
-    return df_webull_orders, df_dime_closed, df_dime_us_port, df_dime_th_port
+df_webull, df_dime_us, df_dime_th = load_all_sheets()
 
-df_webull, df_dime_closed, df_dime_us, df_dime_th = load_all_history_sheets()
-
-tab_net_pnl, tab_closed_summary, tab_raw_logs = st.tabs([
+tab_net, tab_closed, tab_raw = st.tabs([
     "⚖️ 1. ผลประกอบการสุทธิของแท้ (True Net PnL)", 
     "🎯 2. สรุปเฉพาะไม้ที่ปิดขายไปแล้ว (Realized PnL)", 
-    "📜 3. ประวัติคำสั่งซื้อขายแยกตาม Sheet"
+    "📜 3. ประวัติคำสั่งซื้อขายทั้งหมด"
 ])
 
+def color_pnl(val):
+    if isinstance(val, (int, float)):
+        color = '#00c853' if val > 0 else ('#ff3d00' if val < 0 else '#848e9c')
+        return f'color: {color}; font-weight: bold;'
+    return ''
+
 # ----------------------------------------------------
-# คำนวณ FIFO PnL สรุปผล Realized PnL
+# คำนวณ Realized PnL จาก Webull Order History
 # ----------------------------------------------------
+realized_summary = []
 realized_pnl_map = {}
-closed_summary = []
 
 if not df_webull.empty:
     df_w = df_webull.copy()
     df_w.columns = [str(c).strip() for c in df_w.columns]
     
-    sym_c = next((c for c in df_w.columns if 'symbol' in str(c).lower() or 'ticker' in str(c).lower()), 'Symbol')
-    side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower()), 'Side')
-    qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower()), 'Qty')
-    price_c = next((c for c in df_w.columns if 'price' in str(c).lower()), 'Price')
-    time_c = next((c for c in df_w.columns if 'time' in str(c).lower() or 'date' in str(c).lower()), 'Time')
-    
-    if all(c in df_w.columns for c in [sym_c, side_c, qty_c, price_c]):
-        df_w['Time_Sort'] = pd.to_datetime(df_w[time_c], errors='coerce')
+    sym_col = next((c for c in df_w.columns if 'symbol' in c.lower() or 'ticker' in c.lower()), 'Symbol')
+    side_col = next((c for c in df_w.columns if 'side' in c.lower() or 'buy/sell' in c.lower()), 'Side')
+    qty_col = next((c for c in df_w.columns if 'qty' in c.lower() or 'volume' in c.lower()), 'Qty')
+    price_col = next((c for c in df_w.columns if 'price' in c.lower()), 'Price')
+    time_col = next((c for c in df_w.columns if 'time' in c.lower() or 'date' in c.lower()), 'Time')
+
+    if all(c in df_w.columns for c in [sym_col, side_col, qty_col, price_col]):
+        df_w['Time_Sort'] = pd.to_datetime(df_w[time_col], errors='coerce')
         df_w = df_w.sort_values(by='Time_Sort', na_position='first')
-        
-        for symbol, group in df_w.groupby(sym_c):
-            symbol_clean = str(symbol).strip().upper()
-            if not symbol_clean: continue
-            
-            buy_queue = []
-            total_realized_pnl = 0.0
-            total_matched_qty = 0.0
+
+        for symbol, group in df_w.groupby(sym_col):
+            sym_clean = str(symbol).strip().upper()
+            if not sym_clean or sym_clean == 'NAN': continue
+
+            total_buy_qty = 0.0
             total_buy_cost = 0.0
+            total_sell_qty = 0.0
             total_sell_rev = 0.0
-            last_known_buy_price = 0.0
-            
+
             for _, row in group.iterrows():
-                side = str(row[side_c]).upper().strip()
+                side = str(row[side_col]).upper().strip()
                 try:
-                    qty = float(str(row[qty_c]).replace(",", ""))
-                    price = float(str(row[price_c]).replace(",", ""))
-                except: continue
-                
-                if qty <= 0 or price <= 0: continue
-                
+                    q = float(str(row[qty_col]).replace(",", ""))
+                    p = float(str(row[price_col]).replace(",", ""))
+                except Value:
+                    continue
+
+                if q <= 0 or p <= 0: continue
+
                 if "BUY" in side:
-                    buy_queue.append({'qty': qty, 'price': price})
-                    last_known_buy_price = price
+                    total_buy_qty += q
+                    total_buy_cost += (q * p)
                 elif "SELL" in side:
-                    sell_qty_left = qty
-                    while sell_qty_left > 0 and buy_queue:
-                        b = buy_queue[0]
-                        matched_qty = min(sell_qty_left, b['qty'])
-                        
-                        pnl = matched_qty * (price - b['price'])
-                        total_realized_pnl += pnl
-                        total_matched_qty += matched_qty
-                        total_buy_cost += (matched_qty * b['price'])
-                        total_sell_rev += (matched_qty * price)
-                        
-                        sell_qty_left -= matched_qty
-                        b['qty'] -= matched_qty
-                        if b['qty'] <= 0:
-                            buy_queue.pop(0)
-                    
-                    if sell_qty_left > 0 and last_known_buy_price > 0:
-                        pnl = sell_qty_left * (price - last_known_buy_price)
-                        total_realized_pnl += pnl
-                        total_matched_qty += sell_qty_left
-                        total_buy_cost += (sell_qty_left * last_known_buy_price)
-                        total_sell_rev += (sell_qty_left * price)
-                        sell_qty_left = 0
-                            
-            if total_matched_qty > 0:
-                avg_buy = total_buy_cost / total_matched_qty if total_matched_qty > 0 else 0
-                avg_sell = total_sell_rev / total_matched_qty if total_matched_qty > 0 else 0
-                ret_pct = (total_realized_pnl / total_buy_cost * 100) if total_buy_cost > 0 else 0.0
+                    total_sell_qty += q
+                    total_sell_rev += (q * p)
+
+            # คำนวณเมื่อมีการขายออก
+            if total_sell_qty > 0:
+                avg_sell = total_sell_rev / total_sell_qty
                 
-                realized_pnl_map[symbol_clean] = total_realized_pnl
-                closed_summary.append({
-                    "ชื่อหุ้น": symbol_clean,
+                # ป้องกันกรณี Reverse Split หรือข้อมูล Qty ฝั่ง Buy น้อยกว่า Sell
+                # โดยใช้ Cost per Share จากฝั่ง Buy ล่าสุดหรือเฉลี่ย
+                avg_buy = (total_buy_cost / total_buy_qty) if total_buy_qty > 0 else avg_sell
+                
+                # Cost เท่ากับปริมาณหุ้นที่ขาย x ราคาซื้อเฉลี่ย
+                matched_cost = total_sell_qty * avg_buy
+                pnl = total_sell_rev - matched_cost
+                ret_pct = (pnl / matched_cost * 100) if matched_cost > 0 else 0.0
+
+                realized_pnl_map[sym_clean] = pnl
+                realized_summary.append({
+                    "ชื่อหุ้น": sym_clean,
                     "โบรกเกอร์": "Webull",
-                    "จำนวนหุ้นที่ปิดขาย": total_matched_qty,
+                    "จำนวนหุ้นที่ปิดขาย": total_sell_qty,
                     "ราคาซื้อเฉลี่ย": avg_buy,
                     "ราคาขายเฉลี่ย": avg_sell,
-                    "กำไร/ขาดทุนสุทธิ ($)": total_realized_pnl,
+                    "กำไร/ขาดทุนสะสม ($)": pnl,
                     "ผลตอบแทน (%)": ret_pct
                 })
 
 # ==========================================
-# แท็บที่ 1: True Net PnL (รวม Realized + Unrealized)
+# แท็บที่ 1: True Net PnL
 # ==========================================
-with tab_net_pnl:
+with tab_net:
     st.markdown("### ⚖️ สรุปผลประกอบการที่แท้จริง (True Net PnL)")
-    st.caption("นำ 'กำไร/ขาดทุนสะสมที่ขายไปแล้ว' รวมกับ 'สถานะติดดอย/กำไรของหุ้นที่ถือปัจจุบัน' เพื่อหาตัวเลขจริง")
-    
-    net_pnl_list = []
-    
-    # 1. หุ้นที่เคยขายปิดไม้ไปแล้ว
+    st.caption("คำนวณจาก (กำไรที่ขายไปแล้ว Realized PnL) + (กำไร/ขาดทุนของหุ้นที่ยังถืออยู่ Unrealized PnL)")
+
+    net_list = []
+
+    # 1. หุ้นที่เคยปิดขายไปแล้ว
     for sym, r_pnl in realized_pnl_map.items():
-        net_pnl_list.append({
-            "Symbol": sym,
-            "Realized PnL ($)": r_pnl,
-            "Unrealized PnL ($)": 0.0,
-            "True Net PnL ($)": r_pnl
+        net_list.append({
+            "ชื่อหุ้น": sym,
+            "กำไรอดีต (ปิดแล้ว)": r_pnl,
+            "สถานะปัจจุบัน (ติดดอย/กำไร)": 0.0,
+            "สุทธิของแท้ (Net PnL)": r_pnl
         })
-        
-    # 2. หุ้นที่ถือค้างใน Dime US
+
+    # 2. หุ้นที่ถือใน Dime US
     if not df_dime_us.empty:
         df_du = df_dime_us.copy()
         df_du.columns = [str(c).strip() for c in df_du.columns]
-        sym_col = next((c for c in df_du.columns if 'ticker' in str(c).lower() or 'หุ้น' in str(c).lower()), None)
-        qty_col = next((c for c in df_du.columns if 'volume' in str(c).lower() or 'จำนวน' in str(c).lower()), None)
-        cost_col = next((c for c in df_du.columns if 'cost' in str(c).lower() or 'ต้นทุน' in str(c).lower()), None)
-        
-        if sym_col and qty_col and cost_col:
+        s_col = next((c for c in df_du.columns if 'ticker' in c.lower() or 'หุ้น' in c.lower()), None)
+        q_col = next((c for c in df_du.columns if 'volume' in c.lower() or 'จำนวน' in c.lower()), None)
+        c_col = next((c for c in df_du.columns if 'cost' in c.lower() or 'ต้นทุน' in c.lower()), None)
+
+        if s_col and q_col and c_col:
             for _, r in df_du.iterrows():
-                sym = str(r[sym_col]).strip().upper()
+                sym = str(r[s_col]).strip().upper()
                 try:
-                    qty = float(str(r[qty_col]).replace(",", ""))
-                    cost = float(str(r[cost_col]).replace(",", ""))
-                except: continue
-                
-                if sym and qty > 0:
+                    q = float(str(r[q_col]).replace(",", ""))
+                    cost = float(str(r[c_col]).replace(",", ""))
+                except Exception: continue
+
+                if sym and q > 0:
                     try:
-                        ticker_data = yf.Ticker(sym)
-                        cur_p = ticker_data.fast_info.get('last_price') or cost
-                    except:
+                        cur_p = yf.Ticker(sym).fast_info.get('last_price') or cost
+                    except Exception:
                         cur_p = cost
-                    
-                    unrealized = qty * (cur_p - cost)
-                    
-                    # เช็คว่ามีใน net_pnl_list หรือยัง
-                    existing = next((item for item in net_pnl_list if item["Symbol"] == sym), None)
+
+                    unrealized = q * (cur_p - cost)
+
+                    existing = next((item for item in net_list if item["ชื่อหุ้น"] == sym), None)
                     if existing:
-                        existing["Unrealized PnL ($)"] += unrealized
-                        existing["True Net PnL ($)"] = existing["Realized PnL ($)"] + existing["Unrealized PnL ($)"]
+                        existing["สถานะปัจจุบัน (ติดดอย/กำไร)"] += unrealized
+                        existing["สุทธิของแท้ (Net PnL)"] = existing["กำไรอดีต (ปิดแล้ว)"] + existing["สถานะปัจจุบัน (ติดดอย/กำไร)"]
                     else:
-                        net_pnl_list.append({
-                            "Symbol": sym,
-                            "Realized PnL ($)": 0.0,
-                            "Unrealized PnL ($)": unrealized,
-                            "True Net PnL ($)": unrealized
+                        net_list.append({
+                            "ชื่อหุ้น": sym,
+                            "กำไรอดีต (ปิดแล้ว)": 0.0,
+                            "สถานะปัจจุบัน (ติดดอย/กำไร)": unrealized,
+                            "สุทธิของแท้ (Net PnL)": unrealized
                         })
 
-    if net_pnl_list:
-        df_net = pd.DataFrame(net_pnl_list)
-        
-        grand_realized = df_net["Realized PnL ($)"].sum()
-        grand_unrealized = df_net["Unrealized PnL ($)"].sum()
-        grand_total_net = df_net["True Net PnL ($)"].sum()
-        
-        r_class = "pnl-positive" if grand_realized >= 0 else "pnl-negative"
-        u_class = "pnl-positive" if grand_unrealized >= 0 else "pnl-negative"
-        net_class = "pnl-positive" if grand_total_net >= 0 else "pnl-negative"
-        
+    if net_list:
+        df_net = pd.DataFrame(net_list)
+
+        sum_realized = df_net["กำไรอดีต (ปิดแล้ว)"].sum()
+        sum_unrealized = df_net["สถานะปัจจุบัน (ติดดอย/กำไร)"].sum()
+        sum_total_net = df_net["สุทธิของแท้ (Net PnL)"].sum()
+
+        r_class = "pnl-positive" if sum_realized >= 0 else "pnl-negative"
+        u_class = "pnl-positive" if sum_unrealized >= 0 else "pnl-negative"
+        n_class = "pnl-positive" if sum_total_net >= 0 else "pnl-negative"
+
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไร/ขาดทุนจริง (ขายแล้ว)</div><div class="metric-value {r_class}">${grand_realized:,.2f}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไร/ขาดทุนสะสม (ขายแล้ว)</div><div class="metric-value {r_class}">${sum_realized:,.2f}</div></div>', unsafe_allow_html=True)
         with c2:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">📉 สถานะค้างพอร์ต (Unrealized)</div><div class="metric-value {u_class}">${grand_unrealized:,.2f}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">📉 สถานะค้างพอร์ต (Unrealized)</div><div class="metric-value {u_class}">${sum_unrealized:,.2f}</div></div>', unsafe_allow_html=True)
         with c3:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">⚖️ ผลประกอบการสุทธิรวมทุกตัว</div><div class="metric-value {net_class}">${grand_total_net:,.2f}</div></div>', unsafe_allow_html=True)
-            
-        st.markdown("---")
-        
-        def color_pnl(val):
-            if isinstance(val, (int, float)):
-                color = '#00c853' if val > 0 else ('#ff3d00' if val < 0 else '#848e9c')
-                return f'color: {color}; font-weight: bold;'
-            return ''
+            st.markdown(f'<div class="metric-container"><div class="metric-label">⚖️ ผลประกอบการสุทธิรวมทุกตัว</div><div class="metric-value {n_class}">${sum_total_net:,.2f}</div></div>', unsafe_allow_html=True)
 
-        df_show = df_net.sort_values(by="True Net PnL ($)", ascending=True)
+        st.markdown("---")
+
+        df_show = df_net.sort_values(by="สุทธิของแท้ (Net PnL)", ascending=True)
         st.dataframe(
-            df_show.style.map(color_pnl, subset=["Realized PnL ($)", "Unrealized PnL ($)", "True Net PnL ($)"])
+            df_show.style.map(color_pnl, subset=["กำไรอดีต (ปิดแล้ว)", "สถานะปัจจุบัน (ติดดอย/กำไร)", "สุทธิของแท้ (Net PnL)"])
             .format({
-                "Realized PnL ($)": "${:,.2f}",
-                "Unrealized PnL ($)": "${:,.2f}",
-                "True Net PnL ($)": "${:,.2f}"
+                "กำไรอดีต (ปิดแล้ว)": "${:,.2f}",
+                "สถานะปัจจุบัน (ติดดอย/กำไร)": "${:,.2f}",
+                "สุทธิของแท้ (Net PnL)": "${:,.2f}"
             }),
             use_container_width=True
         )
     else:
-        st.info("ไม่พบข้อมูลคำนวณ True Net PnL")
+        st.info("ยังไม่มีข้อมูลคำนวณ Net PnL")
 
 # ==========================================
-# แท็บที่ 2: สรุป Realized PnL
+# แท็บที่ 2: สรุปเฉพาะไม้ที่ปิดขายแล้ว
 # ==========================================
-with tab_closed_summary:
+with tab_closed:
     st.markdown("### 🎯 สรุปผลกำไร/ขาดทุนเฉพาะหุ้นที่ปิดขายแล้ว (Realized PnL)")
-    if closed_summary:
-        df_closed_res = pd.DataFrame(closed_summary)
+    if realized_summary:
+        df_res = pd.DataFrame(realized_summary)
+        df_res = df_res.sort_values(by="กำไร/ขาดทุนสะสม ($)", ascending=True)
         st.dataframe(
-            df_closed_res.style.map(color_pnl, subset=["กำไร/ขาดทุนสุทธิ ($)", "ผลตอบแทน (%)"])
+            df_res.style.map(color_pnl, subset=["กำไร/ขาดทุนสะสม ($)", "ผลตอบแทน (%)"])
             .format({
                 "จำนวนหุ้นที่ปิดขาย": "{:,.2f}",
                 "ราคาซื้อเฉลี่ย": "${:,.2f}",
                 "ราคาขายเฉลี่ย": "${:,.2f}",
-                "กำไร/ขาดทุนสุทธิ ($)": "${:,.2f}",
+                "กำไร/ขาดทุนสะสม ($)": "${:,.2f}",
                 "ผลตอบแทน (%)": "{:+.2f}%"
             }),
             use_container_width=True
         )
     else:
-        st.info("ยังไม่มีข้อมูลรายการปิดขาย")
+        st.info("ยังไม่มีรายการขายปิดไม้")
 
 # ==========================================
-# แท็บที่ 3: Raw Logs
+# แท็บที่ 3: Raw Order History
 # ==========================================
-with tab_raw_logs:
-    s1, s2 = st.tabs(["1. Webull Order History", "2. Dime Portfolio"])
-    with s1:
-        if not df_webull.empty: st.dataframe(df_webull, use_container_width=True)
-    with s2:
-        if not df_dime_us.empty: st.dataframe(df_dime_us, use_container_width=True)
+with tab_raw:
+    if not df_webull.empty:
+        st.dataframe(df_webull, use_container_width=True)
+    else:
+        st.info("ไม่พบข้อมูล Order History ใน Google Sheet")
