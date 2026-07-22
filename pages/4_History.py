@@ -226,7 +226,7 @@ tab_closed_only, tab_raw_logs = st.tabs([
 ])
 
 # ==========================================
-# แถบที่ 1: เฉพาะหุ้นที่มีการขายเกิดขึ้นจริง (แนวทาง A)
+# แถบที่ 1: เฉพาะหุ้นที่มีการขายเกิดขึ้นจริง
 # ==========================================
 with tab_closed_only:
     st.markdown("### 📊 กำไร/ขาดทุนสุทธิเฉพาะไม้ออเดอร์ที่ขายปิดจบแล้ว (Realized PnL)")
@@ -253,6 +253,7 @@ with tab_closed_only:
                 total_matched_qty = 0.0
                 total_buy_cost = 0.0
                 total_sell_rev = 0.0
+                total_sell_qty_actual = 0.0
                 
                 for _, row in group.iterrows():
                     raw_side = str(row[side_c]).upper().strip()
@@ -276,13 +277,14 @@ with tab_closed_only:
                             if "2025" in time_str or len(time_str) > 10:
                                 is_pre_split = True
                                 
-                        if is_pre_split and "BUY" in raw_side:
+                        if is_pre_split and ("BUY" in raw_side or "ซื้อ" in raw_side):
                             qty = qty / 10.0
                             price = price * 10.0
 
                     if "BUY" in raw_side or "ซื้อ" in raw_side:
                         buy_queue.append({'qty': qty, 'price': price})
                     elif "SELL" in raw_side or "ขาย" in raw_side:
+                        total_sell_qty_actual += qty
                         sell_qty_left = qty
                         while sell_qty_left > 0 and buy_queue:
                             b = buy_queue[0]
@@ -299,19 +301,21 @@ with tab_closed_only:
                             if b['qty'] <= 0:
                                 buy_queue.pop(0)
                                 
-                # 🎯 สลักสำคัญของแนวทาง A: จะต้องมีจำนวนหุ้นที่ขายจบแล้ว (total_matched_qty > 0) เท่านั้นถึงจะโชว์!
-                if total_matched_qty > 0:
-                    avg_buy = total_buy_cost / total_matched_qty
-                    avg_sell = total_sell_rev / total_matched_qty
+                if total_matched_qty > 0 or total_sell_qty_actual > 0:
+                    display_qty = max(total_matched_qty, total_sell_qty_actual)
+                    avg_buy = (total_buy_cost / total_matched_qty) if total_matched_qty > 0 else 0.0
+                    avg_sell = (total_sell_rev / total_matched_qty) if total_matched_qty > 0 else 0.0
                     ret_pct = (total_realized_pnl / total_buy_cost * 100) if total_buy_cost > 0 else 0.0
                     
                     remaining_in_queue = sum(b['qty'] for b in buy_queue)
-                    status_text = "ปิดขายเกลี้ยงแล้ว" if remaining_in_queue <= 0.0001 else "ขายแล้วบางส่วน"
+                    
+                    # ถ้าเศษคิวเหลือน้อยกว่า 1.0 หุ้น (เกิดจากเศษ Reverse Split) หรือไม่มีคิวเหลือ ให้ปรับเป็นปิดขายเกลี้ยงทันที
+                    status_text = "ปิดขายเกลี้ยงแล้ว" if remaining_in_queue < 1.0 else "ขายแล้วบางส่วน"
                     
                     closed_summary.append({
                         "ชื่อหุ้น": symbol_clean,
                         "โบรกเกอร์": "Webull",
-                        "จำนวนหุ้นที่ปิดขายแล้ว": total_matched_qty,
+                        "จำนวนหุ้นที่ปิดขายแล้ว": display_qty,
                         "ราคาซื้อเฉลี่ย": avg_buy,
                         "ราคาขายเฉลี่ย": avg_sell,
                         "กำไร/ขาดทุนสุทธิ ($)": total_realized_pnl,
