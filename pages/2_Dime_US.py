@@ -35,9 +35,9 @@ def fetch_us_live_prices(symbols):
     if not symbols:
         return prices
         
-    clean_syms = list(set([s.upper().strip() for s in symbols if s]))
+    clean_syms = list(set([str(s).upper().strip() for s in symbols if s]))
     
-    # 1. ลองดึงแบบ Bulk Download รวดเดียวจบ
+    # 1. Bulk Download
     try:
         data = yf.download(tickers=clean_syms, period="5d", interval="1d", progress=False)
         if not data.empty and 'Close' in data:
@@ -55,7 +55,7 @@ def fetch_us_live_prices(symbols):
     except Exception as e:
         pass
 
-    # 2. Backup Fallback กรณีตัวไหนยังไม่ได้ราคา ให้ยิงผ่าน history
+    # 2. Backup Fallback
     for sym in clean_syms:
         if prices.get(sym, 0.0) == 0.0:
             try:
@@ -69,6 +69,16 @@ def fetch_us_live_prices(symbols):
                 pass
                 
     return prices
+
+def clean_num(val):
+    """ฟังก์ชันแปลงข้อความตัวเลขให้เป็น float ที่ปลอดภัย 100%"""
+    if pd.isna(val) or val is None:
+        return 0.0
+    try:
+        s = str(val).replace("$", "").replace(",", "").strip()
+        return float(s)
+    except:
+        return 0.0
 
 def get_dime_us_data():
     holdings = []
@@ -87,7 +97,6 @@ def get_dime_us_data():
                 
             df_raw = pd.DataFrame(records)
             
-            # ค้นหาคอลัมน์ชื่อหุ้น, จำนวน, และต้นทุน
             sym_col = next((c for c in df_raw.columns if 'ticker' in str(c).lower() or 'symbol' in str(c).lower() or 'หุ้น' in str(c)), None)
             qty_col = next((c for c in df_raw.columns if 'volume' in str(c).lower() or 'qty' in str(c).lower() or 'จำนวน' in str(c)), None)
             cost_col = next((c for c in df_raw.columns if 'cost' in str(c).lower() or 'ต้นทุน' in str(c)), None)
@@ -96,7 +105,6 @@ def get_dime_us_data():
                 st.error("❌ ไม่พบคอลัมน์ข้อมูลหุ้น/จำนวน/ต้นทุน ในชีท Dime_Portfolio")
                 return pd.DataFrame()
 
-            # ดึงรายชื่อหุ้นทั้งหมดเพื่อไปเอาราคาเรียลไทม์
             symbols = [str(r[sym_col]).strip().upper().split(" ")[0] for _, r in df_raw.iterrows() if str(r[sym_col]).strip()]
             live_prices = fetch_us_live_prices(symbols)
 
@@ -106,20 +114,20 @@ def get_dime_us_data():
                 if " " in sym: sym = sym.split(" ")[0]
                 
                 try:
-                    qty = float(str(r.get(qty_col, 0)).replace(",", ""))
-                    avg_cost = float(str(r.get(cost_col, 0)).replace(",", ""))
+                    qty = clean_num(r.get(qty_col, 0))
+                    avg_cost = clean_num(r.get(cost_col, 0))
                     
                     if qty <= 0: continue
                     
-                    # เอาราคาเรียลไทม์
+                    # ดึงราคาตลาดเรียลไทม์
                     current_price = live_prices.get(sym, 0.0)
-                    
-                    # ถ้าราคาเรียลไทม์ดึงไม่ได้จริงๆ ให้คงราคาต้นทุนไว้ แต่เตือนผู้ใช้
                     if current_price == 0.0:
-                        current_price = avg_cost
+                        current_price = avg_cost # กรณีหาไม่เจอจริงๆ
                     
                     invested = qty * avg_cost
                     market_val = qty * current_price
+                    
+                    # คำนวณ PnL
                     pnl = market_val - invested
                     pnl_pct = (pnl / invested * 100) if invested > 0 else 0.0
                     
@@ -176,7 +184,7 @@ if not df.empty:
     
     st.dataframe(
         df_display[["หุ้น US", "จำนวนหุ้น", "ต้นทุนเฉลี่ย", "ราคาปัจจุบัน", "มูลค่าลงทุน ($)", "มูลค่าตลาด ($)", "กำไร/ขาดทุนสุทธิ"]]
-        .style.map(color_pnl, subset=["PnL"])
+        .style.map(color_pnl, subset=["กำไร/ขาดทุนสุทธิ"])
         .format({
             "จำนวนหุ้น": "{:,.4f}",
             "ต้นทุนเฉลี่ย": "${:,.2f}",
