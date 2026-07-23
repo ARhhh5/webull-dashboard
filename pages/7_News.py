@@ -8,7 +8,7 @@ import pandas as pd
 import gspread
 import yfinance as yf
 
-st.set_page_config(page_title="Stock News & Analysis", layout="wide")
+st.set_page_config(page_title="Stock Thai News", layout="wide")
 
 st.markdown("""
     <style>
@@ -16,7 +16,7 @@ st.markdown("""
         background-color: #1e222d;
         padding: 16px;
         border-radius: 8px;
-        border-left: 4px solid #2962ff;
+        border-left: 4px solid #00c853;
         margin-bottom: 12px;
     }
     .news-title {
@@ -26,7 +26,7 @@ st.markdown("""
         text-decoration: none;
     }
     .news-title:hover {
-        color: #2962ff;
+        color: #00c853;
     }
     .news-publisher {
         font-size: 12px;
@@ -43,7 +43,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📰 ศูนย์รวมข่าวสาร & วิเคราะห์หุ้น (Stock News)")
+st.title("📰 ศูนย์รวมข่าวสารหุ้นภาษาไทย (Thai Stock News)")
 st.markdown("---")
 
 # ==========================================
@@ -113,95 +113,82 @@ def get_current_holdings():
     return sorted(list(holdings))
 
 # ==========================================
-# ฟังก์ชันดึงข่าวจาก Google News RSS (สำรอง)
+# ฟังก์ชันดึงข่าวภาษาไทยจาก Google News RSS Direct
 # ==========================================
-def fetch_google_news_rss(ticker):
+def fetch_thai_news_rss(ticker):
     news_items = []
     try:
-        encoded_ticker = urllib.parse.quote(f"{ticker} stock news")
+        # ค้นหาด้วย Ticker + คำว่า หุ้น ภาษาไทย
+        search_query = f"หุ้น {ticker}"
+        encoded_query = urllib.parse.quote(search_query)
+        
         conn = http.client.HTTPSConnection("news.google.com")
-        conn.request("GET", f"/rss/search?q={encoded_ticker}&hl=en-US&gl=US&ceid=US:en")
+        # กำหนด hl=th, gl=TH, ceid=TH:th เพื่อบังคับดึงข่าวภาษาไทยเท่านั้น
+        conn.request("GET", f"/rss/search?q={encoded_query}&hl=th&gl=TH&ceid=TH:th")
         res = conn.getresponse()
         xml_data = res.read()
         conn.close()
 
         root = ET.fromstring(xml_data)
-        for item in root.findall(".//channel/item")[:8]:
+        for item in root.findall(".//channel/item")[:10]:
             title = item.find("title").text if item.find("title") is not None else ""
             link = item.find("link").text if item.find("link") is not None else "#"
+            pub_date = item.find("pubDate").text if item.find("pubDate") is not None else ""
             source_elem = item.find("source")
-            publisher = source_elem.text if source_elem is not None else "Google News"
+            publisher = source_elem.text if source_elem is not None else "สำนักข่าวการเงิน"
             
             if title:
                 news_items.append({
                     "title": title,
                     "link": link,
-                    "publisher": publisher
+                    "publisher": publisher,
+                    "date": pub_date
                 })
     except Exception:
         pass
     return news_items
 
 # ==========================================
-# ฟังก์ชันดึงข่าวสารและข้อมูลหุ้นแบบสมบูรณ์
+# ฟังก์ชันแสดงผลหน้าข่าวภาษาไทย
 # ==========================================
-def render_stock_news(ticker_symbol):
+def render_thai_stock_news(ticker_symbol):
     try:
-        ticker_obj = yf.Ticker(ticker_symbol)
-        info = ticker_obj.info
+        # ดึงราคาตลาดจาก yfinance
+        current_price = 0.0
+        day_change = 0.0
+        company_name = ticker_symbol
         
-        current_price = info.get('currentPrice', info.get('regularMarketPrice', 0.0))
-        day_change = info.get('regularMarketChangePercent', 0.0)
-        company_name = info.get('longName', ticker_symbol)
-        market_cap = info.get('marketCap', 0)
-        
+        try:
+            ticker_obj = yf.Ticker(ticker_symbol)
+            info = ticker_obj.info
+            current_price = info.get('currentPrice', info.get('regularMarketPrice', 0.0))
+            day_change = info.get('regularMarketChangePercent', 0.0)
+            company_name = info.get('longName', ticker_symbol)
+        except Exception:
+            pass
+
         st.markdown(f"""
             <div class="stock-header">
                 <h3>📌 {company_name} ({ticker_symbol})</h3>
-                <span>💵 ราคาปัจจุบัน: <b>${current_price:,.2f}</b> | เปลี่ยนแปลงวันนี้: <b style="color: {'#00c853' if day_change >= 0 else '#ff3d00'};">{day_change:+.2f}%</b> | Market Cap: <b>${market_cap:,.0f}</b></span>
+                <span>💵 ราคาปัจจุบัน: <b>${current_price:,.2f}</b> | เปลี่ยนแปลงวันนี้: <b style="color: {'#00c853' if day_change >= 0 else '#ff3d00'};">{day_change:+.2f}%</b></span>
             </div>
         """, unsafe_allow_html=True)
         
-        st.subheader(f"🌐 รายการข่าวล่าสุดของ {ticker_symbol}")
+        st.subheader(f"🇹🇭 ข่าวสารภาษาไทยล่าสุดของหุ้น {ticker_symbol}")
         
-        parsed_news = []
-        raw_news = ticker_obj.news
-        
-        if raw_news:
-            for n in raw_news:
-                title = ""
-                link = "#"
-                publisher = "ข่าวการเงิน"
+        # ดึงข่าวภาษาไทย
+        thai_news = fetch_thai_news_rss(ticker_symbol)
 
-                # แกะโครงสร้างข้อมูลย่อยของ yfinance ทั้งแบบเก่าและใหม่
-                if isinstance(n, dict):
-                    if "content" in n and isinstance(n["content"], dict):
-                        cnt = n["content"]
-                        title = cnt.get("title", "")
-                        publisher = cnt.get("provider", {}).get("displayName", "Yahoo Finance") if isinstance(cnt.get("provider"), dict) else "Yahoo Finance"
-                        link = cnt.get("canonicalUrl", {}).get("url", "#") if isinstance(cnt.get("canonicalUrl"), dict) else cnt.get("clickThroughUrl", {}).get("url", "#")
-                    else:
-                        title = n.get("title", "")
-                        publisher = n.get("publisher", "Yahoo Finance")
-                        link = n.get("link", n.get("url", "#"))
-
-                if title and title != "ไม่มีหัวข้อข่าว":
-                    parsed_news.append({"title": title, "link": link, "publisher": publisher})
-
-        # ถ้า yfinance แกะข่าวไม่ได้ ให้ Fallback ไปดึงจาก Google News RSS
-        if not parsed_news:
-            parsed_news = fetch_google_news_rss(ticker_symbol)
-
-        if parsed_news:
-            for item in parsed_news[:8]:
+        if thai_news:
+            for item in thai_news:
                 st.markdown(f"""
                     <div class="news-card">
                         <a class="news-title" href="{item['link']}" target="_blank">🔗 {item['title']}</a>
-                        <div class="news-publisher">สำนักข่าว: {item['publisher']}</div>
+                        <div class="news-publisher">📰 สำนักข่าว: <b>{item['publisher']}</b> | 🕒 {item['date']}</div>
                     </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info(f"ไม่พบอัปเดตข่าวสารสำหรับหุ้น {ticker_symbol} ในขณะนี้")
+            st.info(f"ไม่พบข่าวสารภาษาไทยล่าสุดสำหรับหุ้น {ticker_symbol} ในขณะนี้")
             
     except Exception as e:
         st.error(f"เกิดข้อผิดพลาดในการโหลดข่าวสารของ {ticker_symbol}: {str(e)}")
@@ -210,29 +197,29 @@ def render_stock_news(ticker_symbol):
 # โครงสร้าง 2 แท็บ
 # ==========================================
 tab_search, tab_holdings = st.tabs([
-    "🔍 1. ค้นหาข่าวหุ้นรายตัว (Search Any Stock)", 
-    "💼 2. ข่าวหุ้นที่ยังถืออยู่ในพอร์ต (Holding Stocks)"
+    "🔍 1. ค้นหาข่าวหุ้นภาษาไทย (Search Any Stock)", 
+    "💼 2. ข่าวภาษาไทยเฉพาะหุ้นที่ถืออยู่ (Holding Stocks)"
 ])
 
 # ------------------------------------------
-# แท็บที่ 1: ค้นหาข่าวหุ้นอะไรก็ได้
+# แท็บที่ 1: ค้นหาข่าวหุ้นภาษาไทยอะไรก็ได้
 # ------------------------------------------
 with tab_search:
-    st.markdown("### 🔎 ค้นหาข่าวหุ้นรายตัวเพื่อวางแผนเทรด")
+    st.markdown("### 🔎 ค้นหาข่าวสารภาษาไทยเพื่อวางแผนเทรด")
     
     col_input, col_btn = st.columns([3, 1])
     with col_input:
-        search_ticker = st.text_input("กรอก Ticker Symbol หุ้นที่ต้องการดูข่าว (เช่น NVDA, VIVO, EOSE, PLTR):", value="EOSE").strip().upper()
+        search_ticker = st.text_input("กรอก Ticker Symbol หุ้นที่ต้องการดูข่าวภาษาไทย (เช่น NVDA, EOSE, PLTR, TSLA):", value="EOSE").strip().upper()
     
     st.markdown("---")
     if search_ticker:
-        render_stock_news(search_ticker)
+        render_thai_stock_news(search_ticker)
 
 # ------------------------------------------
-# แท็บที่ 2: ข่าวเฉพาะหุ้นที่ยังถืออยู่
+# แท็บที่ 2: ข่าวภาษาไทยเฉพาะหุ้นที่ยังถืออยู่
 # ------------------------------------------
 with tab_holdings:
-    st.markdown("### 💼 ติดตามข่าวสารเฉพาะหุ้นที่มีสถานะถือครองอยู่ในพอร์ต")
+    st.markdown("### 💼 ติดตามข่าวภาษาไทยเฉพาะหุ้นที่มีสถานะถือครองอยู่ในพอร์ต")
     
     holding_tickers = get_current_holdings()
     
@@ -240,6 +227,6 @@ with tab_holdings:
         selected_holding = st.selectbox("🎯 เลือกหุ้นที่อยู่ในพอร์ตของคุณ:", options=holding_tickers, index=0)
         st.markdown("---")
         if selected_holding:
-            render_stock_news(selected_holding)
+            render_thai_stock_news(selected_holding)
     else:
         st.warning("💡 ไม่พบข้อมูลหุ้นที่ถือครองอยู่ ณ ปัจจุบัน หรือระบบไม่สามารถเชื่อมต่อ Google Sheets ได้")
