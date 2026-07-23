@@ -1,5 +1,8 @@
 import json
 import base64
+import urllib.parse
+import xml.etree.ElementTree as ET
+import http.client
 import streamlit as st
 import pandas as pd
 import gspread
@@ -110,7 +113,37 @@ def get_current_holdings():
     return sorted(list(holdings))
 
 # ==========================================
-# ฟังก์ชันดึงข่าวสารและข้อมูลหุ้นด้วย yfinance
+# ฟังก์ชันดึงข่าวจาก Google News RSS (สำรอง)
+# ==========================================
+def fetch_google_news_rss(ticker):
+    news_items = []
+    try:
+        encoded_ticker = urllib.parse.quote(f"{ticker} stock news")
+        conn = http.client.HTTPSConnection("news.google.com")
+        conn.request("GET", f"/rss/search?q={encoded_ticker}&hl=en-US&gl=US&ceid=US:en")
+        res = conn.getresponse()
+        xml_data = res.read()
+        conn.close()
+
+        root = ET.fromstring(xml_data)
+        for item in root.findall(".//channel/item")[:8]:
+            title = item.find("title").text if item.find("title") is not None else ""
+            link = item.find("link").text if item.find("link") is not None else "#"
+            source_elem = item.find("source")
+            publisher = source_elem.text if source_elem is not None else "Google News"
+            
+            if title:
+                news_items.append({
+                    "title": title,
+                    "link": link,
+                    "publisher": publisher
+                })
+    except Exception:
+        pass
+    return news_items
+
+# ==========================================
+# ฟังก์ชันดึงข่าวสารและข้อมูลหุ้นแบบสมบูรณ์
 # ==========================================
 def render_stock_news(ticker_symbol):
     try:
@@ -129,29 +162,52 @@ def render_stock_news(ticker_symbol):
             </div>
         """, unsafe_allow_html=True)
         
-        st.subheader("📰 รายการข่าวล่าสุด")
-        news_list = ticker_obj.news
+        st.subheader(f"🌐 รายการข่าวล่าสุดของ {ticker_symbol}")
         
-        if news_list:
-            for n in news_list[:8]:  # แสดง 8 ข่าวล่าสุด
-                title = n.get('title', 'ไม่มีหัวข้อข่าว')
-                link = n.get('link', '#')
-                publisher = n.get('publisher', 'ข่าวการเงิน')
-                
+        parsed_news = []
+        raw_news = ticker_obj.news
+        
+        if raw_news:
+            for n in raw_news:
+                title = ""
+                link = "#"
+                publisher = "ข่าวการเงิน"
+
+                # แกะโครงสร้างข้อมูลย่อยของ yfinance ทั้งแบบเก่าและใหม่
+                if isinstance(n, dict):
+                    if "content" in n and isinstance(n["content"], dict):
+                        cnt = n["content"]
+                        title = cnt.get("title", "")
+                        publisher = cnt.get("provider", {}).get("displayName", "Yahoo Finance") if isinstance(cnt.get("provider"), dict) else "Yahoo Finance"
+                        link = cnt.get("canonicalUrl", {}).get("url", "#") if isinstance(cnt.get("canonicalUrl"), dict) else cnt.get("clickThroughUrl", {}).get("url", "#")
+                    else:
+                        title = n.get("title", "")
+                        publisher = n.get("publisher", "Yahoo Finance")
+                        link = n.get("link", n.get("url", "#"))
+
+                if title and title != "ไม่มีหัวข้อข่าว":
+                    parsed_news.append({"title": title, "link": link, "publisher": publisher})
+
+        # ถ้า yfinance แกะข่าวไม่ได้ ให้ Fallback ไปดึงจาก Google News RSS
+        if not parsed_news:
+            parsed_news = fetch_google_news_rss(ticker_symbol)
+
+        if parsed_news:
+            for item in parsed_news[:8]:
                 st.markdown(f"""
                     <div class="news-card">
-                        <a class="news-title" href="{link}" target="_blank">🔗 {title}</a>
-                        <div class="news-publisher">สำนักข่าว: {publisher}</div>
+                        <a class="news-title" href="{item['link']}" target="_blank">🔗 {item['title']}</a>
+                        <div class="news-publisher">สำนักข่าว: {item['publisher']}</div>
                     </div>
                 """, unsafe_allow_html=True)
         else:
-            st.info(f"ไม่พบข่าวสารอัปเดตสำหรับหุ้น {ticker_symbol} ในขณะนี้")
+            st.info(f"ไม่พบอัปเดตข่าวสารสำหรับหุ้น {ticker_symbol} ในขณะนี้")
             
     except Exception as e:
-        st.error(f"ไม่สามารถดึงข้อมูลข่าวสารของ {ticker_symbol} ได้: {str(e)}")
+        st.error(f"เกิดข้อผิดพลาดในการโหลดข่าวสารของ {ticker_symbol}: {str(e)}")
 
 # ==========================================
-# โครงสร้าง 2 แท็บตามโจทย์ของบอส
+# โครงสร้าง 2 แท็บ
 # ==========================================
 tab_search, tab_holdings = st.tabs([
     "🔍 1. ค้นหาข่าวหุ้นรายตัว (Search Any Stock)", 
@@ -166,7 +222,7 @@ with tab_search:
     
     col_input, col_btn = st.columns([3, 1])
     with col_input:
-        search_ticker = st.text_input("กรอก Ticker Symbol หุ้นที่ต้องการดูข่าว (เช่น NVDA, EOSE, PLTR, TSLA):", value="EOSE").strip().upper()
+        search_ticker = st.text_input("กรอก Ticker Symbol หุ้นที่ต้องการดูข่าว (เช่น NVDA, VIVO, EOSE, PLTR):", value="EOSE").strip().upper()
     
     st.markdown("---")
     if search_ticker:
