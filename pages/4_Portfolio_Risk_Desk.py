@@ -1,4 +1,5 @@
 import streamlit as st
+import pandas as pd
 import io
 from PIL import Image
 
@@ -16,7 +17,7 @@ st.markdown("ระบบ Underwrite ความเสี่ยง Analysis & R
 st.markdown("---")
 
 # ==========================================
-# 1. Master Institutional Prompt Template (ปรับตัดข้อ 1 ออกแล้ว)
+# 1. Master Institutional Prompt Template
 # ==========================================
 MASTER_RISK_DESK_PROMPT = """
 คุณคือ Senior Multi-Asset Portfolio Strategist & Risk Manager จาก CIO Office (Institutional Risk Desk) ไม่ใช่ผู้ช่วยทั่วไป และไม่ใช่เซลส์
@@ -25,6 +26,9 @@ MASTER_RISK_DESK_PROMPT = """
 นี่คือกรอบวินิจฉัยเชิงการศึกษา ไม่ใช่คำแนะนำการลงทุนเฉพาะบุคคล ผู้ใช้เป็นผู้ตัดสินใจลงทุนเอง
 
 คำสั่งพิเศษจากผู้ใช้: {custom_command}
+
+ข้อมูลพอร์ตปัจจุบันที่ดึงมาจากระบบ (US Consolidated Holdings):
+{portfolio_data_text}
 
 ═══════════════════════════════════════════════
 DATA SUFFICIENCY GATE
@@ -52,7 +56,7 @@ EPISTEMIC TAGS
 ติดป้ายทุกตัวเลขสำคัญ: [FACT], [CALC], [INFER], [MKT], [JUDG], [JUDG-PROXY], [APPROX]
 
 ═══════════════════════════════════════════════
-WORKFLOW & ลำดับ OUTPUT (ข้ามขั้นตอน Extraction เริ่มวิเคราะห์ทันที)
+WORKFLOW & ลำดับ OUTPUT (เริ่มวิเคราะห์จากข้อมูลที่มีทันที)
 ═══════════════════════════════════════════════
 1. Portfolio Snapshot (As-of, Base currency, Cash, Risk profile)
 2. ภาพลวงตา vs ความจริง (สรุปประโยคเดียวคมๆ)
@@ -83,31 +87,47 @@ if not gemini_api_key:
             break
 
 # ==========================================
-# 3. UI ส่วนอัปโหลดและรับข้อมูล
+# 3. ดึงข้อมูลพอร์ตอัตโนมัติจาก Session State
 # ==========================================
-st.subheader("📸 1. แนบภาพ Screenshot หรือใส่ข้อมูลพอร์ตเพิ่มเติม (Optional)")
-uploaded_files = st.file_uploader(
-    "แนบภาพพอร์ต (ถ้ามี):",
-    type=["png", "jpg", "jpeg", "webp"],
-    accept_multiple_files=True
-)
+st.subheader("📌 1. ข้อมูลพอร์ตหุ้นสหรัฐฯ (US Consolidated Holdings)")
 
-if uploaded_files:
-    st.success(f"แนบภาพพอร์ตเรียบร้อยแล้ว {len(uploaded_files)} ภาพ")
-    img_cols = st.columns(min(len(uploaded_files), 4))
-    for idx, file in enumerate(uploaded_files):
-        with img_cols[idx % 4]:
-            st.image(file, caption=f"ภาพที่ {idx+1}", use_container_width=True)
+auto_portfolio_df = None
+# ลองดึงข้อมูลจาก Session State ที่หน้า Portfolio เคยโหลดเก็บไว้
+if "us_consolidated_df" in st.session_state and not st.session_state["us_consolidated_df"].empty:
+    auto_portfolio_df = st.session_state["us_consolidated_df"]
+elif "all_holdings_df" in st.session_state and not st.session_state["all_holdings_df"].empty:
+    auto_portfolio_df = st.session_state["all_holdings_df"]
 
-st.subheader("📝 2. ข้อมูลเพิ่มเติม / เงื่อนไขเฉพาะ (Optional)")
-user_additional_info = st.text_area(
-    "ระบุเงื่อนไข เช่น DCA เดือนละเท่าไร / หุ้นที่ไม่ต้องการขาย / เงินกู้หรือเงินสำรอง:",
-    placeholder="ตัวอย่าง: มีเงินเติมเดือนละ 30,000 บาท / ห้ามขาย NVDA / เงินกู้พอร์ตนี้ต้องใช้ในอีก 3 ปี...",
-    height=100
-)
+if auto_portfolio_df is not None:
+    st.success("✅ เชื่อมต่อข้อมูลพอร์ตจากระบบเรียบร้อยแล้ว!")
+    with st.expander("🔍 คลิกเพื่อดูรายการหุ้นที่ดึงมาจากระบบอัตโนมัติ", expanded=False):
+        st.dataframe(auto_portfolio_df, use_container_width=True)
+else:
+    st.info("💡 ไม่พบข้อมูลพอร์ตในระบบชั่วคราว คุณสามารถพิมพ์ระบุรายการหุ้นในช่องด้านล่าง หรือแนบรูปภาพพอร์ตเพิ่มเติมได้ครับ")
 
-st.subheader("⚡ 3. เลือกโหมดประมวลผล (Quick Action Buttons)")
-st.caption("กดปุ่มโหมดวิเคราะห์ที่ต้องการ ระบบจะอ่านข้อมูลพอร์ตและประมวลผลด้วย Gemini 2.5 Flash ทันที")
+# ==========================================
+# 4. ส่วนแนบภาพ/ระบุข้อมูลเพิ่มเติม (Optional)
+# ==========================================
+col_opt1, col_opt2 = st.columns([1, 1])
+
+with col_opt1:
+    st.subheader("📸 แนบภาพ Screenshot พอร์ตเพิ่ม (Optional)")
+    uploaded_files = st.file_uploader(
+        "กรณีมีพอร์ตบัญชีอื่นที่ต้องการวิเคราะห์ร่วมด้วย:",
+        type=["png", "jpg", "jpeg", "webp"],
+        accept_multiple_files=True
+    )
+
+with col_opt2:
+    st.subheader("📝 เงื่อนไขเฉพาะ / ข้อจำกัด (Optional)")
+    user_additional_info = st.text_area(
+        "ระบุเงื่อนไข เช่น เงิน DCA / หุ้นที่ไม่ต้องการขาย / เป้าหมายลงทุน:",
+        placeholder="ตัวอย่าง: เติมเงินเดือนละ 30,000 บาท / ห้ามขาย NVDA / รับขาดทุนได้ไม่เกิน 25%...",
+        height=100
+    )
+
+st.subheader("⚡ 2. เลือกโหมดประมวลผล (Quick Action Buttons)")
+st.caption("กดปุ่มโหมดวิเคราะห์ที่ต้องการ ระบบจะนำพอร์ตทั้งหมดไป Underwrite ความเสี่ยงด้วย Gemini 2.5 Flash ทันที")
 
 # สร้างปุ่ม Quick Action แบบแบ่ง Grid
 col_b1, col_b2, col_b3, col_b4 = st.columns(4)
@@ -146,25 +166,33 @@ with col_b7:
 st.markdown("---")
 
 # ==========================================
-# 4. ส่วนประมวลผล Gemini 2.5 Flash Engine
+# 5. ส่วนประมวลผล Gemini 2.5 Flash Engine
 # ==========================================
 if action_command:
     if not HAS_GENAI:
         st.error("🚨 **ยังไม่ได้ติดตั้ง Library `google-generativeai`** โปรดตรวจสอบไฟล์ `requirements.txt` ครับ")
     elif not gemini_api_key or gemini_api_key == "XXXXX":
         st.error("🚨 **ยังไม่ได้ตั้งค่า GEMINI_API_KEY** ย้ายบรรทัด `GEMINI_API_KEY = 'รหัส'` ไว้บรรทัดแรกสุดใน Secrets บน Streamlit Cloud ครับ")
-    elif not uploaded_files and not user_additional_info.strip():
-        st.warning("⚠️ กรุณาแนบภาพ Screenshot พอร์ต หรือระบุข้อมูลพอร์ตในช่องข้อความก่อนกดปุ่มวิเคราะห์ครับ!")
+    elif auto_portfolio_df is None and not uploaded_files and not user_additional_info.strip():
+        st.warning("⚠️ ไม่พบข้อมูลพอร์ต! กรุณาเปิดหน้า Portfolio ก่อน หรือแนบภาพ/ระบุข้อมูลพอร์ตในช่องด้านบนครับ")
     else:
         with st.spinner(f"⏳ Institutional Risk Desk กำลังวิเคราะห์พอร์ตด้วยโหมด {action_command} กรุณารอแปปนึงครับ..."):
             try:
                 genai.configure(api_key=gemini_api_key)
                 model = genai.GenerativeModel('gemini-2.5-flash')
                 
+                # แปลง DataFrame พอร์ตเป็นข้อความ
+                portfolio_text = ""
+                if auto_portfolio_df is not None:
+                    portfolio_text = auto_portfolio_df.to_string(index=False)
+                else:
+                    portfolio_text = "ใช้อ่านข้อมูลจากภาพ Screenshot หรือข้อความที่แนบมา"
+                
                 # ประกอบ Prompt สั่งการ
                 prompt_content = MASTER_RISK_DESK_PROMPT.format(
                     custom_command=action_command,
-                    user_text_input=user_additional_info if user_additional_info else "ไม่มีข้อมูลเพิ่มเติม รันตามข้อมูลพอร์ตที่มี"
+                    portfolio_data_text=portfolio_text,
+                    user_text_input=user_additional_info if user_additional_info else "ไม่มีข้อมูลเพิ่มเติม"
                 )
                 
                 contents = [prompt_content]
