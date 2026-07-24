@@ -1,7 +1,13 @@
 import streamlit as st
-import google.generativeai as genai
 
 st.set_page_config(page_title="AI Fundamental Analyzer", layout="wide")
+
+# ตรวจสอบการ Import google.generativeai
+try:
+    import google.generativeai as genai
+    HAS_GENAI = True
+except ImportError:
+    HAS_GENAI = False
 
 st.title("🧠 AI Fundamental Analyzer Engine")
 st.markdown("ระบบวิเคราะห์งบการเงินและปัจจัยพื้นฐานหุ้นรายตัวแบบเจาะลึก 12 หัวข้อ ด้วย **Gemini 2.5 Flash**")
@@ -139,21 +145,22 @@ gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 tab_live, tab_prompt = st.tabs(["🤖 วิเคราะห์สดบนหน้าเว็บ (Gemini 2.5 Flash)", "📋 ก๊อปปี้ Prompt ไปใช้ภายนอก"])
 
 with tab_live:
-    if clean_ticker:
+    if not HAS_GENAI:
+        st.error("🚨 **ยังไม่ได้ติดตั้ง Library `google-generativeai`**")
+        st.info("💡 **วิธีแก้:** เพิ่มบรรทัด `google-generativeai` ในไฟล์ `requirements.txt` แล้วทำ Re-deploy หรือ Commit ขึ้น GitHub ครับ")
+    elif clean_ticker:
         if not gemini_api_key:
             st.error("🚨 **ยังไม่ได้ตั้งค่า GEMINI_API_KEY**")
             st.info("""
             **วิธีแก้ไข:**
-            1. ไปรับ API Key ฟรีที่ [aistudio.google.com](https://aistudio.google.com/)
-            2. นำรหัสไปวางในไฟล์ `.streamlit/secrets.toml` โดยเพิ่มบรรทัด:
-               `GEMINI_API_KEY = "รหัสของคุณ"`
+            นำ API Key ไปวางในไฟล์ `.streamlit/secrets.toml` โดยเพิ่มบรรทัด:
+            `GEMINI_API_KEY = "รหัสของคุณ"`
             """)
         else:
             if st.button(f"🚀 เริ่มวิเคราะห์ปัจจัยพื้นฐานหุ้น {clean_ticker}", type="primary", use_container_width=True):
                 with st.spinner(f"⏳ Gemini 2.5 Flash กำลังอ่านงบการเงินและวิเคราะห์หุ้น {clean_ticker} กรุณารอแปปนึงครับ..."):
                     try:
                         genai.configure(api_key=gemini_api_key)
-                        # เรียกใช้โมเดล gemini-2.5-flash
                         model = genai.GenerativeModel('gemini-2.5-flash')
                         
                         prompt_text = PROMPT_TEMPLATE.format(ticker=clean_ticker)
