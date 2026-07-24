@@ -203,7 +203,7 @@ def load_all_portfolios():
     return df_webull_res, pd.DataFrame(dime_us_data), pd.DataFrame(dime_th_data), usd_thb_rate
 
 # ==========================================
-# 4. ฟังก์ชันดึงราคาเรียลไทม์
+# 4. ฟังก์ชันดึงราคาเรียลไทม์ (รองรับ Qty & Total_Qty)
 # ==========================================
 def fetch_realtime_prices(df_portfolio, is_th=False):
     if df_portfolio.empty:
@@ -211,6 +211,9 @@ def fetch_realtime_prices(df_portfolio, is_th=False):
     
     df = df_portfolio.copy()
     prices = []
+    
+    # ตรวจสอบชื่อคอลัมน์จำนวนหุ้น
+    qty_col = "Qty" if "Qty" in df.columns else ("Total_Qty" if "Total_Qty" in df.columns else None)
     
     for idx, row in df.iterrows():
         sym = row["Symbol"]
@@ -224,14 +227,15 @@ def fetch_realtime_prices(df_portfolio, is_th=False):
             
     df["Market_Price"] = prices
     
-    if not is_th:
-        df["Market_Value_USD"] = df["Qty"] * df["Market_Price"]
-        df["Unrealized_PL_USD"] = df["Market_Value_USD"] - df["Total_Cost_USD"]
-        df["Unrealized_PL_Pct"] = (df["Unrealized_PL_USD"] / df["Total_Cost_USD"] * 100) if df["Total_Cost_USD"].sum() > 0 else 0.0
-    else:
-        df["Market_Value_THB"] = df["Qty"] * df["Market_Price"]
-        df["Unrealized_PL_THB"] = df["Market_Value_THB"] - df["Total_Cost_THB"]
-        df["Unrealized_PL_Pct"] = (df["Unrealized_PL_THB"] / df["Total_Cost_THB"] * 100) if df["Total_Cost_THB"].sum() > 0 else 0.0
+    if qty_col:
+        if not is_th:
+            df["Market_Value_USD"] = df[qty_col] * df["Market_Price"]
+            df["Unrealized_PL_USD"] = df["Market_Value_USD"] - df["Total_Cost_USD"]
+            df["Unrealized_PL_Pct"] = (df["Unrealized_PL_USD"] / df["Total_Cost_USD"] * 100) if df["Total_Cost_USD"].sum() > 0 else 0.0
+        else:
+            df["Market_Value_THB"] = df[qty_col] * df["Market_Price"]
+            df["Unrealized_PL_THB"] = df["Market_Value_THB"] - df["Total_Cost_THB"]
+            df["Unrealized_PL_Pct"] = (df["Unrealized_PL_THB"] / df["Total_Cost_THB"] * 100) if df["Total_Cost_THB"].sum() > 0 else 0.0
         
     return df
 
@@ -246,7 +250,7 @@ tab_all, tab_webull, tab_dime_us, tab_dime_th, tab_consolidated = st.tabs([
     "🦅 2. Webull", 
     "💵 3. Dime US", 
     "🇹🇭 4. Dime TH",
-    "🧩 5. รวมหุ้นทุกตัว (Consolidated Holdings)"
+    "🧩 5. รวมหุ้นทุกตัว (US Only)"
 ])
 
 # ------------------------------------------
@@ -260,7 +264,6 @@ with tab_all:
         df_dime_us_rt = fetch_realtime_prices(df_dime_us, is_th=False)
         df_dime_th_rt = fetch_realtime_prices(df_dime_th, is_th=True)
         
-        # คำนวณมูลค่ารวมทุกพอร์ตเป็น USD
         total_cost_webull = df_webull_rt["Total_Cost_USD"].sum() if not df_webull_rt.empty else 0.0
         total_val_webull = df_webull_rt["Market_Value_USD"].sum() if not df_webull_rt.empty else 0.0
         
@@ -275,7 +278,6 @@ with tab_all:
         grand_pl = grand_total_val - grand_total_cost
         grand_pl_pct = (grand_pl / grand_total_cost * 100) if grand_total_cost > 0 else 0.0
         
-        # แสดง KPI Cards
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown(f"""
@@ -305,7 +307,6 @@ with tab_all:
         st.caption(f"ℹ️ อัตราแลกเปลี่ยนอ้างอิง: 1 USD = {fx_rate:.2f} THB")
         st.markdown("---")
         
-        # กราฟ Pie Chart สัดส่วนการลงทุน
         col_g1, col_g2 = st.columns(2)
         with col_g1:
             df_pie_source = pd.DataFrame([
@@ -384,18 +385,17 @@ with tab_dime_th:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime TH")
 
 # ------------------------------------------
-# TAB 5: CONSOLIDATED HOLDINGS (รวมหุ้นทุกตัว)
+# TAB 5: CONSOLIDATED HOLDINGS (เฉพาะหุ้นสหรัฐฯ)
 # ------------------------------------------
 with tab_consolidated:
-    st.subheader("🧩 รวมหุ้นทุกตัวจากทุกแอป/บัญชี (Consolidated Holdings)")
-    st.markdown("นำหุ้นตัวเดียวกันมารวมจำนวน (Total Qty) และคำนวณราคาต้นทุนเฉลี่ยรวม (Weighted Average Cost)")
+    st.subheader("🧩 รวมหุ้นทุกตัวเฉพาะหุ้นสหรัฐฯ (US Consolidated Holdings)")
+    st.markdown("นำหุ้นสหรัฐฯ ตัวเดียวกันจาก Webull และ Dime US มารวมจำนวนหุ้นและคิดราคาต้นทุนเฉลี่ยถัวน้ำหนัก (Weighted Avg Cost) โดยไม่นำหุ้นไทยมารวมเพื่อป้องกันความผันผวน FX")
     
-    # รวมข้อมูลจาก Webull, Dime US และ Dime TH (แปลงเป็น USD)
-    combined_list = []
+    combined_us_list = []
     
     if not df_webull.empty:
         for _, r in df_webull.iterrows():
-            combined_list.append({
+            combined_us_list.append({
                 "Symbol": r["Symbol"],
                 "Qty": r["Qty"],
                 "Total_Cost_USD": r["Total_Cost_USD"],
@@ -404,26 +404,16 @@ with tab_consolidated:
             
     if not df_dime_us.empty:
         for _, r in df_dime_us.iterrows():
-            combined_list.append({
+            combined_us_list.append({
                 "Symbol": r["Symbol"],
                 "Qty": r["Qty"],
                 "Total_Cost_USD": r["Total_Cost_USD"],
                 "Source_App": "Dime US"
             })
-            
-    if not df_dime_th.empty:
-        for _, r in df_dime_th.iterrows():
-            combined_list.append({
-                "Symbol": r["Symbol"],
-                "Qty": r["Qty"],
-                "Total_Cost_USD": r["Total_Cost_USD"],
-                "Source_App": "Dime TH"
-            })
 
-    if combined_list:
-        df_combined = pd.DataFrame(combined_list)
+    if combined_us_list:
+        df_combined = pd.DataFrame(combined_us_list)
         
-        # จัดกลุ่มตาม Symbol เพื่อรวม Qty และ Total_Cost_USD
         grouped_rows = []
         for sym, group in df_combined.groupby("Symbol"):
             tot_qty = group["Qty"].sum()
@@ -440,11 +430,8 @@ with tab_consolidated:
             })
             
         df_grouped = pd.DataFrame(grouped_rows)
-        
-        # ดึงราคาเรียลไทม์
         df_grouped_rt = fetch_realtime_prices(df_grouped, is_th=False)
         
-        # แสดงตารางผลลัพธ์
         st.dataframe(df_grouped_rt[[
             "Symbol", "Total_Qty", "Avg_Cost_USD", "Market_Price", "Total_Cost_USD", "Market_Value_USD", "Unrealized_PL_USD", "Unrealized_PL_Pct", "Sources"
         ]].style.format({
@@ -457,4 +444,4 @@ with tab_consolidated:
             "Unrealized_PL_Pct": "{:+.2f}%"
         }), use_container_width=True)
     else:
-        st.info("ไม่พบรายการถือครองสินทรัพย์ในระบบ")
+        st.info("ไม่พบรายการถือครองหุ้นสหรัฐฯ ในระบบ")
