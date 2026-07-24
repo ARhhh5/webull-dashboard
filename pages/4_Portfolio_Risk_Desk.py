@@ -27,7 +27,7 @@ MASTER_RISK_DESK_PROMPT = """
 
 คำสั่งพิเศษจากผู้ใช้: {custom_command}
 
-ข้อมูลพอร์ตปัจจุบันที่ดึงมาจากระบบ (US Consolidated Holdings):
+ข้อมูลพอร์ตปัจจุบันที่ดึงมาจากระบบ (Consolidated Portfolio Data):
 {portfolio_data_text}
 
 ═══════════════════════════════════════════════
@@ -89,21 +89,22 @@ if not gemini_api_key:
 # ==========================================
 # 3. ดึงข้อมูลพอร์ตอัตโนมัติจาก Session State
 # ==========================================
-st.subheader("📌 1. ข้อมูลพอร์ตหุ้นสหรัฐฯ (US Consolidated Holdings)")
+st.subheader("📌 1. ข้อมูลพอร์ตหุ้นในระบบ (Consolidated Holdings)")
 
 auto_portfolio_df = None
-# ลองดึงข้อมูลจาก Session State ที่หน้า Portfolio เคยโหลดเก็บไว้
-if "us_consolidated_df" in st.session_state and not st.session_state["us_consolidated_df"].empty:
+
+# ตรวจสอบ Session state ตามลำดับ
+if "us_consolidated_df" in st.session_state and isinstance(st.session_state["us_consolidated_df"], pd.DataFrame) and not st.session_state["us_consolidated_df"].empty:
     auto_portfolio_df = st.session_state["us_consolidated_df"]
-elif "all_holdings_df" in st.session_state and not st.session_state["all_holdings_df"].empty:
+elif "all_holdings_df" in st.session_state and isinstance(st.session_state["all_holdings_df"], pd.DataFrame) and not st.session_state["all_holdings_df"].empty:
     auto_portfolio_df = st.session_state["all_holdings_df"]
 
 if auto_portfolio_df is not None:
-    st.success("✅ เชื่อมต่อข้อมูลพอร์ตจากระบบเรียบร้อยแล้ว!")
-    with st.expander("🔍 คลิกเพื่อดูรายการหุ้นที่ดึงมาจากระบบอัตโนมัติ", expanded=False):
+    st.success("✅ เชื่อมต่อข้อมูลพอร์ตจากระบบอัตโนมัติเรียบร้อยแล้ว!")
+    with st.expander("🔍 คลิกเพื่อดูรายการหุ้นในพอร์ตที่ดึงมาจากระบบ", expanded=True):
         st.dataframe(auto_portfolio_df, use_container_width=True)
 else:
-    st.info("💡 ไม่พบข้อมูลพอร์ตในระบบชั่วคราว คุณสามารถพิมพ์ระบุรายการหุ้นในช่องด้านล่าง หรือแนบรูปภาพพอร์ตเพิ่มเติมได้ครับ")
+    st.info("💡 **ไม่พบข้อมูลพอร์ตในความจำชั่วคราว** (เกิดจากการกดรีเฟรชหน้าเว็บ หรือยังไม่ได้เปิดไปที่หน้า `Portfolio`) คุณสามารถเปิดหน้า `Portfolio` ก่อนหนึ่งครั้ง หรือแนบภาพ/ระบุข้อมูลพอร์ตเพิ่มเติมด้านล่างได้เลยครับ")
 
 # ==========================================
 # 4. ส่วนแนบภาพ/ระบุข้อมูลเพิ่มเติม (Optional)
@@ -174,7 +175,7 @@ if action_command:
     elif not gemini_api_key or gemini_api_key == "XXXXX":
         st.error("🚨 **ยังไม่ได้ตั้งค่า GEMINI_API_KEY** ย้ายบรรทัด `GEMINI_API_KEY = 'รหัส'` ไว้บรรทัดแรกสุดใน Secrets บน Streamlit Cloud ครับ")
     elif auto_portfolio_df is None and not uploaded_files and not user_additional_info.strip():
-        st.warning("⚠️ ไม่พบข้อมูลพอร์ต! กรุณาเปิดหน้า Portfolio ก่อน หรือแนบภาพ/ระบุข้อมูลพอร์ตในช่องด้านบนครับ")
+        st.warning("⚠️ ไม่พบข้อมูลพอร์ต! กรุณาคลิกไปหน้า `Portfolio` ก่อนหนึ่งครั้ง หรือแนบภาพ/ระบุข้อมูลพอร์ตในช่องด้านบนครับ")
     else:
         with st.spinner(f"⏳ Institutional Risk Desk กำลังวิเคราะห์พอร์ตด้วยโหมด {action_command} กรุณารอแปปนึงครับ..."):
             try:
