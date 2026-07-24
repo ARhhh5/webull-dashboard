@@ -67,7 +67,6 @@ def calculate_webull_fifo(df_webull_raw):
     if df_webull_raw.empty:
         return pd.DataFrame()
     
-    # ค้นหาชื่อคอลัมน์ให้อัตโนมัติ
     sym_col = next((c for c in df_webull_raw.columns if 'sym' in str(c).lower() or 'symbol' in str(c).lower()), 'Symbol')
     side_col = next((c for c in df_webull_raw.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower()), 'Side')
     qty_col = next((c for c in df_webull_raw.columns if 'qty' in str(c).lower() or 'quantity' in str(c).lower()), 'Qty')
@@ -80,7 +79,6 @@ def calculate_webull_fifo(df_webull_raw):
         df = df.sort_values(by=time_col)
         
     holdings = {}
-    
     for _, row in df.iterrows():
         sym = str(row.get(sym_col, '')).strip().upper()
         side = str(row.get(side_col, '')).strip().upper()
@@ -92,9 +90,7 @@ def calculate_webull_fifo(df_webull_raw):
         except: continue
         
         if qty <= 0: continue
-        
-        if sym not in holdings:
-            holdings[sym] = []
+        if sym not in holdings: holdings[sym] = []
             
         if 'BUY' in side or 'ซื้อ' in side:
             holdings[sym].append({'qty': qty, 'price': price})
@@ -116,6 +112,7 @@ def calculate_webull_fifo(df_webull_raw):
             avg_cost = total_cost / total_qty
             result.append({
                 'Symbol': sym,
+                'Source': 'Webull',
                 'Qty': total_qty,
                 'Avg_Cost': avg_cost,
                 'Total_Cost_USD': total_cost
@@ -140,14 +137,14 @@ def load_all_portfolios():
     try:
         sh = gc.open("หุ้นของเรา")
         
-        # 3.1 Webull ( FIFO )
+        # 3.1 Webull Data
         try:
             ws1 = sh.worksheet("Webull_Order_History")
             df_w_raw = pd.DataFrame(ws1.get_all_records())
             df_webull_res = calculate_webull_fifo(df_w_raw)
         except Exception: pass
 
-        # 3.2 Dime US
+        # 3.2 Dime US Data
         try:
             ws2 = sh.worksheet("Dime_Portfolio")
             df_d = pd.DataFrame(ws2.get_all_records())
@@ -165,6 +162,7 @@ def load_all_portfolios():
                         if q > 0:
                             dime_us_data.append({
                                 "Symbol": sym,
+                                "Source": "Dime US",
                                 "Qty": q,
                                 "Avg_Cost": c,
                                 "Total_Cost_USD": q * c
@@ -172,7 +170,7 @@ def load_all_portfolios():
                     except: continue
         except Exception: pass
 
-        # 3.3 Dime TH
+        # 3.3 Dime TH Data
         try:
             ws3 = sh.worksheet("Dime_TH_Portfolio")
             df_th = pd.DataFrame(ws3.get_all_records())
@@ -191,6 +189,7 @@ def load_all_portfolios():
                             total_thb = q * c_thb
                             dime_th_data.append({
                                 "Symbol": sym,
+                                "Source": "Dime TH",
                                 "Qty": q,
                                 "Avg_Cost_THB": c_thb,
                                 "Total_Cost_THB": total_thb,
@@ -240,13 +239,14 @@ def fetch_realtime_prices(df_portfolio, is_th=False):
 df_webull, df_dime_us, df_dime_th, fx_rate = load_all_portfolios()
 
 # ==========================================
-# 5. โครงสร้าง 4 แท็บ (4-Tab Layout)
+# 5. โครงสร้าง 5 แท็บ (5-Tab Layout)
 # ==========================================
-tab_all, tab_webull, tab_dime_us, tab_dime_th = st.tabs([
+tab_all, tab_webull, tab_dime_us, tab_dime_th, tab_consolidated = st.tabs([
     "📊 1. ภาพรวมทั้งหมด (All In One)", 
     "🦅 2. Webull", 
     "💵 3. Dime US", 
-    "🇹🇭 4. Dime TH"
+    "🇹🇭 4. Dime TH",
+    "🧩 5. รวมหุ้นทุกตัว (Consolidated Holdings)"
 ])
 
 # ------------------------------------------
@@ -382,3 +382,79 @@ with tab_dime_th:
         }), use_container_width=True)
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime TH")
+
+# ------------------------------------------
+# TAB 5: CONSOLIDATED HOLDINGS (รวมหุ้นทุกตัว)
+# ------------------------------------------
+with tab_consolidated:
+    st.subheader("🧩 รวมหุ้นทุกตัวจากทุกแอป/บัญชี (Consolidated Holdings)")
+    st.markdown("นำหุ้นตัวเดียวกันมารวมจำนวน (Total Qty) และคำนวณราคาต้นทุนเฉลี่ยรวม (Weighted Average Cost)")
+    
+    # รวมข้อมูลจาก Webull, Dime US และ Dime TH (แปลงเป็น USD)
+    combined_list = []
+    
+    if not df_webull.empty:
+        for _, r in df_webull.iterrows():
+            combined_list.append({
+                "Symbol": r["Symbol"],
+                "Qty": r["Qty"],
+                "Total_Cost_USD": r["Total_Cost_USD"],
+                "Source_App": "Webull"
+            })
+            
+    if not df_dime_us.empty:
+        for _, r in df_dime_us.iterrows():
+            combined_list.append({
+                "Symbol": r["Symbol"],
+                "Qty": r["Qty"],
+                "Total_Cost_USD": r["Total_Cost_USD"],
+                "Source_App": "Dime US"
+            })
+            
+    if not df_dime_th.empty:
+        for _, r in df_dime_th.iterrows():
+            combined_list.append({
+                "Symbol": r["Symbol"],
+                "Qty": r["Qty"],
+                "Total_Cost_USD": r["Total_Cost_USD"],
+                "Source_App": "Dime TH"
+            })
+
+    if combined_list:
+        df_combined = pd.DataFrame(combined_list)
+        
+        # จัดกลุ่มตาม Symbol เพื่อรวม Qty และ Total_Cost_USD
+        grouped_rows = []
+        for sym, group in df_combined.groupby("Symbol"):
+            tot_qty = group["Qty"].sum()
+            tot_cost = group["Total_Cost_USD"].sum()
+            avg_cost = tot_cost / tot_qty if tot_qty > 0 else 0.0
+            sources = ", ".join(group["Source_App"].unique())
+            
+            grouped_rows.append({
+                "Symbol": sym,
+                "Total_Qty": tot_qty,
+                "Avg_Cost_USD": avg_cost,
+                "Total_Cost_USD": tot_cost,
+                "Sources": sources
+            })
+            
+        df_grouped = pd.DataFrame(grouped_rows)
+        
+        # ดึงราคาเรียลไทม์
+        df_grouped_rt = fetch_realtime_prices(df_grouped, is_th=False)
+        
+        # แสดงตารางผลลัพธ์
+        st.dataframe(df_grouped_rt[[
+            "Symbol", "Total_Qty", "Avg_Cost_USD", "Market_Price", "Total_Cost_USD", "Market_Value_USD", "Unrealized_PL_USD", "Unrealized_PL_Pct", "Sources"
+        ]].style.format({
+            "Total_Qty": "{:,.4f}",
+            "Avg_Cost_USD": "${:,.2f}",
+            "Market_Price": "${:,.2f}",
+            "Total_Cost_USD": "${:,.2f}",
+            "Market_Value_USD": "${:,.2f}",
+            "Unrealized_PL_USD": "${:+,.2f}",
+            "Unrealized_PL_Pct": "{:+.2f}%"
+        }), use_container_width=True)
+    else:
+        st.info("ไม่พบรายการถือครองสินทรัพย์ในระบบ")
