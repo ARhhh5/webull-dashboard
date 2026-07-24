@@ -61,41 +61,53 @@ def get_fx_usd_thb():
         return 35.0
 
 # ==========================================
-# 2. ฟังก์ชันคำนวณ FIFO สำหรับ Webull
+# 2. ฟังก์ชันคำนวณ FIFO สไตล์ Master Dashboard
 # ==========================================
-def calculate_webull_fifo(df_webull_raw):
-    if df_webull_raw.empty:
+def calculate_webull_fifo_master(df_raw):
+    if df_raw.empty:
         return pd.DataFrame()
-    
-    sym_col = next((c for c in df_webull_raw.columns if 'sym' in str(c).lower() or 'symbol' in str(c).lower()), 'Symbol')
-    side_col = next((c for c in df_webull_raw.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower()), 'Side')
-    qty_col = next((c for c in df_webull_raw.columns if 'qty' in str(c).lower() or 'quantity' in str(c).lower()), 'Qty')
-    price_col = next((c for c in df_webull_raw.columns if 'price' in str(c).lower()), 'Price')
-    time_col = next((c for c in df_webull_raw.columns if 'time' in str(c).lower() or 'date' in str(c).lower()), None)
 
-    df = df_webull_raw.copy()
+    df = df_raw.copy()
+    
+    # ค้นหาชื่อคอลัมน์
+    sym_col = next((c for c in df.columns if 'sym' in str(c).lower() or 'symbol' in str(c).lower()), 'Symbol')
+    side_col = next((c for c in df.columns if 'side' in str(c).lower() or 'action' in str(c).lower() or 'buy/sell' in str(c).lower()), 'Side')
+    qty_col = next((c for c in df.columns if 'qty' in str(c).lower() or 'quantity' in str(c).lower() or 'filled' in str(c).lower()), 'Qty')
+    price_col = next((c for c in df.columns if 'price' in str(c).lower() or 'avg price' in str(c).lower()), 'Price')
+    status_col = next((c for c in df.columns if 'status' in str(c).lower()), None)
+    time_col = next((c for c in df.columns if 'time' in str(c).lower() or 'date' in str(c).lower()), None)
+
+    # กรองเฉพาะ Filled
+    if status_col and status_col in df.columns:
+        df = df[df[status_col].astype(str).str.upper().str.contains("FILLED|FILLED/PARTIAL|EXECUTED|SUCCESS", na=False)]
+
     if time_col and time_col in df.columns:
         df[time_col] = pd.to_datetime(df[time_col], errors='coerce')
-        df = df.sort_values(by=time_col)
-        
+        df = df.sort_values(by=time_col, ascending=True)
+
     holdings = {}
+
     for _, row in df.iterrows():
         sym = str(row.get(sym_col, '')).strip().upper()
         side = str(row.get(side_col, '')).strip().upper()
-        if not sym or sym == 'NAN': continue
+        
+        if not sym or sym in ['NAN', 'NONE', '']: continue
         
         try:
-            qty = float(str(row.get(qty_col, 0)).replace(',', '').replace('$', ''))
-            price = float(str(row.get(price_col, 0)).replace(',', '').replace('$', ''))
-        except: continue
-        
-        if qty <= 0: continue
+            q_str = str(row.get(qty_col, 0)).replace(',', '').replace('$', '').strip()
+            p_str = str(row.get(price_col, 0)).replace(',', '').replace('$', '').strip()
+            q = float(q_str) if q_str else 0.0
+            p = float(p_str) if p_str else 0.0
+        except Exception:
+            continue
+
+        if q <= 0: continue
         if sym not in holdings: holdings[sym] = []
-            
+
         if 'BUY' in side or 'ซื้อ' in side:
-            holdings[sym].append({'qty': qty, 'price': price})
+            holdings[sym].append({'qty': q, 'price': p})
         elif 'SELL' in side or 'ขาย' in side:
-            sell_qty = qty
+            sell_qty = q
             while sell_qty > 0 and holdings[sym]:
                 if holdings[sym][0]['qty'] <= sell_qty:
                     sell_qty -= holdings[sym][0]['qty']
@@ -106,18 +118,18 @@ def calculate_webull_fifo(df_webull_raw):
 
     result = []
     for sym, lots in holdings.items():
-        total_qty = sum(lot['qty'] for lot in lots)
-        if total_qty > 0.0001:
-            total_cost = sum(lot['qty'] * lot['price'] for lot in lots)
-            avg_cost = total_cost / total_qty
+        tot_q = sum(lot['qty'] for lot in lots)
+        if tot_q > 0.0001:
+            tot_c = sum(lot['qty'] * lot['price'] for lot in lots)
+            avg_c = tot_c / tot_q
             result.append({
                 'Symbol': sym,
                 'Source': 'Webull',
-                'Qty': total_qty,
-                'Avg_Cost': avg_cost,
-                'Total_Cost_USD': total_cost
+                'Qty': tot_q,
+                'Avg_Cost': avg_c,
+                'Total_Cost_USD': tot_c
             })
-            
+
     return pd.DataFrame(result)
 
 # ==========================================
@@ -137,14 +149,14 @@ def load_all_portfolios():
     try:
         sh = gc.open("หุ้นของเรา")
         
-        # 3.1 Webull Data
+        # 3.1 Webull (FIFO Master Logic)
         try:
             ws1 = sh.worksheet("Webull_Order_History")
             df_w_raw = pd.DataFrame(ws1.get_all_records())
-            df_webull_res = calculate_webull_fifo(df_w_raw)
+            df_webull_res = calculate_webull_fifo_master(df_w_raw)
         except Exception: pass
 
-        # 3.2 Dime US Data
+        # 3.2 Dime US
         try:
             ws2 = sh.worksheet("Dime_Portfolio")
             df_d = pd.DataFrame(ws2.get_all_records())
@@ -167,10 +179,10 @@ def load_all_portfolios():
                                 "Avg_Cost": c,
                                 "Total_Cost_USD": q * c
                             })
-                    except: continue
+                    except Exception: continue
         except Exception: pass
 
-        # 3.3 Dime TH Data
+        # 3.3 Dime TH
         try:
             ws3 = sh.worksheet("Dime_TH_Portfolio")
             df_th = pd.DataFrame(ws3.get_all_records())
@@ -195,7 +207,7 @@ def load_all_portfolios():
                                 "Total_Cost_THB": total_thb,
                                 "Total_Cost_USD": total_thb / usd_thb_rate
                             })
-                    except: continue
+                    except Exception: continue
         except Exception: pass
 
     except Exception: pass
@@ -203,7 +215,7 @@ def load_all_portfolios():
     return df_webull_res, pd.DataFrame(dime_us_data), pd.DataFrame(dime_th_data), usd_thb_rate
 
 # ==========================================
-# 4. ฟังก์ชันดึงราคาเรียลไทม์ (รองรับ Qty & Total_Qty)
+# 4. ฟังก์ชันดึงราคาเรียลไทม์
 # ==========================================
 def fetch_realtime_prices(df_portfolio, is_th=False):
     if df_portfolio.empty:
@@ -211,8 +223,6 @@ def fetch_realtime_prices(df_portfolio, is_th=False):
     
     df = df_portfolio.copy()
     prices = []
-    
-    # ตรวจสอบชื่อคอลัมน์จำนวนหุ้น
     qty_col = "Qty" if "Qty" in df.columns else ("Total_Qty" if "Total_Qty" in df.columns else None)
     
     for idx, row in df.iterrows():
@@ -222,7 +232,7 @@ def fetch_realtime_prices(df_portfolio, is_th=False):
             t = yf.Ticker(ticker_search)
             p = t.info.get("currentPrice", t.info.get("regularMarketPrice", 0.0))
             prices.append(p if p else 0.0)
-        except:
+        except Exception:
             prices.append(0.0)
             
     df["Market_Price"] = prices
