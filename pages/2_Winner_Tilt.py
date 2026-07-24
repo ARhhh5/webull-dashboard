@@ -283,21 +283,24 @@ with tab_my_portfolio:
             st.info("ไม่พบรายการหุ้นในพอร์ตของคุณ")
 
 # ------------------------------------------
-# TAB 3: หุ้นที่ต้องการซื้อ
+# TAB 3: หุ้นที่ต้องการซื้อ (อิสระ พิมพ์ค้นหาได้ทุก Ticker)
 # ------------------------------------------
 with tab_target:
     st.subheader("🎯 สแกนหุ้นที่กำลังเล็งไว้ก่อนตัดสินใจซื้อ (Target Buying Watchlist)")
-    st.caption("พิมพ์ชื่อ Ticker หุ้นที่ต้องการซื้อ (เช่น NVDA, TSLA, PLTR) เพื่อเช็กดูว่าสอบผ่านเส้น SMA 200 วัน หรือไม่")
+    st.caption("พิมพ์ชื่อ Ticker หุ้นที่ต้องการสแกน (เช่น MU, IQQQ, NVDA, PLTR) หากต้องการค้นหาหลายตัวให้คั่นด้วยเครื่องหมายจุลภาค ( , )")
     
-    target_symbols = st.multiselect(
-        "🔎 เลือกหรือพิมพ์ชื่อ Ticker หุ้นที่ต้องการสแกน:",
-        options=["NVDA", "AAPL", "MSFT", "AMZN", "GOOGL", "META", "TSLA", "PLTR", "AMD", "INCY", "MSTR", "COIN", "AVGO", "SMCI"],
-        default=[]
+    input_symbols = st.text_input(
+        "🔎 พิมพ์ชื่อ Ticker หุ้นที่ต้องการสแกน:",
+        value="",
+        placeholder="ตัวอย่าง: MU, IQQQ, NVDA, TSLA"
     )
     
-    if target_symbols:
+    if input_symbols.strip():
+        # แยกข้อความตามจุลภาค และลบช่องว่างออก
+        target_list = [s.strip().upper() for s in input_symbols.split(",") if s.strip()]
+        
         with st.spinner("⏳ กำลังสแกนหุ้นเป้าหมาย..."):
-            df_target = fetch_market_data(target_symbols)
+            df_target = fetch_market_data(target_list)
             
             if not df_target.empty:
                 df_target["Status_Signal"] = df_target["Above_SMA200"].apply(
@@ -319,4 +322,4 @@ with tab_target:
                 
                 st.dataframe(formatted_target_df, use_container_width=True)
     else:
-        st.info("💡 พิมพ์หรือเลือกรายชื่อ Ticker หุ้นในช่องด้านบน เพื่อเริ่มสแกนสัญญาณซื้อตามเส้น SMA 200 วัน")
+        st.info("💡 พิมพ์รายชื่อ Ticker หุ้นในช่องด้านบน แล้วกด Enter เพื่อเริ่มสแกนสัญญาณซื้อตามเส้น SMA 200 วันได้ทันที!")
