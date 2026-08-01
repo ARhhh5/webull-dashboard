@@ -2,6 +2,7 @@ import streamlit as st
 import pandas as pd
 import json
 import base64
+import re
 import gspread
 from datetime import datetime
 
@@ -59,7 +60,7 @@ if gc:
             
             if not df_current_port.empty and "หุ้น (Ticker)" in df_current_port.columns:
                 # กรองเอาเฉพาะหุ้นที่มีจำนวนมากกว่า 0
-                df_available = df_current_port[df_current_port["จำนวนหุ้น (Volume)"].astype(float) > 0]
+                df_available = df_current_port[df_current_port["จำนวนหุ้น (Volume)"].astype(str).str.replace(',', '').astype(float) > 0]
                 ticker_list = df_available["หุ้น (Ticker)"].astype(str).str.strip().str.upper().tolist()
                 
                 if ticker_list:
@@ -67,8 +68,8 @@ if gc:
                     
                     # ดึงข้อมูลหุ้นที่เลือก
                     selected_row = df_available[df_available["หุ้น (Ticker)"].astype(str).str.strip().str.upper() == selected_ticker].iloc[0]
-                    current_qty = float(selected_row.get("จำนวนหุ้น (Volume)", 0))
-                    avg_cost = float(selected_row.get("ต้นทุนเฉลี่ย (Avg Cost)", 0))
+                    current_qty = float(str(selected_row.get("จำนวนหุ้น (Volume)", 0)).replace(',', ''))
+                    avg_cost = float(str(selected_row.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)).replace(',', ''))
                     
                     st.info(f"💡 ข้อมูลปัจจุบันในพอร์ต: ถืออยู่ **{current_qty:,.2f}** หุ้น | ต้นทุนเฉลี่ย **{avg_cost:,.2f}**")
                     
@@ -95,7 +96,7 @@ if gc:
                                 "ยอดเงินสุทธิที่ได้รับคืนหลังหักค่าธรรมเนียม (Optional):",
                                 min_value=0.0,
                                 value=float(sell_qty * sell_price),
-                                help="หากกรอกยอดนี้ ระบบจะคำนวณราคาขายจริงสุทธิให้อัตโนมัติ"
+                                help="หากระบุยอดเงินจากสลิปจริง ระบบจะคำนวณราคาขายจริงสุทธิให้อัตโนมัติ"
                             )
                         
                         # คำนวณพรีวิวผลการขาย
@@ -108,7 +109,7 @@ if gc:
                         st.markdown("### 📊 สรุปผลกำไร/ขาดทุนการปิดไม้ (Preview)")
                         cp1, cp2, cp3 = st.columns(3)
                         cp1.metric("ต้นทุนรวม (Cost)", f"{sell_qty * avg_cost:,.2f}")
-                        cp2.metric("มูลค่าขายสุทธิ (Net Revenue)", f"{sell_qty * actual_sell_price:,.2f}")
+                        cp2.metric("มูลค่าขายสุทธิ (Net Revenue)", f"{net_received:,.2f}" if net_received > 0 else f"{sell_qty * sell_price:,.2f}")
                         
                         pnl_color = "normal" if total_pnl >= 0 else "inverse"
                         cp3.metric("กำไร/ขาดทุนสุทธิ (Realized PnL)", f"{total_pnl:+,.2f} ({pnl_pct:+.2f}%)", delta_color=pnl_color)
@@ -116,41 +117,48 @@ if gc:
                         submit_btn = st.form_submit_button("🚀 ยืนยันการตัดสต็อกและบันทึกปิดไม้", type="primary", use_container_width=True)
                         
                         if submit_btn:
-                            with st.spinner("⏳ กำลังบันทึกข้อมูลลง Google Sheets..."):
-                                # 1. บันทึกลง Sheet: Dime_Closed_Orders
-                                try:
-                                    ws_closed = sh.worksheet("Dime_Closed_Orders")
-                                except:
-                                    ws_closed = sh.add_worksheet(title="Dime_Closed_Orders", rows="100", cols="10")
-                                    ws_closed.append_row(["หุ้น (Ticker)", "ตลาด (US/TH)", "จำนวนหุ้น (Qty)", "ราคาซื้อเฉลี่ย (Buy Price)", "ราคาขายจริง (Sell Price)", "วันที่ปิดไม้ (Date)"])
+                            with st.spinner("⏳ กำลังบันทึกข้อมูลและตัดสต็อกลง Google Sheets..."):
+                                # 1. ค้นหาบรรทัดหุ้นใน Sheet แบบ Case-Insensitive (ยืดหยุ่น KKP / kkp)
+                                cell_pattern = re.compile(rf"^{re.escape(selected_ticker)}$", re.IGNORECASE)
+                                cell = ws_port.find(cell_pattern)
                                 
-                                formatted_date = trade_date.strftime("%d/%m/%Y")
-                                new_closed_row = [
-                                    selected_ticker,
-                                    market_code,
-                                    sell_qty,
-                                    avg_cost,
-                                    round(actual_sell_price, 4),
-                                    formatted_date
-                                ]
-                                ws_closed.append_row(new_closed_row)
-                                
-                                # 2. อัปเดต/ตัดสต็อกใน Sheet พอร์ตหลัก (Dime_TH_Portfolio หรือ Dime_Portfolio)
-                                cell = ws_port.find(selected_ticker)
-                                row_idx = cell.row
-                                remaining_qty = current_qty - sell_qty
-                                
-                                if remaining_qty <= 0.0001:
-                                    # ลบแถวออกหากขายหมดพอร์ต
-                                    ws_port.delete_rows(row_idx)
-                                    st.success(f"✅ ปิดไม้หุ้น {selected_ticker} เรียบร้อย! ตัดออกจากพอร์ตคงเหลือแล้ว")
+                                if cell is None:
+                                    st.error(f"🚨 ไม่พบบรรทัดหุ้น '{selected_ticker}' ใน Sheet {sheet_name} กรุณาตรวจสอบชื่อหุ้นใน Google Sheets")
                                 else:
-                                    # อัปเดตจำนวนหุ้นคงเหลือใหม่ (คอลัมน์ B คือ จำนวนหุ้น)
-                                    ws_port.update_cell(row_idx, 2, remaining_qty)
-                                    st.success(f"✅ บันทึกคำสั่งขายเรียบร้อย! หุ้น {selected_ticker} เหลือในพอร์ต {remaining_qty:,.2f} หุ้น")
-                                
-                                st.balloons()
-                                st.rerun()
+                                    row_idx = cell.row
+                                    
+                                    # 2. บันทึกลง Sheet: Dime_Closed_Orders
+                                    try:
+                                        ws_closed = sh.worksheet("Dime_Closed_Orders")
+                                    except:
+                                        ws_closed = sh.add_worksheet(title="Dime_Closed_Orders", rows="100", cols="10")
+                                        ws_closed.append_row(["หุ้น (Ticker)", "ตลาด (US/TH)", "จำนวนหุ้น (Qty)", "ราคาซื้อเฉลี่ย (Buy Price)", "ราคาขายจริง (Sell Price)", "วันที่ปิดไม้ (Date)"])
+                                    
+                                    formatted_date = trade_date.strftime("%d/%m/%Y")
+                                    new_closed_row = [
+                                        selected_ticker,
+                                        market_code,
+                                        sell_qty,
+                                        avg_cost,
+                                        round(actual_sell_price, 4),
+                                        formatted_date
+                                    ]
+                                    ws_closed.append_row(new_closed_row)
+                                    
+                                    # 3. ตัดสต็อก/อัปเดตพอร์ตคงเหลือ
+                                    remaining_qty = current_qty - sell_qty
+                                    
+                                    if remaining_qty <= 0.0001:
+                                        # ลบแถวออกหากขายหมดพอร์ต
+                                        ws_port.delete_rows(row_idx)
+                                        st.success(f"✅ ปิดไม้หุ้น {selected_ticker} เรียบร้อย! ตัดออกจากพอร์ตคงเหลือแล้ว")
+                                    else:
+                                        # อัปเดตจำนวนหุ้นคงเหลือใหม่ (คอลัมน์ B / Column 2 คือ จำนวนหุ้น)
+                                        ws_port.update_cell(row_idx, 2, remaining_qty)
+                                        st.success(f"✅ บันทึกคำสั่งขายเรียบร้อย! หุ้น {selected_ticker} เหลือในพอร์ต {remaining_qty:,.2f} หุ้น")
+                                    
+                                    st.balloons()
+                                    st.rerun()
                 else:
                     st.warning("⚠️ ไม่พบรายการหุ้นที่มีจำนวนถือครองในพอร์ตนี้")
             else:
