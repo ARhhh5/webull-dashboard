@@ -9,7 +9,7 @@ from datetime import datetime
 st.set_page_config(page_title="Trade Execution & Order Management", layout="wide")
 
 st.title("🛒 บันทึกรายการซื้อ-ขาย & อัปเดตพอร์ตอัตโนมัติ (Trade Execution)")
-st.markdown("ระบบบันทึกรายการซื้อ (Buy) และขาย (Sell) ลง Google Sheets พร้อมตัดสต็อกและคำนวณต้นทุนเฉลี่ยให้อัตโนมัติ")
+st.markdown("ระบบบันทึกรายการซื้อ (Buy) และขาย (Sell) ลง Google Sheets พร้อมอัปเดตและตัดสต็อกพอร์ตให้อัตโนมัติ")
 st.markdown("---")
 
 # ==========================================
@@ -60,60 +60,48 @@ if gc:
             tab_buy, tab_sell = st.tabs(["🟢 บันทึกคำสั่งซื้อ (Buy Order)", "🔴 บันทึกคำสั่งขาย (Sell Order)"])
             
             # ----------------------------------------------------
-            # TAB 1: บันทึกคำสั่งซื้อ (BUY ORDER)
+            # TAB 1: บันทึกคำสั่งซื้อ (BUY ORDER - ลบแถวเก่าสร้างใหม่ / เพิ่มแถว)
             # ----------------------------------------------------
             with tab_buy:
-                st.subheader("📝 บันทึกการซื้อหุ้นเข้าพอร์ต (Add / DCA Position)")
-                st.caption(f"ข้อมูลจะถูกนำไปอัปเดตหรือเพิ่มใน Sheet: `{sheet_name}`")
+                st.subheader("📝 บันทึกการซื้อ/อัปเดตหุ้นเข้าพอร์ต")
+                st.caption(f"ข้อมูลจะถูกนำไปอัปเดตใน Sheet: `{sheet_name}` (หากมีหุ้นอยู่แล้วจะลบแถวเก่าแล้วแทนที่ด้วยข้อมูลใหม่)")
                 
                 with st.form("buy_trade_form"):
                     b_c1, b_c2 = st.columns(2)
                     with b_c1:
                         buy_ticker = st.text_input("ชื่อหุ้น (Ticker Symbol):", placeholder="เช่น KKP, PTT, NVDA").strip().upper()
-                        buy_qty = st.number_input("จำนวนหุ้นที่ซื้อ (Qty):", min_value=0.0001, value=100.0, step=1.0)
+                        buy_qty = st.number_input("จำนวนหุ้นทั้งหมด (Total Qty):", min_value=0.0001, value=100.0, step=1.0)
                     
                     with b_c2:
-                        buy_price = st.number_input("ราคาซื้อต่อหุ้น (Buy Price):", min_value=0.0001, value=50.0, step=0.10)
+                        buy_price = st.number_input("ต้นทุนต่อหุ้น (Cost per Share):", min_value=0.0001, value=50.0, step=0.10)
                         buy_date = st.date_input("วันที่ทำรายการซื้อ:", datetime.now(), key="buy_date_picker")
                     
                     total_buy_cost = buy_qty * buy_price
                     st.markdown("---")
-                    st.markdown(f"💰 **มูลค่าเงินลงทุนรวมในไม้นี้:** `{total_buy_cost:,.2f}`")
+                    st.markdown(f"💰 **มูลค่าเงินลงทุนรวมใหม่ของหุ้นตัวนี้:** `{total_buy_cost:,.2f}`")
                     
-                    submit_buy_btn = st.form_submit_button("📥 ยืนยันการเพิ่มหุ้นเข้าพอร์ต", type="primary", use_container_width=True)
+                    submit_buy_btn = st.form_submit_button("📥 ยืนยันการอัปเดต/เพิ่มหุ้นเข้าพอร์ต", type="primary", use_container_width=True)
                     
                     if submit_buy_btn:
                         if not buy_ticker:
                             st.error("⚠️ กรุณาระบุชื่อหุ้น (Ticker Symbol) ก่อนบันทึกครับ")
                         else:
-                            with st.spinner("⏳ กำลังบันทึกข้อมูลและคำนวณต้นทุนเฉลี่ยใหม่..."):
+                            with st.spinner("⏳ กำลังบันทึกข้อมูลลง Google Sheets..."):
                                 cell_pattern = re.compile(rf"^{re.escape(buy_ticker)}$", re.IGNORECASE)
                                 cell = ws_port.find(cell_pattern)
                                 
+                                new_row_data = [buy_ticker, buy_qty, buy_price]
+                                
                                 if cell is not None:
-                                    # มีหุ้นตัวนี้ในพอร์ตอยู่แล้ว -> คำนวณ Weighted Average Cost ใหม่
+                                    # มีหุ้นตัวนี้อยู่แล้ว -> ลบแถวเก่าออก แล้วเพิ่มแถวใหม่เข้าไปแทนที่
                                     row_idx = cell.row
-                                    
-                                    # อ่านค่าเดิมจาก Sheet
-                                    old_qty_val = ws_port.cell(row_idx, 2).value
-                                    old_cost_val = ws_port.cell(row_idx, 3).value
-                                    
-                                    old_qty = float(str(old_qty_val).replace(',', '')) if old_qty_val else 0.0
-                                    old_cost = float(str(old_cost_val).replace(',', '')) if old_cost_val else 0.0
-                                    
-                                    new_total_qty = old_qty + buy_qty
-                                    new_weighted_cost = ((old_qty * old_cost) + (buy_qty * buy_price)) / new_total_qty if new_total_qty > 0 else 0.0
-                                    
-                                    # อัปเดตกลับลง Sheet (Col 2 = Qty, Col 3 = Avg Cost)
-                                    ws_port.update_cell(row_idx, 2, new_total_qty)
-                                    ws_port.update_cell(row_idx, 3, round(new_weighted_cost, 4))
-                                    
-                                    st.success(f"✅ อัปเดตหุ้น {buy_ticker} เรียบร้อย! จำนวนรวม: {new_total_qty:,.2f} หุ้น | ต้นทุนเฉลี่ยใหม่: {new_weighted_cost:,.2f}")
+                                    ws_port.delete_rows(row_idx)
+                                    ws_port.append_row(new_row_data)
+                                    st.success(f"✅ ลบแถวเดิมของหุ้น {buy_ticker} และวางข้อมูลใหม่เรียบร้อย! จำนวน: {buy_qty:,.2f} หุ้น | ต้นทุน: {buy_price:,.2f}")
                                 else:
-                                    # ยังไม่มีหุ้นตัวนี้ในพอร์ต -> เพิ่มบรรทัดใหม่ (Append Row)
-                                    new_row = [buy_ticker, buy_qty, buy_price]
-                                    ws_port.append_row(new_row)
-                                    st.success(f"✅ เพิ่มหุ้นใหม่ {buy_ticker} เข้าพอร์ตเรียบร้อย! จำนวน: {buy_qty:,.2f} หุ้น @ {buy_price:,.2f}")
+                                    # ยังไม่มีหุ้นตัวนี้ในพอร์ต -> เพิ่มแถวใหม่ (Append Row)
+                                    ws_port.append_row(new_row_data)
+                                    st.success(f"✅ เพิ่มหุ้นใหม่ {buy_ticker} เข้าพอร์ตเรียบร้อย! จำนวน: {buy_qty:,.2f} หุ้น | ต้นทุน: {buy_price:,.2f}")
                                 
                                 st.balloons()
                                 st.rerun()
