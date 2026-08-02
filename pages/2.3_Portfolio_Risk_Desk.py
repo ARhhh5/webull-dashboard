@@ -10,6 +10,7 @@ import streamlit as st
 import pandas as pd
 import gspread
 from PIL import Image
+from datetime import datetime, timezone
 
 # ตรวจสอบการ Import google.generativeai
 try:
@@ -117,7 +118,7 @@ st.markdown('<div class="page-title-minimal">🛡️ Portfolio Risk Desk Engine<
 st.markdown('<div class="page-subtitle-minimal">ระบบวิเคราะห์และประเมินความเสี่ยงพอร์ตโฟลิโอแบบเลือกสเกลด้วย Gemini 2.5 Flash</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. AUTO DATA FETCHING PIPELINE
+# 2. ROBUST AUTO DATA FETCHING PIPELINE
 # ==========================================
 def get_gspread_client():
     try:
@@ -129,37 +130,89 @@ def get_gspread_client():
     except Exception:
         return None
 
-@st.cache_data(ttl=300)
+def parse_num(val):
+    if pd.isna(val) or val is None:
+        return 0.0
+    s_val = str(val).replace(",", "").replace("$", "").replace("฿", "").strip()
+    try:
+        return float(s_val)
+    except Exception:
+        return 0.0
+
+@st.cache_data(ttl=120)
 def fetch_all_portfolio_data():
     portfolio_items = []
+    status_logs = []
     
     # 1. Fetch Google Sheets (Dime US & Dime TH)
     gc = get_gspread_client()
     if gc:
         try:
             sh = gc.open("หุ้นของเรา")
-            # Dime US
-            try:
-                ws_us = sh.worksheet("Dime_Portfolio")
-                for r in ws_us.get_all_records():
-                    sym = str(r.get("หุ้น (Ticker)", r.get("Ticker", r.get("Symbol", "")))).strip().upper()
-                    qty = float(str(r.get("จำนวนหุ้น", r.get("Qty", 0))).replace(",", "")) if r.get("จำนวนหุ้น") else 0.0
-                    val = float(str(r.get("มูลค่าปัจจุบัน ($)", r.get("Value", 0))).replace(",", "").replace("$", "")) if r.get("มูลค่าปัจจุบัน ($)") else 0.0
-                    if sym and qty > 0:
-                        portfolio_items.append({"Source": "Dime US", "Symbol": sym, "Qty": qty, "MarketValue": val, "Currency": "USD"})
-            except Exception: pass
+            status_logs.append("✅ เชื่อมต่อ Google Sheet 'หุ้นของเรา' สำเร็จ")
+            
+            # ดึงรายชื่อ Worksheets ทั้งหมดในไฟล์
+            worksheets = [ws.title for ws in sh.worksheets()]
+            
+            # --- 1.1 Dime US (ลองค้นหาชื่อ worksheet ที่เข้าข่าย) ---
+            us_sheet_names = [w for w in worksheets if "dime_portfolio" in w.lower() or "dime_us" in w.lower() or "us_portfolio" in w.lower()]
+            if not us_sheet_names and "Dime_Portfolio" in worksheets:
+                us_sheet_names = ["Dime_Portfolio"]
+                
+            for ws_name in us_sheet_names:
+                try:
+                    ws = sh.worksheet(ws_name)
+                    records = ws.get_all_records()
+                    if records:
+                        df_temp = pd.DataFrame(records)
+                        cols = [str(c).strip() for c in df_temp.columns]
+                        df_temp.columns = cols
+                        
+                        sym_col = next((c for c in cols if 'ticker' in c.lower() or 'sym' in c.lower() or 'หุ้น' in c), None)
+                        qty_col = next((c for c in cols if 'จำนวน' in c or 'qty' in c.lower() or 'volume' in c.lower()), None)
+                        val_col = next((c for c in cols if 'มูลค่า' in c or 'value' in c.lower() or 'total' in c.lower()), None)
+                        
+                        if sym_col:
+                            for _, r in df_temp.iterrows():
+                                sym = str(r[sym_col]).strip().upper()
+                                qty = parse_num(r[qty_col]) if qty_col else 1.0
+                                val = parse_num(r[val_col]) if val_col else 0.0
+                                if sym and sym != "NAN" and (qty > 0 or val > 0):
+                                    portfolio_items.append({"Source": "Dime US", "Symbol": sym, "Qty": qty, "MarketValue": val, "Currency": "USD"})
+                            status_logs.append(f"✅ โหลดข้อมูลจาก {ws_name} สำเร็จ ({len(records)} รายการ)")
+                except Exception as e:
+                    status_logs.append(f"⚠️ ไม่สามารถอ่าน {ws_name}: {str(e)}")
 
-            # Dime TH
-            try:
-                ws_th = sh.worksheet("Dime_TH_Portfolio")
-                for r in ws_th.get_all_records():
-                    sym = str(r.get("หุ้น (Ticker)", r.get("Ticker", r.get("Symbol", "")))).strip().upper()
-                    qty = float(str(r.get("จำนวนหุ้น", r.get("Qty", 0))).replace(",", "")) if r.get("จำนวนหุ้น") else 0.0
-                    val = float(str(r.get("มูลค่าปัจจุบัน (฿)", r.get("Value", 0))).replace(",", "").replace("฿", "")) if r.get("มูลค่าปัจจุบัน (฿)") else 0.0
-                    if sym and qty > 0:
-                        portfolio_items.append({"Source": "Dime TH", "Symbol": sym, "Qty": qty, "MarketValue": val, "Currency": "THB"})
-            except Exception: pass
-        except Exception: pass
+            # --- 1.2 Dime TH ---
+            th_sheet_names = [w for w in worksheets if "dime_th" in w.lower() or "th_portfolio" in w.lower()]
+            for ws_name in th_sheet_names:
+                try:
+                    ws = sh.worksheet(ws_name)
+                    records = ws.get_all_records()
+                    if records:
+                        df_temp = pd.DataFrame(records)
+                        cols = [str(c).strip() for c in df_temp.columns]
+                        df_temp.columns = cols
+                        
+                        sym_col = next((c for c in cols if 'ticker' in c.lower() or 'sym' in c.lower() or 'หุ้น' in c), None)
+                        qty_col = next((c for c in cols if 'จำนวน' in c or 'qty' in c.lower() or 'volume' in c.lower()), None)
+                        val_col = next((c for c in cols if 'มูลค่า' in c or 'value' in c.lower() or 'total' in c.lower()), None)
+                        
+                        if sym_col:
+                            for _, r in df_temp.iterrows():
+                                sym = str(r[sym_col]).strip().upper()
+                                qty = parse_num(r[qty_col]) if qty_col else 1.0
+                                val = parse_num(r[val_col]) if val_col else 0.0
+                                if sym and sym != "NAN" and (qty > 0 or val > 0):
+                                    portfolio_items.append({"Source": "Dime TH", "Symbol": sym, "Qty": qty, "MarketValue": val, "Currency": "THB"})
+                            status_logs.append(f"✅ โหลดข้อมูลจาก {ws_name} สำเร็จ ({len(records)} รายการ)")
+                except Exception as e:
+                    status_logs.append(f"⚠️ ไม่สามารถอ่าน {ws_name}: {str(e)}")
+
+        except Exception as e:
+            status_logs.append(f"❌ เชื่อมต่อ Google Sheets ไม่สำเร็จ: {str(e)}")
+    else:
+        status_logs.append("⚠️ ไม่พบ Google Credentials ใน Secrets")
 
     # 2. Fetch Webull API
     webull_config = st.secrets.get("Webull", {})
@@ -184,6 +237,7 @@ def fetch_all_portfolio_data():
             res = conn.getresponse()
             data = json.loads(res.read().decode("utf-8"))
             if isinstance(data, list):
+                wb_count = 0
                 for p in data:
                     if p.get("instrument_type") == "EQUITY":
                         sym = str(p.get("symbol", "")).strip().upper()
@@ -191,15 +245,20 @@ def fetch_all_portfolio_data():
                         mkt_p = float(p.get("last_price", p.get("cost_price", 0)))
                         if sym and qty > 0:
                             portfolio_items.append({"Source": "Webull", "Symbol": sym, "Qty": qty, "MarketValue": qty * mkt_p, "Currency": "USD"})
-        except Exception: pass
+                            wb_count += 1
+                status_logs.append(f"✅ โหลดข้อมูลจาก Webull API สำเร็จ ({wb_count} รายการ)")
+        except Exception as e:
+            status_logs.append(f"⚠️ ยิง Webull API ไม่สำเร็จ: {str(e)}")
+    else:
+        status_logs.append("⚠️ ไม่พบ Webull API Credentials ใน Secrets")
 
-    return pd.DataFrame(portfolio_items)
+    return pd.DataFrame(portfolio_items), status_logs
 
-# Load Portfolio Data
-df_all_port = fetch_all_portfolio_data()
+# Load Portfolio Data & Logs
+df_all_port, sync_logs = fetch_all_portfolio_data()
 
 # ==========================================
-# 3. PORTFOLIO SELECTION DROPDOWN (OPTION B)
+# 3. PORTFOLIO SELECTION DROPDOWN
 # ==========================================
 st.markdown("### 🎯 เลือกพอร์ตโฟลิโอที่ต้องการวิเคราะห์ความเสี่ยง")
 
@@ -238,6 +297,9 @@ if not df_port.empty:
         st.dataframe(df_port, use_container_width=True, hide_index=True)
 else:
     st.warning(f"⚠️ ไม่พบข้อมูลพอร์ตโฟลิโอสำหรับ `{selected_source}` ในระบบ (สามารถอัปโหลดภาพหรือพิมพ์เงื่อนไขเพิ่มเติมด้านล่างได้)")
+    with st.expander("🛠️ ตรวจสอบสถานะการเชื่อมต่อข้อมูล (Debug Logs)"):
+        for log in sync_logs:
+            st.write(log)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
