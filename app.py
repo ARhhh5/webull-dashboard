@@ -20,7 +20,7 @@ def inject_custom_css():
     <style>
         @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
-        /* Global Theme */
+        /* Global Canvas Theme */
         html, body, [class*="css"] {
             font-family: 'Plus Jakarta Sans', sans-serif !important;
             background-color: #08090b !important;
@@ -31,10 +31,21 @@ def inject_custom_css():
             background-color: #08090b;
         }
 
+        /* ------------------------------------------------ */
+        /* CRITICAL FIX: HIDE STREAMLIT DEFAULT NAVIGATION */
+        /* ------------------------------------------------ */
+        [data-testid="stSidebarNav"] {
+            display: none !important;
+        }
+
         /* Custom Sidebar Styling */
         [data-testid="stSidebar"] {
             background-color: #0d0e12 !important;
             border-right: 1px solid #181a20 !important;
+        }
+
+        [data-testid="stSidebar"] > div:first-child {
+            padding-top: 1rem;
         }
 
         /* Sidebar Brand Title */
@@ -43,17 +54,57 @@ def inject_custom_css():
             font-size: 1.1rem;
             font-weight: 800;
             color: #38bdf8;
-            padding: 10px 0px 20px 0px;
+            padding: 10px 0px 15px 0px;
             letter-spacing: 1px;
             display: flex;
             align-items: center;
             gap: 8px;
+            border-bottom: 1px solid #181a20;
+            margin-bottom: 15px;
         }
 
-        /* Navigation Expander Group Styling */
-        [data-testid="stSidebar"] .stSectionHeader {
+        /* Custom Styling for Navigation Buttons inside Sidebar */
+        div[data-testid="stSidebar"] .stButton > button {
+            background-color: #111318;
+            color: #9ca3af;
+            border: 1px solid #1f232d;
+            border-radius: 8px;
+            font-weight: 600;
+            font-size: 0.85rem;
+            transition: all 0.2s ease;
+            text-align: left;
+            padding: 8px 12px;
+        }
+
+        div[data-testid="stSidebar"] .stButton > button:hover {
+            border-color: #38bdf8;
+            color: #38bdf8;
+            background-color: #161a23;
+        }
+
+        /* Active Navigation Highlight Override */
+        div[data-testid="stSidebar"] .stButton > button[kind="primary"] {
+            background: linear-gradient(90deg, #0284c7 0%, #0369a1 100%) !important;
+            color: #ffffff !important;
+            border: 1px solid #38bdf8 !important;
+            box-shadow: 0 4px 12px rgba(56, 189, 248, 0.2);
+        }
+
+        /* Expander Custom Styling */
+        div[data-testid="stSidebar"] .streamlit-expanderHeader {
+            background-color: #111318 !important;
+            border: 1px solid #1f232d !important;
+            border-radius: 8px !important;
+            color: #e2e8f0 !important;
+            font-size: 0.88rem !important;
             font-weight: 700 !important;
-            color: #9ca3af !important;
+            padding: 8px 12px !important;
+        }
+
+        div[data-testid="stSidebar"] .streamlit-expanderContent {
+            background-color: transparent !important;
+            border: none !important;
+            padding: 8px 0px 0px 10px !important;
         }
 
         /* Top Ticker Scroll */
@@ -202,7 +253,6 @@ inject_custom_css()
 # 2. DASHBOARD MAIN CONTENT FUNCTION
 # ==========================================
 def render_dashboard():
-    # Data Cache Connection
     @st.cache_resource
     def get_gspread_client():
         try:
@@ -258,7 +308,6 @@ def render_dashboard():
     is_usd = "USD" in currency_selected
     symbol = "$" if is_usd else "฿"
 
-    # Calculated Figures
     tot_invested_usd = 48180.96
     tot_market_usd = 43870.99
     tot_pnl_usd = tot_market_usd - tot_invested_usd
@@ -272,7 +321,6 @@ def render_dashboard():
 
     st.markdown("<br>", unsafe_allow_html=True)
 
-    # Grid Layout
     col_left, col_right = st.columns([1.1, 1.9])
 
     with col_left:
@@ -342,7 +390,6 @@ def render_dashboard():
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-    # Bottom Cards
     c_btm_left, c_btm_right = st.columns([1.1, 1.9])
     with c_btm_left:
         broker_html = """
@@ -359,67 +406,77 @@ def render_dashboard():
         st.markdown('<div style="font-size: 0.85rem; font-weight: 600; color: #9ca3af; margin-bottom: 10px;">Top Holdings Performance</div>', unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3)
         with g1:
-            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-between; align-items:center;"><span class="stock-symbol">🟢 NVDA</span><span class="badge-delta-pos" style="margin-left:auto;">+9.10%</span></div><div class="stock-price">$892,812.00</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 NVDA</span><span class="badge-delta-pos">+9.10%</span></div><div class="stock-price">$892,812.00</div></div>', unsafe_allow_html=True)
         with g2:
-            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-between; align-items:center;"><span class="stock-symbol">🔴 ABNB</span><span class="badge-delta-neg" style="margin-left:auto;">-3.89%</span></div><div class="stock-price">$92,900.00</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 ABNB</span><span class="badge-delta-neg">-3.89%</span></div><div class="stock-price">$92,900.00</div></div>', unsafe_allow_html=True)
         with g3:
-            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-between; align-items:center;"><span class="stock-symbol">🟢 AMZN</span><span class="badge-delta-pos" style="margin-left:auto;">+2.67%</span></div><div class="stock-price">$854,414.00</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 AMZN</span><span class="badge-delta-pos">+2.67%</span></div><div class="stock-price">$854,414.00</div></div>', unsafe_allow_html=True)
 
 # ==========================================
 # 3. MODERN COLLAPSIBLE SIDEBAR NAVIGATION
 # ==========================================
-with st.sidebar:
-    st.markdown('<div class="sidebar-brand">♾️ WEBULL DESK</div>', unsafe_allow_html=True)
-    
-    # 1. Main Overview Button
-    if st.button("🏠 Executive Dashboard", use_container_width=True, type="primary"):
-        st.session_state["current_page"] = "Dashboard"
-
-    st.markdown("<br>", unsafe_allow_html=True)
-
-    # 2. Portfolio Management Group (Collapsible Expander)
-    with st.expander("📂 Portfolio Management", expanded=True):
-        if st.button("📊 Portfolio Holdings", use_container_width=True):
-            st.session_state["current_page"] = "Portfolio"
-        if st.button("⚡ Trade Execution", use_container_width=True):
-            st.session_state["current_page"] = "Trade Execution"
-        if st.button("📜 Trade History", use_container_width=True):
-            st.session_state["current_page"] = "History"
-        if st.button("💰 Dividends", use_container_width=True):
-            st.session_state["current_page"] = "Dividends"
-
-    # 3. AI Analytics Group (Collapsible Expander)
-    with st.expander("🧠 AI & Analytics", expanded=False):
-        if st.button("🎯 Winner Tilt", use_container_width=True):
-            st.session_state["current_page"] = "Winner Tilt"
-        if st.button("🤖 AI Fundamental", use_container_width=True):
-            st.session_state["current_page"] = "AI Fundamental"
-        if st.button("🛡️ Portfolio Risk Desk", use_container_width=True):
-            st.session_state["current_page"] = "Risk Desk"
-        if st.button("🧮 MM Calculator", use_container_width=True):
-            st.session_state["current_page"] = "MM Calculator"
-
-# Initialize Session State Page
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "Dashboard"
 
-# Page Switcher Router
+with st.sidebar:
+    st.markdown('<div class="sidebar-brand">♾️ WEBULL DESK</div>', unsafe_allow_html=True)
+    
+    # 1. Main Overview Button (Highlight if Active)
+    is_dash_active = "primary" if st.session_state["current_page"] == "Dashboard" else "secondary"
+    if st.button("🏠 Executive Dashboard", use_container_width=True, type=is_dash_active):
+        st.session_state["current_page"] = "Dashboard"
+        st.rerun()
+
+    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
+
+    # 2. Portfolio Management Group (Collapsible Expander)
+    with st.expander("📁 Portfolio Management", expanded=True):
+        if st.button("📊 Portfolio Holdings", use_container_width=True):
+            st.session_state["current_page"] = "Portfolio"
+            st.rerun()
+        if st.button("⚡ Trade Execution", use_container_width=True):
+            st.session_state["current_page"] = "Trade Execution"
+            st.rerun()
+        if st.button("📜 Trade History", use_container_width=True):
+            st.session_state["current_page"] = "History"
+            st.rerun()
+        if st.button("💰 Dividends", use_container_width=True):
+            st.session_state["current_page"] = "Dividends"
+            st.rerun()
+
+    # 3. AI Analytics Group (Collapsible Expander)
+    with st.expander("🧠 AI & Analytics", expanded=True):
+        if st.button("🎯 Winner Tilt", use_container_width=True):
+            st.session_state["current_page"] = "Winner Tilt"
+            st.rerun()
+        if st.button("🤖 AI Fundamental Analysis", use_container_width=True):
+            st.session_state["current_page"] = "AI Fundamental"
+            st.rerun()
+        if st.button("🛡️ Portfolio Risk Desk", use_container_width=True):
+            st.session_state["current_page"] = "Risk Desk"
+            st.rerun()
+        if st.button("🧮 MM Calculator", use_container_width=True):
+            st.session_state["current_page"] = "MM Calculator"
+
+# ==========================================
+# 4. PAGE SWITCHER ROUTER
+# ==========================================
 selected_page = st.session_state["current_page"]
 
 if selected_page == "Dashboard":
     render_dashboard()
 elif selected_page == "Portfolio":
     st.title("📊 Portfolio Holdings")
-    st.info("ระบบกำลังเชื่อมต่อหน้านี้เข้ากับไฟล์ pages/portfolio.py")
+    st.caption("ระบบกำลังเชื่อมต่อข้อมูลกับไฟล์ย่อยในโฟลเดอร์ pages/")
 elif selected_page == "Trade Execution":
     st.title("⚡ Trade Execution")
-    st.info("ระบบกำลังเชื่อมต่อหน้านี้เข้ากับไฟล์ pages/trade_execution.py")
+    st.caption("บันทึกรายการเทรดและส่งข้อมูลไปยัง Google Sheets")
 elif selected_page == "History":
     st.title("📜 Trade History")
-    st.info("ระบบกำลังเชื่อมต่อหน้านี้เข้ากับไฟล์ pages/history.py")
+    st.caption("สรุปประวัติผลการเทรดทั้งหมด")
 elif selected_page == "AI Fundamental":
     st.title("🤖 AI Fundamental Analysis")
-    st.info("ระบบกำลังเชื่อมต่อหน้านี้เข้ากับไฟล์ pages/ai_fundamental.py")
+    st.caption("ระบบวิเคราะห์งบการเงินด้วย AI Gemini")
 else:
     st.title(f"📌 {selected_page}")
     st.caption("หน้าต่างแสดงผลระบบย่อย")
