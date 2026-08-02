@@ -3,189 +3,206 @@ import pandas as pd
 import json
 import base64
 import gspread
+import plotly.graph_objects as go
 
 # ==========================================
 # 1. PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Executive Command Center - Webull Pro",
+    page_title="Dashboard - Webull Pro",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ==========================================
-# 2. GLOBAL HYBRID MODERN DARK UI DESIGN (CSS)
+# 2. SLEEK ULTRA-MODERN DARK UI (CUSTOM CSS)
 # ==========================================
-def inject_custom_css():
+def inject_ultra_modern_css():
     st.markdown("""
     <style>
-        /* Import Font: Inter */
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
-        /* Global Canvas Theme */
+        /* Global Canvas Style */
         html, body, [class*="css"] {
-            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-            background-color: #0d0f12 !important;
-            color: #e2e8f0;
+            font-family: 'Plus Jakarta Sans', sans-serif !important;
+            background-color: #08090b !important;
+            color: #d1d5db;
         }
 
         .stApp {
-            background-color: #0d0f12;
+            background-color: #08090b;
         }
 
-        /* Sidebar Customization */
+        /* Sidebar Styling */
         [data-testid="stSidebar"] {
-            background-color: #131722 !important;
-            border-right: 1px solid #1e222d;
+            background-color: #0d0e12 !important;
+            border-right: 1px solid #181a20 !important;
         }
 
         [data-testid="stSidebarNav"]::before {
-            content: "⚡ WEBULL PRO";
+            content: "♾️ WEBULL DESK";
             margin-left: 20px;
             margin-top: 20px;
-            font-size: 18px;
-            font-weight: 800;
-            color: #6366f1;
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 16px;
+            font-weight: 700;
+            color: #38bdf8;
             letter-spacing: 1px;
             display: block;
-            margin-bottom: 15px;
+            margin-bottom: 20px;
         }
 
-        /* Top Market Ticker Banner */
-        .ticker-banner {
-            background-color: #161a25;
-            border: 1px solid #222736;
-            border-radius: 12px;
-            padding: 12px 24px;
+        /* Top Ticker Pills */
+        .ticker-scroll {
+            display: flex;
+            gap: 12px;
+            overflow-x: auto;
+            padding-bottom: 10px;
             margin-bottom: 20px;
+        }
+
+        .ticker-pill {
+            background-color: #111318;
+            border: 1px solid #1f232d;
+            border-radius: 8px;
+            padding: 6px 14px;
+            font-size: 0.8rem;
+            font-family: 'JetBrains Mono', monospace;
+            white-space: nowrap;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+
+        /* Main Dashboard Cards */
+        .dash-card {
+            background-color: #0f1115;
+            border: 1px solid #1a1d24;
+            border-radius: 12px;
+            padding: 20px;
+            height: 100%;
+        }
+
+        .card-header-title {
+            color: #9ca3af;
+            font-size: 0.85rem;
+            font-weight: 600;
+            margin-bottom: 12px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            font-size: 0.9rem;
-            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
         }
 
-        .status-dot {
-            height: 10px;
-            width: 10px;
-            background-color: #10b981;
-            border-radius: 50%;
-            display: inline-block;
-            margin-right: 6px;
-            box-shadow: 0 0 8px #10b981;
-        }
-
-        /* KPI Premium Glass Cards */
-        .kpi-card {
-            background: linear-gradient(145deg, #181c28 0%, #12151e 100%);
-            border: 1px solid #262c3d;
-            border-radius: 14px;
-            padding: 20px 24px;
-            margin-bottom: 15px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
-            transition: transform 0.2s ease, border-color 0.2s ease;
-        }
-
-        .kpi-card:hover {
-            border-color: #3b4358;
-            transform: translateY(-2px);
-        }
-
-        .kpi-title {
-            color: #8b94a0;
-            font-size: 0.85rem;
-            font-weight: 600;
-            text-transform: uppercase;
-            letter-spacing: 0.5px;
-            margin-bottom: 8px;
-        }
-
-        .kpi-value {
-            color: #ffffff;
-            font-size: 2rem;
+        .big-value {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 2.4rem;
             font-weight: 800;
-            letter-spacing: -0.5px;
+            color: #ffffff;
+            letter-spacing: -1px;
+            line-height: 1;
         }
 
-        .kpi-delta-positive {
-            color: #10b981;
-            font-size: 0.88rem;
+        .badge-delta-neg {
+            background-color: rgba(239, 68, 68, 0.12);
+            color: #f87171;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        .badge-delta-pos {
+            background-color: rgba(34, 197, 94, 0.12);
+            color: #4ade80;
+            padding: 4px 8px;
+            border-radius: 6px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            font-family: 'JetBrains Mono', monospace;
+        }
+
+        /* Asset Distribution Multi-Color Bar */
+        .allocation-bar-container {
+            display: flex;
+            height: 10px;
+            border-radius: 5px;
+            overflow: hidden;
+            margin: 16px 0px;
+            background-color: #1a1d24;
+        }
+
+        .bar-segment {
+            height: 100%;
+        }
+
+        .asset-row {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            padding: 8px 0;
+            font-size: 0.85rem;
+            border-bottom: 1px solid #16181f;
+        }
+
+        .asset-label {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            color: #d1d5db;
+        }
+
+        .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+        }
+
+        .asset-val {
+            font-family: 'JetBrains Mono', monospace;
             font-weight: 600;
-            margin-top: 6px;
+            color: #ffffff;
         }
 
-        .kpi-delta-negative {
-            color: #ef4444;
-            font-size: 0.88rem;
-            font-weight: 600;
-            margin-top: 6px;
+        /* Stock Mini Grid Card */
+        .stock-grid-card {
+            background-color: #111318;
+            border: 1px solid #1a1d24;
+            border-radius: 10px;
+            padding: 14px;
+            margin-bottom: 10px;
         }
 
-        /* Section Header Customization */
-        .section-header {
-            font-size: 1.25rem;
+        .stock-symbol {
             font-weight: 700;
             color: #ffffff;
-            margin-top: 25px;
-            margin-bottom: 15px;
-            letter-spacing: -0.3px;
+            font-size: 0.9rem;
         }
 
-        /* Quick Action Module Card */
-        .action-card {
-            background-color: #161a25;
-            border: 1px solid #222736;
-            border-radius: 12px;
-            padding: 18px;
-            margin-bottom: 12px;
-            transition: border-color 0.2s ease;
-        }
-
-        .action-card:hover {
-            border-color: #6366f1;
-        }
-
-        .action-title {
-            color: #6366f1;
-            font-size: 1rem;
+        .stock-price {
+            font-family: 'JetBrains Mono', monospace;
+            font-size: 1.1rem;
             font-weight: 700;
-            margin-bottom: 6px;
+            color: #ffffff;
+            margin-top: 6px;
         }
 
-        .action-desc {
-            color: #8b94a0;
-            font-size: 0.85rem;
-            line-height: 1.4;
+        /* Radio Button Styling */
+        div[data-testid="stRadioButton"] > label {
+            color: #9ca3af !important;
         }
 
-        /* Hide Default Elements */
+        /* Hide Streamlit Default UI */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
     </style>
     """, unsafe_allow_html=True)
 
-inject_custom_css()
+inject_ultra_modern_css()
 
 # ==========================================
-# 3. HEADER & TITLE SECTION
-# ==========================================
-st.title("⚡ Executive Command Center")
-st.caption("ระบบบริหารจัดการพอร์ตการลงทุนและศูนย์วิเคราะห์ข้อมูลสินทรัพย์ภาพรวม (Institutional Grade)")
-
-# Top Ticker / Market Status Banner
-st.markdown("""
-<div class="ticker-banner">
-    <div><span class="status-dot"></span><span style="color: #10b981; font-weight: 600;">Market Open</span></div>
-    <div><b>AAPL</b> <span style="color: #10b981;">$182.50 (+1.2%)</span></div>
-    <div><b>TSLA</b> <span style="color: #ef4444;">$215.30 (-0.8%)</span></div>
-    <div><b>NVDA</b> <span style="color: #10b981;">$875.20 (+3.4%)</span></div>
-    <div><b>MSFT</b> <span style="color: #10b981;">$420.10 (+0.5%)</span></div>
-</div>
-""", unsafe_allow_html=True)
-
-# ==========================================
-# 4. DATA CONNECTION & CACHE (YOUR GSHEET)
+# 3. DATA CONNECTION & CACHE
 # ==========================================
 @st.cache_resource
 def get_gspread_client():
@@ -221,22 +238,35 @@ def load_summary_data():
 df_us_raw, df_th_raw = load_summary_data()
 
 # ==========================================
-# 5. CONTROL PANEL & CURRENCY TOGGLE
+# 4. TOP CONTROL & TICKER STRIP
 # ==========================================
-c_ctrl1, c_ctrl2 = st.columns([3, 1])
-with c_ctrl1:
+st.markdown("""
+<div class="ticker-scroll">
+    <div class="ticker-pill"><span style="color:#4ade80;">🟢 Market</span> <span>NVDA $875.20 <span style="color:#4ade80;">+3.4%</span></span></div>
+    <div class="ticker-pill"><span>TSLA $215.30 <span style="color:#f87171;">-0.8%</span></span></div>
+    <div class="ticker-pill"><span>AAPL $182.50 <span style="color:#4ade80;">+1.2%</span></span></div>
+    <div class="ticker-pill"><span>MSFT $420.10 <span style="color:#4ade80;">+0.5%</span></span></div>
+    <div class="ticker-pill"><span>AMZN $178.35 <span style="color:#4ade80;">+2.1%</span></span></div>
+</div>
+""", unsafe_allow_html=True)
+
+# Currency Switcher
+c_title, c_curr = st.columns([3, 1])
+with c_title:
+    st.title("Executive Dashboard")
+with c_curr:
     currency_selected = st.radio(
-        "💱 สกุลเงินหลักในการคำนวณหน้า Command Center:",
-        ("ดอลลาร์ ($ USD)", "เงินบาท (฿ THB)"),
+        "Display Currency",
+        ("USD ($)", "THB (฿)"),
         horizontal=True,
         index=0
     )
 
-usd_fx_rate = 35.5  # อัตราแลกเปลี่ยนอ้างอิง
+usd_fx_rate = 35.5
 is_usd = "USD" in currency_selected
 symbol = "$" if is_usd else "฿"
 
-# ตัวเลขสรุปข้อมูลจริงของคุณ
+# ข้อมูลจริงของคุณ
 tot_invested_usd = 48180.96
 tot_market_usd = 43870.99
 tot_pnl_usd = tot_market_usd - tot_invested_usd
@@ -246,105 +276,152 @@ display_invested = tot_invested_usd if is_usd else (tot_invested_usd * usd_fx_ra
 display_market = tot_market_usd if is_usd else (tot_market_usd * usd_fx_rate)
 display_pnl = tot_pnl_usd if is_usd else (tot_pnl_usd * usd_fx_rate)
 
-pnl_class = "kpi-delta-positive" if display_pnl >= 0 else "kpi-delta-negative"
-pnl_sign = "▲ +" if display_pnl >= 0 else "▼ "
-
-# ==========================================
-# 6. KPI SUMMARY CARDS (PREMIUM GLASS STYLE)
-# ==========================================
-k1, k2, k3 = st.columns(3)
-
-with k1:
-    st.markdown(f'''
-        <div class="kpi-card">
-            <div class="kpi-title">💵 ต้นทุนเงินลงทุนรวม (Total Invested)</div>
-            <div class="kpi-value">{symbol}{display_invested:,.2f}</div>
-            <div style="color: #6b7280; font-size: 0.85rem; margin-top: 6px;">ฐานทุนพอร์ตคงเหลือ</div>
-        </div>
-    ''', unsafe_allow_html=True)
-
-with k2:
-    st.markdown(f'''
-        <div class="kpi-card">
-            <div class="kpi-title">📈 มูลค่าพอร์ตปัจจุบัน (Current Value)</div>
-            <div class="kpi-value">{symbol}{display_market:,.2f}</div>
-            <div style="color: #6b7280; font-size: 0.85rem; margin-top: 6px;">Market Value รวมทุกโบรกเกอร์</div>
-        </div>
-    ''', unsafe_allow_html=True)
-
-with k3:
-    st.markdown(f'''
-        <div class="kpi-card">
-            <div class="kpi-title">📊 กำไร/ขาดทุนรวมที่ยังไม่เกิดขึ้น (Unrealized PnL)</div>
-            <div class="kpi-value">{symbol}{display_pnl:,.2f}</div>
-            <div class="{pnl_class}">{pnl_sign}{tot_pnl_pct:.2f}% Return</div>
-        </div>
-    ''', unsafe_allow_html=True)
+pnl_badge = "badge-delta-pos" if display_pnl >= 0 else "badge-delta-neg"
+pnl_sign = "+" if display_pnl >= 0 else ""
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
-# 7. VISUAL ANALYTICS (SECTOR & BROKER)
+# 5. DASHBOARD MAIN LAYOUT (GRID 2-COLUMN)
 # ==========================================
-st.markdown('<div class="section-header">📊 โครงสร้างและสัดส่วนการลงทุน (Portfolio Allocation)</div>', unsafe_allow_html=True)
+col_left, col_right = st.columns([1.1, 1.9])
 
-v1, v2 = st.columns(2)
+with col_left:
+    # Portfolio Value Card
+    st.markdown(f"""
+    <div class="dash-card">
+        <div class="card-header-title">
+            <span>Portfolio value</span>
+            <span class="{pnl_badge}">{pnl_sign}{tot_pnl_pct:.2f}%</span>
+        </div>
+        <div class="big-value">{symbol}{display_market:,.2f}</div>
+        <div style="color: #f87171; font-size: 0.82rem; margin-top: 6px; font-family: 'JetBrains Mono', monospace;">
+            {pnl_sign}{symbol}{display_pnl:,.2f} total return
+        </div>
+        
+        <div style="margin-top: 25px; font-size: 0.8rem; color: #6b7280; font-weight: 600;">Where your money is invested</div>
+        
+        <!-- Multi-segment progress bar -->
+        <div class="allocation-bar-container">
+            <div class="bar-segment" style="width: 65%; background-color: #3b82f6;"></div>
+            <div class="bar-segment" style="width: 20%; background-color: #a855f7;"></div>
+            <div class="bar-segment" style="width: 10%; background-color: #ec4899;"></div>
+            <div class="bar-segment" style="width: 5%; background-color: #f59e0b;"></div>
+        </div>
+        
+        <div class="asset-row">
+            <div class="asset-label"><div class="dot" style="background-color: #3b82f6;"></div> Tech Stocks</div>
+            <div class="asset-val">{symbol}{display_market*0.65:,.2f}</div>
+        </div>
+        <div class="asset-row">
+            <div class="asset-label"><div class="dot" style="background-color: #a855f7;"></div> ETFs & Index</div>
+            <div class="asset-val">{symbol}{display_market*0.20:,.2f}</div>
+        </div>
+        <div class="asset-row">
+            <div class="asset-label"><div class="dot" style="background-color: #ec4899;"></div> Financials</div>
+            <div class="asset-val">{symbol}{display_market*0.10:,.2f}</div>
+        </div>
+        <div class="asset-row" style="border-bottom: none;">
+            <div class="asset-label"><div class="dot" style="background-color: #f59e0b;"></div> Cash & Other</div>
+            <div class="asset-val">{symbol}{display_market*0.05:,.2f}</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-with v1:
-    st.subheader("🎯 สัดส่วนตามกลุ่มอุตสาหกรรม (Sector Distribution)")
-    df_sector = pd.DataFrame({
-        "Sector": ["Technology", "Financial Services", "Consumer Defensive", "ETF / Index / Other"],
-        "Value": [31000, 1200, 500, 11170.99]
-    })
-    st.bar_chart(df_sector.set_index("Sector"), use_container_width=True)
+with col_right:
+    # Value trend & impact Chart Card
+    st.markdown("""
+    <div class="dash-card">
+        <div class="card-header-title">
+            <span>Value trend & impact</span>
+            <span style="font-family: 'JetBrains Mono'; font-size: 0.75rem; color: #6b7280;">1D  7D  1M  <span style="color:#38bdf8; font-weight:700;">6M</span>  1Y</span>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    # Custom Plotly Line Chart
+    months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul']
+    trend_vals = [42000, 45000, 41000, 46000, 44500, 47800, tot_market_usd]
+    
+    fig = go.Figure()
+    fig.add_trace(go.Scatter(
+        x=months, 
+        y=trend_vals,
+        mode='lines',
+        line=dict(color='#38bdf8', width=3, shape='spline'),
+        fill='tozeroy',
+        fillcolor='rgba(56, 189, 248, 0.05)'
+    ))
+    
+    fig.update_layout(
+        paper_bgcolor='rgba(0,0,0,0)',
+        plot_bgcolor='rgba(0,0,0,0)',
+        font=dict(color='#6b7280', family='Plus Jakarta Sans'),
+        xaxis=dict(showgrid=False, zeroline=False),
+        yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False),
+        margin=dict(t=10, b=10, l=10, r=10),
+        height=265
+    )
+    
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-with v2:
-    st.subheader("🌐 สัดส่วนตามตลาด / โบรกเกอร์ (Broker Breakdown)")
-    df_broker = pd.DataFrame({
-        "Broker / Market": ["Dime US", "Webull US", "Dime TH"],
-        "Allocation ($)": [25000, 15000, 3870.99]
-    })
-    st.area_chart(df_broker.set_index("Broker / Market"), use_container_width=True)
-
-st.divider()
+st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
-# 8. SYSTEM MODULES QUICK HUB
+# 6. LOWER SECTION: ASSETS & COMPARISON GRID
 # ==========================================
-st.markdown('<div class="section-header">🚀 ระบบงานย่อยตามหมวดหมู่ (System Modules)</div>', unsafe_allow_html=True)
+c_btm_left, c_btm_right = st.columns([1.1, 1.9])
 
-q1, q2 = st.columns(2)
+with c_btm_left:
+    st.markdown("""
+    <div class="dash-card">
+        <div class="card-header-title">Broker Allocation</div>
+        <div class="asset-row">
+            <div class="asset-label">🇺🇸 Dime US</div>
+            <div class="asset-val">$25,000.00</div>
+        </div>
+        <div class="asset-row">
+            <div class="asset-label">⚡ Webull US</div>
+            <div class="asset-val">$15,000.00</div>
+        </div>
+        <div class="asset-row" style="border-bottom:none;">
+            <div class="asset-label">🇹🇭 Dime TH</div>
+            <div class="asset-val">$3,870.99</div>
+        </div>
+    </div>
+    """, unsafe_allow_html=True)
 
-with q1:
-    st.markdown("### 📂 หมวดที่ 1: การจัดการพอร์ตโฟลิโอ (Portfolio Management)")
-    st.markdown('''
-        <div class="action-card">
-            <div class="action-title">1.1 Portfolio Holdings</div>
-            <div class="action-desc">ตรวจสอบตารางรายการหุ้นคงเหลือ แยกตามโบรกเกอร์ ต้นทุน ราคาตลาด และ Unrealized PnL รายตัว</div>
+with c_btm_right:
+    st.markdown('<div style="font-size: 0.85rem; font-weight: 600; color: #9ca3af; margin-bottom: 10px;">Top Holdings Performance</div>', unsafe_allow_html=True)
+    
+    g1, g2, g3 = st.columns(3)
+    with g1:
+        st.markdown("""
+        <div class="stock-grid-card">
+            <div style="display:flex; justify-between; align-items:center;">
+                <span class="stock-symbol">🟢 NVDA</span>
+                <span class="badge-delta-pos" style="margin-left:auto;">+9.10%</span>
+            </div>
+            <div class="stock-price">$892,812.00</div>
         </div>
-        <div class="action-card">
-            <div class="action-title">1.2 Trade Execution</div>
-            <div class="action-desc">บันทึกคำสั่งซื้อ/ขาย ตัดสต็อกพอร์ตอัตโนมัติ และอัปเดตลง Google Sheets</div>
+        """, unsafe_allow_html=True)
+    with g2:
+        st.markdown("""
+        <div class="stock-grid-card">
+            <div style="display:flex; justify-between; align-items:center;">
+                <span class="stock-symbol">🔴 ABNB</span>
+                <span class="badge-delta-neg" style="margin-left:auto;">-3.89%</span>
+            </div>
+            <div class="stock-price">$92,900.00</div>
         </div>
-        <div class="action-card">
-            <div class="action-title">1.3 Realized History</div>
-            <div class="action-desc">สรุปประวัติผลกำไร/ขาดทุนจากการขายจริง (Realized PnL) แยกแท็บ THB (฿) และ USD ($) ชัดเจน</div>
+        """, unsafe_allow_html=True)
+    with g3:
+        st.markdown("""
+        <div class="stock-grid-card">
+            <div style="display:flex; justify-between; align-items:center;">
+                <span class="stock-symbol">🟢 AMZN</span>
+                <span class="badge-delta-pos" style="margin-left:auto;">+2.67%</span>
+            </div>
+            <div class="stock-price">$854,414.00</div>
         </div>
-    ''', unsafe_allow_html=True)
-
-with q2:
-    st.markdown("### 🧠 หมวดที่ 2: ระบบ AI วิเคราะห์และค้นหาโอกาส (AI Intelligence)")
-    st.markdown('''
-        <div class="action-card">
-            <div class="action-title">2.1 Lazy Investor AI</div>
-            <div class="action-desc">ระบบ AI คัดเลือกหุ้นน่าซื้อตามงบประมาณ ระดับความเสี่ยง และธีมการลงทุนที่สนใจ</div>
-        </div>
-        <div class="action-card">
-            <div class="action-title">2.2 AI Fundamental Analysis</div>
-            <div class="action-desc">เจาะลึกงบการเงิน งบกำไรขาดทุน และงบกระแสเงินสดด้วย Gemini 2.5 Flash</div>
-        </div>
-        <div class="action-card">
-            <div class="action-title">2.3 Portfolio Risk Desk</div>
-            <div class="action-desc">วิเคราะห์ความเสี่ยงพอร์ตการลงทุน ความสัมพันธ์ของหุ้น และคำแนะนำการรีบาลานซ์</div>
-        </div>
-    ''', unsafe_allow_html=True)
+        """, unsafe_allow_html=True)
