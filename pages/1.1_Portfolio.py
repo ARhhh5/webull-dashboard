@@ -8,7 +8,7 @@ import hmac
 import hashlib
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
 import yfinance as yf
 import gspread
 from datetime import datetime, timezone
@@ -55,6 +55,24 @@ st.markdown("""
     }
     .text-green { color: #4ade80 !important; }
     .text-red { color: #f87171 !important; }
+
+    /* Chart Container Card */
+    .chart-card {
+        background-color: #0f1115;
+        border: 1px solid #1a1d24;
+        border-radius: 14px;
+        padding: 20px;
+        margin-top: 10px;
+    }
+    .chart-card-title {
+        font-size: 0.9rem;
+        font-weight: 700;
+        color: #e2e8f0;
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
 
     /* Modern Large Navigation Cards Override */
     div[data-testid="stColumn"] div.stButton > button {
@@ -384,18 +402,72 @@ if active_tab == "all":
         st.caption(f"ℹ️ อัตราแลกเปลี่ยนอ้างอิง: 1 USD = {fx_rate:.2f} THB")
         st.markdown("---")
         
+        # ------------------------------------------------
+        # CLEAN & SLEEK CHARTS SECTION
+        # ------------------------------------------------
         col_g1, col_g2 = st.columns(2)
+        
+        # Chart 1: Broker Allocation Donut Chart
         with col_g1:
-            df_broker_summary = df_port.groupby("Broker")["Market_Value_USD"].sum().reset_index()
-            df_broker_summary["Value"] = df_broker_summary["Market_Value_USD"] * multiplier
-            fig1 = px.pie(df_broker_summary, names="Broker", values="Value", title=f"สัดส่วนมูลค่าพอร์ตแยกตามโบรกเกอร์ ({curr_text})", hole=0.4, template="plotly_dark")
-            st.plotly_chart(fig1, use_container_width=True)
+            st.markdown('<div class="chart-card"><div class="chart-card-title">🏦 สัดส่วนพอร์ตแยกตามโบรกเกอร์</div>', unsafe_allow_html=True)
+            df_broker = df_port.groupby("Broker")["Market_Value_USD"].sum().reset_index()
+            df_broker["Value"] = df_broker["Market_Value_USD"] * multiplier
+            
+            fig1 = go.Figure(data=[go.Pie(
+                labels=df_broker["Broker"],
+                values=df_broker["Value"],
+                hole=0.6,
+                textinfo='percent',
+                hovertemplate="<b>%{label}</b><br>มูลค่า: " + curr_symbol + "%{value:,.2f}<br>สัดส่วน: %{percent}<extra></extra>",
+                marker=dict(colors=['#38bdf8', '#a855f7', '#34d399', '#f59e0b'])
+            )])
+            fig1.update_layout(
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='#9ca3af', family='Plus Jakarta Sans'),
+                margin=dict(t=10, b=10, l=10, r=10),
+                height=280,
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+            )
+            st.plotly_chart(fig1, use_container_width=True, config={'displayModeBar': False})
+            st.markdown('</div>', unsafe_allow_html=True)
 
+        # Chart 2: Top Holdings Allocation (Fixed Overlap Issue)
         with col_g2:
-            df_symbol_summary = df_port.groupby("Symbol")["Market_Value_USD"].sum().reset_index()
-            df_symbol_summary["Value"] = df_symbol_summary["Market_Value_USD"] * multiplier
-            fig2 = px.pie(df_symbol_summary, names="Symbol", values="Value", title=f"สัดส่วนการถือครองหุ้นทุกตัวในพอร์ต ({curr_text})", template="plotly_dark")
-            st.plotly_chart(fig2, use_container_width=True)
+            st.markdown('<div class="chart-card"><div class="chart-card-title">📈 สัดส่วนการถือครองหุ้น (Top Holdings)</div>', unsafe_allow_html=True)
+            df_sym = df_port.groupby("Symbol")["Market_Value_USD"].sum().reset_index()
+            df_sym["Value"] = df_sym["Market_Value_USD"] * multiplier
+            df_sym = df_sym.sort_values(by="Value", ascending=False)
+            
+            # Group smaller holdings into 'Others' if more than 5 stocks
+            if len(df_sym) > 5:
+                top_5 = df_sym.iloc[:5].copy()
+                others_val = df_sym.iloc[5:]["Value"].sum()
+                others_row = pd.DataFrame([{"Symbol": "Others", "Market_Value_USD": 0, "Value": others_val}])
+                df_chart_sym = pd.concat([top_5, others_row], ignore_index=True)
+            else:
+                df_chart_sym = df_sym.copy()
+
+            fig2 = go.Figure(data=[go.Pie(
+                labels=df_chart_sym["Symbol"],
+                values=df_chart_sym["Value"],
+                hole=0.6,
+                textinfo='label+percent',
+                hovertemplate="<b>%{label}</b><br>มูลค่า: " + curr_symbol + "%{value:,.2f}<br>สัดส่วน: %{percent}<extra></extra>",
+                marker=dict(colors=['#0284c7', '#38bdf8', '#818cf8', '#c084fc', '#f472b6', '#64748b'])
+            )])
+            fig2.update_layout(
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='#9ca3af', family='Plus Jakarta Sans'),
+                margin=dict(t=10, b=10, l=10, r=10),
+                height=280,
+                showlegend=False
+            )
+            st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False})
+            st.markdown('</div>', unsafe_allow_html=True)
+            
     else:
         st.info("ยังไม่มีข้อมูลหุ้นในพอร์ตโฟลิโอ")
 
