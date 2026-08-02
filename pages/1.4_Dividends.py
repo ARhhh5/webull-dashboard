@@ -140,9 +140,9 @@ def get_gspread_client():
     except Exception:
         return None
 
-def parse_amount(val):
-    """สกัดตัวเลขทศนิยมจากสตริงรูปแบบการเงินทุกประเภท"""
-    if pd.isna(val) or val is None:
+def parse_float(val):
+    """สกัดเฉพาะตัวเลขทศนิยมจากสตริง"""
+    if not val:
         return 0.0
     s_val = str(val).strip().replace(',', '')
     match = re.search(r"[-+]?\d*\.\d+|\d+", s_val)
@@ -165,53 +165,55 @@ def load_dividend_data():
         except Exception:
             return pd.DataFrame()
             
-        records = ws.get_all_records()
-        if not records:
+        all_values = ws.get_all_values()
+        if not all_values or len(all_values) < 2:
             return pd.DataFrame()
+
+        # ลบแถว Header ออก แล้วประมวลผลข้อมูลรายบรรทัดตามตำแหน่ง Column Index ที่แน่นอน
+        rows = all_values[1:]
+        data_list = []
+
+        for r in rows:
+            if not r or len(r) < 3:
+                continue
             
-        df = pd.DataFrame(records)
-        if df.empty:
+            raw_date = str(r[0]).strip()
+            ticker = str(r[1]).strip().upper() if len(r) > 1 else ""
+            raw_amount = r[2] if len(r) > 2 else "0"
+            currency = str(r[3]).strip().upper() if len(r) > 3 and r[3] else "USD"
+            broker = str(r[4]).strip().upper() if len(r) > 4 and r[4] else "WEBULL"
+
+            # ถ้าไม่มี Ticker หรือไม่มีวันที่ ข้ามแถวนี้ไป
+            if not ticker or not raw_date:
+                continue
+
+            amount = parse_float(raw_amount)
+            if amount <= 0:
+                continue
+
+            data_list.append({
+                "Raw_Date": raw_date,
+                "Ticker": ticker,
+                "Amount": amount,
+                "Currency": currency if currency in ["USD", "THB"] else "USD",
+                "Broker": broker
+            })
+
+        if not data_list:
             return pd.DataFrame()
 
-        # 1. Normalize Column Names
-        df.columns = [str(col).strip() for col in df.columns]
-        
-        # 2. Smart Column Matching
-        date_col = next((c for c in df.columns if "วัน" in c.lower() or "date" in c.lower()), None)
-        ticker_col = next((c for c in df.columns if "หุ้น" in c.lower() or "ticker" in c.lower()), None)
-        amount_col_name = next((c for c in df.columns if "เงิน" in c.lower() or "amount" in c.lower()), None)
-        curr_col = next((c for c in df.columns if "สกุล" in c.lower() or "curr" in c.lower()), None)
-        broker_col = next((c for c in df.columns if "โบรก" in c.lower() or "broker" in c.lower()), None)
+        clean_df = pd.DataFrame(data_list)
 
-        if not all([date_col, ticker_col, amount_col_name]):
-            return pd.DataFrame()
-
-        clean_df = pd.DataFrame()
-        clean_df["Raw_Date"] = df[date_col].astype(str)
-        clean_df["Ticker"] = df[ticker_col].astype(str).str.strip().str.upper()
-        clean_df["Amount"] = df[amount_col_name].apply(parse_amount)
-        clean_df["Currency"] = df[curr_col].astype(str).str.strip().str.upper() if curr_col else "USD"
-        clean_df["Broker"] = df[broker_col].astype(str).str.strip().str.upper() if broker_col else "WEBULL"
-
-        # 3. Filter valid positive amount records
-        clean_df = clean_df[clean_df["Amount"] > 0].copy()
-        if clean_df.empty:
-            return pd.DataFrame()
-
-        # 4. Ultra-Robust Date Parser (Day First Strategy)
+        # Parse Date ยืดหยุ่น
         clean_df["Date"] = pd.to_datetime(clean_df["Raw_Date"], format="%d/%m/%Y", errors='coerce')
-        
-        # Fallback parsing for weird date strings
         null_mask = clean_df["Date"].isna()
         if null_mask.any():
             clean_df.loc[null_mask, "Date"] = pd.to_datetime(
                 clean_df.loc[null_mask, "Raw_Date"], dayfirst=True, errors='coerce'
             )
-            
-        # Fill remaining missing dates with today to avoid wiping rows
         clean_df["Date"] = clean_df["Date"].fillna(pd.Timestamp.now())
 
-        # 5. Currency Calculations
+        # คำนวณแปลงมูลค่าอย่างถูกต้อง
         clean_df["Amount_USD"] = clean_df.apply(
             lambda r: r["Amount"] if r["Currency"] == "USD" else (r["Amount"] / fx_rate if fx_rate > 0 else r["Amount"]),
             axis=1
