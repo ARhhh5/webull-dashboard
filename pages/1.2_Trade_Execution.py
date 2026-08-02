@@ -145,18 +145,20 @@ if gc:
         records = ws_port.get_all_records()
         df_current_port = pd.DataFrame(records)
         
-        # ดึงรายชื่อหุ้นทั้งหมดในพอร์ตทุกหน้าเพื่อทำ Dropdown สรุปหุ้นปันผล
-        all_existing_tickers = []
-        for s_name in ["Dime_Portfolio", "Dime_TH_Portfolio"]:
+        # ดึงรายชื่อหุ้นทั้งหมดจากทั้ง พอร์ตปัจจุบัน + ประวัติปันผลเดิม (Dividend_Tracker)
+        all_existing_tickers = set()
+        for s_name in ["Dime_Portfolio", "Dime_TH_Portfolio", "Dividend_Tracker"]:
             try:
                 temp_records = sh.worksheet(s_name).get_all_records()
                 for r in temp_records:
-                    t_sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
-                    if t_sym and t_sym not in all_existing_tickers:
-                        all_existing_tickers.append(t_sym)
+                    # ค้นหาคอลัมน์ Ticker ทั้งแบบ "หุ้น (Ticker)" หรือ "หุ้น"
+                    t_sym = str(r.get("หุ้น (Ticker)", r.get("หุ้น", ""))).strip().upper()
+                    if t_sym:
+                        all_existing_tickers.add(t_sym)
             except Exception:
                 pass
-        all_existing_tickers.sort()
+                
+        sorted_tickers = sorted(list(all_existing_tickers))
 
         tab_buy, tab_sell, tab_div = st.tabs([
             "🟢 บันทึกการซื้อ (Buy)", 
@@ -296,13 +298,10 @@ if gc:
                 st.warning("⚠️ ไม่พบข้อมูลในตารางพอร์ตโฟลิโอ")
 
         # ----------------------------------------------------
-        # TAB 3: DIVIDEND TRACKER (SELECT + CUSTOM INPUT)
+        # TAB 3: DIVIDEND TRACKER (FLEXIBLE TICKER SELECTION)
         # ----------------------------------------------------
         with tab_div:
-            st.caption("📌 เลือกหุ้นจากพอร์ตที่มีอยู่ หรือระบุชื่อหุ้นใหม่เอง แล้วบันทึกลง `Dividend_Tracker`")
-            
-            # ตัวเลือก Dropdown รวมตัวเลือกคีย์เอง
-            dropdown_options = ["➕ พิมพ์ชื่อหุ้นใหม่ (Custom Ticker)..."] + all_existing_tickers
+            st.caption("📌 บันทึกเงินปันผลสะสมลง Worksheet: `Dividend_Tracker`")
             
             with st.form("dividend_execution_form"):
                 d_c1, d_c2 = st.columns(2)
@@ -310,23 +309,27 @@ if gc:
                 with d_c1:
                     div_date = st.date_input("วันที่รับเงิน (Date Received):", datetime.now(), key="div_date_picker")
                     
-                    selected_div_option = st.selectbox(
-                        "เลือกหุ้นที่ได้รับปันผล:",
-                        dropdown_options,
-                        index=1 if len(dropdown_options) > 1 else 0
+                    # เลือกรูปแบบการระบุชื่อหุ้น
+                    input_mode = st.radio(
+                        "วิธีการระบุชื่อหุ้น:",
+                        ("📌 เลือกจากรายการ", "✍️ พิมพ์คีย์ชื่อหุ้นใหม่เอง"),
+                        horizontal=True
                     )
                     
-                    # ถ้าเลือกคีย์เอง -> แสดงช่อง Input
-                    if selected_div_option == "➕ พิมพ์ชื่อหุ้นใหม่ (Custom Ticker)...":
-                        div_ticker = st.text_input("ระบุชื่อหุ้น (Custom Ticker):", placeholder="เช่น NVDA, AAPL, PTT").strip().upper()
+                    if input_mode == "📌 เลือกจากรายการ":
+                        if sorted_tickers:
+                            div_ticker = st.selectbox("เลือกหุ้นที่ได้รับปันผล:", sorted_tickers)
+                        else:
+                            st.warning("ยังไม่มีข้อมูลหุ้นในระบบ กรุณาเลือกพิมพ์คีย์ชื่อหุ้นใหม่เอง")
+                            div_ticker = st.text_input("ระบุชื่อหุ้น (Ticker Symbol):", placeholder="เช่น TSYY, YMAG, NVDA").strip().upper()
                     else:
-                        div_ticker = selected_div_option
+                        div_ticker = st.text_input("ระบุชื่อหุ้นใหม่ (Ticker Symbol):", placeholder="เช่น TSYY, YMAG, NVDA").strip().upper()
                         
                     div_amount = st.number_input("จำนวนเงินที่ได้รับ (Amount Received):", min_value=0.0001, value=1.00, step=0.05)
                 
                 with d_c2:
                     div_currency = st.selectbox("สกุลเงิน (Currency):", ["USD", "THB"], index=0 if market_code == "US" else 1)
-                    div_broker = st.selectbox("โบรกเกอร์ (Broker):", ["DIME", "WEBULL", "OTHER"], index=0)
+                    div_broker = st.selectbox("โบรกเกอร์ (Broker):", ["WEBULL", "DIME", "OTHER"], index=0)
                 
                 st.markdown("<br>", unsafe_allow_html=True)
                 submit_div_btn = st.form_submit_button("💰 ยืนยันการบันทึกเงินปันผล", use_container_width=True)
