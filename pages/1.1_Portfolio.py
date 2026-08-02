@@ -13,43 +13,95 @@ import yfinance as yf
 import gspread
 from datetime import datetime, timezone
 
-# CSS Styling for Table & Metric Cards
+# ==========================================
+# 1. PAGE STYLE & MINIMAL CARD CSS
+# ==========================================
 st.markdown("""
     <style>
+    /* Minimal Header Style */
+    .page-title-minimal {
+        font-size: 1.5rem;
+        font-weight: 800;
+        color: #ffffff;
+        letter-spacing: -0.5px;
+        margin-bottom: 2px;
+    }
+    .page-subtitle-minimal {
+        color: #6b7280;
+        font-size: 0.85rem;
+        margin-bottom: 20px;
+    }
+
+    /* Metric Cards */
     .metric-card {
-        background-color: #1e222d;
-        padding: 20px;
-        border-radius: 10px;
-        border: 1px solid #2a2e39;
+        background-color: #0f1115;
+        padding: 18px;
+        border-radius: 12px;
+        border: 1px solid #1a1d24;
         text-align: center;
         margin-bottom: 15px;
     }
     .metric-label {
-        color: #848e9c;
-        font-size: 14px;
-        margin-bottom: 8px;
+        color: #9ca3af;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 6px;
     }
     .metric-value {
-        font-size: 26px;
-        font-weight: bold;
+        font-size: 22px;
+        font-weight: 800;
         color: #ffffff;
+        font-family: 'Plus Jakarta Sans', sans-serif;
     }
-    .text-green { color: #00c853 !important; }
-    .text-red { color: #ff3d00 !important; }
+    .text-green { color: #4ade80 !important; }
+    .text-red { color: #f87171 !important; }
+
+    /* Modern Large Navigation Cards Override */
+    div[data-testid="stColumn"] div.stButton > button {
+        background-color: #0f1115 !important;
+        border: 1px solid #1a1d24 !important;
+        border-radius: 14px !important;
+        padding: 16px 20px !important;
+        height: auto !important;
+        min-height: 100px !important;
+        text-align: left !important;
+        transition: all 0.25s ease !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+    }
+
+    div[data-testid="stColumn"] div.stButton > button:hover {
+        border-color: #38bdf8 !important;
+        background-color: #141822 !important;
+        transform: translateY(-2px);
+        box-shadow: 0 8px 20px rgba(56, 189, 248, 0.15);
+    }
+
+    /* Active Big Card Highlight */
+    div[data-testid="stColumn"] div.stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #111e2e 0%, #0d1724 100%) !important;
+        border: 1px solid #38bdf8 !important;
+        box-shadow: 0 8px 20px rgba(56, 189, 248, 0.2) !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("💼 สรุปภาพรวมพอร์ตการลงทุน (Total Portfolio Overview)")
-st.markdown("---")
+# Minimal Header
+st.markdown('<div class="page-title-minimal">Portfolio Overview</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-subtitle-minimal">วิเคราะห์สัดส่วนการถือครองและผลตอบแทนรายโบรกเกอร์</div>', unsafe_allow_html=True)
 
-# Сurrency Selection Toggle
-currency_mode = st.radio(
-    "💱 เลือกสกุลเงินหลักในการแสดงผล Portfolio Overview:",
-    ("แสดงเป็นดอลลาร์ ($ USD)", "แสดงเป็นเงินบาท (฿ THB)"),
-    horizontal=True
-)
+# Currency Switcher
+c_curr, c_space = st.columns([1.5, 2.5])
+with c_curr:
+    currency_mode = st.radio(
+        "Display Currency",
+        ("USD ($)", "THB (฿)"),
+        horizontal=True,
+        index=0
+    )
 
-# Webull & API Configs
+# Config & API Setup
 webull_config = st.secrets.get("Webull", {})
 APP_KEY = webull_config.get("AppKey", "").strip()
 APP_SECRET = webull_config.get("AppSecret", "").strip()
@@ -168,7 +220,7 @@ def get_dime_th_holdings():
     return holdings
 
 # Load All Portfolio Data
-with st.spinner("⏳ กำลังรวบรวมข้อมูลพอร์ตรวม..."):
+with st.spinner("⏳ Loading portfolio data..."):
     webull_prices = get_webull_live_prices()
     w_holdings = get_webull_holdings()
     d_us_holdings = get_dime_us_holdings()
@@ -245,39 +297,73 @@ st.session_state["all_holdings_df"] = df_port
 def highlight_pnl(val):
     if val is None or pd.isna(val):
         return ''
-    
     s = str(val).strip()
     if s.startswith("+") or (not s.startswith("-") and not s.startswith("0") and any(char.isdigit() for char in s)):
         try:
             val_num = float(s.replace('$', '').replace('฿', '').replace(',', '').replace('%', '').replace('+', ''))
             if val_num > 0:
-                return 'background-color: #0b3818; color: #00e676; font-weight: bold;'
+                return 'background-color: rgba(34, 197, 94, 0.15); color: #4ade80; font-weight: bold;'
             elif val_num < 0:
-                return 'background-color: #3b1111; color: #ff5252; font-weight: bold;'
+                return 'background-color: rgba(239, 68, 68, 0.15); color: #f87171; font-weight: bold;'
         except:
             if s.startswith("+"):
-                return 'background-color: #0b3818; color: #00e676; font-weight: bold;'
+                return 'background-color: rgba(34, 197, 94, 0.15); color: #4ade80; font-weight: bold;'
     elif s.startswith("-"):
-        return 'background-color: #3b1111; color: #ff5252; font-weight: bold;'
-        
-    return 'color: #848e9c;'
+        return 'background-color: rgba(239, 68, 68, 0.15); color: #f87171; font-weight: bold;'
+    return 'color: #9ca3af;'
 
-# 5-Tab Layout Render
-tab_all, tab_webull, tab_dime_us, tab_dime_th, tab_consolidated = st.tabs([
-    "📊 1. ภาพรวมทั้งหมด (All In One)", 
-    "🦅 2. Webull", 
-    "💵 3. Dime US", 
-    "🇹🇭 4. Dime TH",
-    "🧩 5. รวมหุ้นทุกตัว (US Only)"
-])
+# ==========================================
+# 2. LARGE MODERN NAVIGATION CARDS (GRID UI)
+# ==========================================
+if "active_portfolio_tab" not in st.session_state:
+    st.session_state["active_portfolio_tab"] = "all"
 
-with tab_all:
-    is_thb = "เงินบาท" in currency_mode
-    multiplier = fx_rate if is_thb else 1.0
-    curr_symbol = "฿" if is_thb else "$"
-    curr_text = "THB" if is_thb else "USD"
-    
-    st.subheader(f"🌐 รวมสถิติพอร์ตการลงทุนทุกโบรกเกอร์ (แสดงในสกุลเงิน {curr_text})")
+active_tab = st.session_state["active_portfolio_tab"]
+
+col_c1, col_c2, col_c3, col_c4, col_c5 = st.columns(5)
+
+with col_c1:
+    btn_type = "primary" if active_tab == "all" else "secondary"
+    if st.button("📊 All In One\n\nสรุปภาพรวมพอร์ตรวมทุกโบรกเกอร์", key="btn_tab_all", use_container_width=True, type=btn_type):
+        st.session_state["active_portfolio_tab"] = "all"
+        st.rerun()
+
+with col_c2:
+    btn_type = "primary" if active_tab == "webull" else "secondary"
+    if st.button("🦅 Webull US\n\nข้อมูลตำแหน่งหุ้นสดจาก Webull API", key="btn_tab_webull", use_container_width=True, type=btn_type):
+        st.session_state["active_portfolio_tab"] = "webull"
+        st.rerun()
+
+with col_c3:
+    btn_type = "primary" if active_tab == "dime_us" else "secondary"
+    if st.button("💵 Dime US\n\nรายการหุ้นสหรัฐฯ ใน Dime", key="btn_tab_dime_us", use_container_width=True, type=btn_type):
+        st.session_state["active_portfolio_tab"] = "dime_us"
+        st.rerun()
+
+with col_c4:
+    btn_type = "primary" if active_tab == "dime_th" else "secondary"
+    if st.button("🇹🇭 Dime TH\n\nรายการหุ้นไทยใน Dime", key="btn_tab_dime_th", use_container_width=True, type=btn_type):
+        st.session_state["active_portfolio_tab"] = "dime_th"
+        st.rerun()
+
+with col_c5:
+    btn_type = "primary" if active_tab == "consolidated" else "secondary"
+    if st.button("🧩 US Consolidated\n\nรวมหุ้น US จากทุกโบรกถัวเฉลี่ยต้นทุน", key="btn_tab_consolidated", use_container_width=True, type=btn_type):
+        st.session_state["active_portfolio_tab"] = "consolidated"
+        st.rerun()
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ==========================================
+# 3. TAB CONTENT RENDERER
+# ==========================================
+is_thb = "THB" in currency_mode
+multiplier = fx_rate if is_thb else 1.0
+curr_symbol = "฿" if is_thb else "$"
+curr_text = "THB" if is_thb else "USD"
+
+if active_tab == "all":
+    st.subheader(f"🌐 สถิติรวมพอร์ตทุกโบรกเกอร์ ({curr_text})")
     
     if not df_port.empty:
         grand_invested = df_port['Invested_USD'].sum() * multiplier
@@ -287,13 +373,13 @@ with tab_all:
         
         c1, c2, c3 = st.columns(3)
         with c1:
-            st.markdown(f'<div class="metric-card"><div class="metric-label">💵 เงินลงทุนรวมทั้งสิ้น</div><div class="metric-value">{curr_symbol}{grand_invested:,.2f}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-label">เงินลงทุนรวมทั้งสิ้น</div><div class="metric-value">{curr_symbol}{grand_invested:,.2f}</div></div>', unsafe_allow_html=True)
         with c2:
-            st.markdown(f'<div class="metric-card"><div class="metric-label">📈 มูลค่าตลาดรวมพอร์ตทั้งหมด</div><div class="metric-value">{curr_symbol}{grand_market:,.2f}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-label">มูลค่าตลาดรวมพอร์ตทั้งหมด</div><div class="metric-value">{curr_symbol}{grand_market:,.2f}</div></div>', unsafe_allow_html=True)
         with c3:
             pnl_class = "text-green" if grand_pnl >= 0 else "text-red"
             pnl_prefix = "+" if grand_pnl >= 0 else ""
-            st.markdown(f'<div class="metric-card"><div class="metric-label">📊 กำไร / ขาดทุนสุทธิรวม</div><div class="metric-value {pnl_class}">{pnl_prefix}{curr_symbol}{grand_pnl:,.2f} ({grand_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-card"><div class="metric-label">กำไร / ขาดทุนสุทธิรวม</div><div class="metric-value {pnl_class}">{pnl_prefix}{curr_symbol}{grand_pnl:,.2f} ({grand_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
 
         st.caption(f"ℹ️ อัตราแลกเปลี่ยนอ้างอิง: 1 USD = {fx_rate:.2f} THB")
         st.markdown("---")
@@ -313,7 +399,7 @@ with tab_all:
     else:
         st.info("ยังไม่มีข้อมูลหุ้นในพอร์ตโฟลิโอ")
 
-with tab_webull:
+elif active_tab == "webull":
     st.subheader("🦅 พอร์ตการลงทุน Webull (Live API Data)")
     df_w = df_port[df_port["Broker"] == "Webull"] if not df_port.empty else pd.DataFrame()
     if not df_w.empty:
@@ -330,7 +416,7 @@ with tab_webull:
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Webull")
 
-with tab_dime_us:
+elif active_tab == "dime_us":
     st.subheader("💵 พอร์ตการลงทุน Dime US")
     df_dus = df_port[df_port["Broker"] == "Dime US"] if not df_port.empty else pd.DataFrame()
     if not df_dus.empty:
@@ -347,7 +433,7 @@ with tab_dime_us:
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime US")
 
-with tab_dime_th:
+elif active_tab == "dime_th":
     st.subheader("🇹🇭 พอร์ตการลงทุน Dime TH (หุ้นไทย)")
     df_dth = df_port[df_port["Broker"] == "Dime TH"] if not df_port.empty else pd.DataFrame()
     if not df_dth.empty:
@@ -369,7 +455,7 @@ with tab_dime_th:
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime TH")
 
-with tab_consolidated:
+elif active_tab == "consolidated":
     st.subheader("🧩 รวมหุ้นทุกตัวเฉพาะหุ้นสหรัฐฯ (US Consolidated Holdings)")
     df_us_only = df_port[df_port["Broker"].isin(["Webull", "Dime US"])] if not df_port.empty else pd.DataFrame()
     
