@@ -6,6 +6,7 @@ import gspread
 import plotly.graph_objects as go
 import importlib.util
 import os
+from datetime import datetime
 
 # ==========================================
 # 1. PAGE CONFIGURATION & GLOBAL STYLE
@@ -83,7 +84,6 @@ def inject_custom_css():
             background-color: #161a23;
         }
 
-        /* Active Navigation Highlight Override */
         div[data-testid="stSidebar"] .stButton > button[kind="primary"] {
             background: linear-gradient(90deg, #0284c7 0%, #0369a1 100%) !important;
             color: #ffffff !important;
@@ -108,24 +108,44 @@ def inject_custom_css():
             padding: 8px 0px 0px 8px !important;
         }
 
-        /* Top Ticker Scroll */
-        .ticker-scroll {
-            display: flex;
-            gap: 12px;
-            overflow-x: auto;
-            padding-bottom: 5px;
-            margin-bottom: 15px;
+        /* ------------------------------------------------ */
+        /* FEATURE 1: INFINITE RUNNING TICKER MARQUEE       */
+        /* ------------------------------------------------ */
+        .ticker-container {
+            width: 100%;
+            overflow: hidden;
+            background-color: #0d0e12;
+            border: 1px solid #1f232d;
+            border-radius: 8px;
+            padding: 8px 0;
+            margin-bottom: 20px;
+            white-space: nowrap;
+            position: relative;
+        }
+
+        .ticker-track {
+            display: inline-flex;
+            gap: 15px;
+            animation: marquee 25s linear infinite;
+        }
+
+        .ticker-container:hover .ticker-track {
+            animation-play-state: paused;
+        }
+
+        @keyframes marquee {
+            0% { transform: translateX(0%); }
+            100% { transform: translateX(-50%); }
         }
 
         .ticker-pill {
             background-color: #111318;
             border: 1px solid #1f232d;
-            border-radius: 8px;
-            padding: 6px 14px;
+            border-radius: 6px;
+            padding: 4px 12px;
             font-size: 0.8rem;
             font-family: 'JetBrains Mono', monospace;
-            white-space: nowrap;
-            display: flex;
+            display: inline-flex;
             align-items: center;
             gap: 8px;
         }
@@ -267,8 +287,9 @@ def render_dashboard():
     def load_summary_data():
         gc = get_gspread_client()
         if not gc:
-            return pd.DataFrame(), pd.DataFrame()
+            return pd.DataFrame(), pd.DataFrame(), None
         df_us, df_th = pd.DataFrame(), pd.DataFrame()
+        sh = None
         try:
             sh = gc.open("หุ้นของเรา")
             try: df_us = pd.DataFrame(sh.worksheet("Dime_Portfolio").get_all_records())
@@ -276,20 +297,31 @@ def render_dashboard():
             try: df_th = pd.DataFrame(sh.worksheet("Dime_TH_Portfolio").get_all_records())
             except: pass
         except Exception: pass
-        return df_us, df_th
+        return df_us, df_th, sh
 
-    df_us_raw, df_th_raw = load_summary_data()
+    df_us_raw, df_th_raw, sh_obj = load_summary_data()
 
-    # Top Ticker Strip
-    st.markdown("""
-    <div class="ticker-scroll">
-        <div class="ticker-pill"><span style="color:#4ade80;">🟢 Market</span> <span>NVDA $875.20 <span style="color:#4ade80;">+3.4%</span></span></div>
-        <div class="ticker-pill"><span>TSLA $215.30 <span style="color:#f87171;">-0.8%</span></span></div>
-        <div class="ticker-pill"><span>AAPL $182.50 <span style="color:#4ade80;">+1.2%</span></span></div>
-        <div class="ticker-pill"><span>MSFT $420.10 <span style="color:#4ade80;">+0.5%</span></span></div>
-        <div class="ticker-pill"><span>AMZN $178.35 <span style="color:#4ade80;">+2.1%</span></span></div>
+    # Dynamic Ticker Generation
+    tickers_list = ["PG", "YMAG", "QQQM", "CYN", "ETOR", "INM", "SCHG", "SLDE", "JEPQ", "CHPY", "QQQI"]
+    if not df_us_raw.empty and "หุ้น (Ticker)" in df_us_raw.columns:
+        fetched_tickers = df_us_raw["หุ้น (Ticker)"].dropna().unique().tolist()
+        if fetched_tickers:
+            tickers_list = [str(t) for t in fetched_tickers if str(t).strip() != ""]
+
+    ticker_items_html = ""
+    for t in tickers_list:
+        ticker_items_html += f'<div class="ticker-pill"><span style="color:#38bdf8;">⚡ {t}</span> <span style="color:#4ade80;">Active</span></div>'
+    
+    # Repeat track for smooth seamless looping
+    full_track_html = f"""
+    <div class="ticker-container">
+        <div class="ticker-track">
+            {ticker_items_html}
+            {ticker_items_html}
+        </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(full_track_html, unsafe_allow_html=True)
 
     # Title & Currency Control
     c_title, c_curr = st.columns([3, 1])
@@ -361,22 +393,51 @@ def render_dashboard():
         st.markdown(card_html, unsafe_allow_html=True)
 
     with col_right:
-        chart_header = """
-        <div class="dash-card" style="padding-bottom: 5px;">
-            <div class="card-header-title">
-                <span>Value trend & impact</span>
-                <span style="font-family: 'JetBrains Mono'; font-size: 0.75rem; color: #6b7280;">1D  7D  1M  <span style="color:#38bdf8; font-weight:700;">6M</span>  1Y</span>
-            </div>
-        </div>
-        """
-        st.markdown(chart_header, unsafe_allow_html=True)
+        # Timeframe Filter & Sync Button Bar
+        tf_col1, tf_col2 = st.columns([3, 1])
+        with tf_col1:
+            selected_tf = st.select_slider(
+                "Timeframe Range",
+                options=["1D", "7D", "1M", "3M", "6M", "1Y", "3Y", "5Y", "MAX"],
+                value="6M"
+            )
+        with tf_col2:
+            st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
+            if st.button("🔄 Sync Snapshot", use_container_width=True, help="อัปเดตมูลค่าพอร์ตลง Google Sheets"):
+                if sh_obj:
+                    try:
+                        try:
+                            ws_hist = sh_obj.worksheet("Portfolio_History")
+                        except Exception:
+                            ws_hist = sh_obj.add_worksheet(title="Portfolio_History", rows="1000", cols="5")
+                            ws_hist.append_row(["Timestamp", "Total_Market_USD", "Total_Invested_USD", "PnL_USD", "PnL_Pct"])
+                        
+                        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+                        ws_hist.append_row([now_str, tot_market_usd, tot_invested_usd, tot_pnl_usd, f"{tot_pnl_pct:.2f}%"])
+                        st.toast("✅ บันทึกประวัติลง Google Sheets สำเร็จ!", icon="🎉")
+                    except Exception as e:
+                        st.error(f"เกิดข้อผิดพลาดในการ Sync: {e}")
+                else:
+                    st.warning("ไม่สามารถเชื่อมต่อ Google Sheets ได้")
+
+        # Trend Chart Simulation base on timeframe
+        tf_points_map = {
+            "1D": (['9:30', '11:00', '13:00', '15:00', '16:00'], [43500, 43700, 43600, 43800, tot_market_usd]),
+            "7D": (['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], [42800, 43000, 42900, 43200, 43500, 43700, tot_market_usd]),
+            "1M": (['W1', 'W2', 'W3', 'W4'], [41500, 42200, 43100, tot_market_usd]),
+            "3M": (['May', 'Jun', 'Jul'], [40000, 42000, tot_market_usd]),
+            "6M": (['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'], [42000, 45000, 41000, 46000, 44500, 47800, tot_market_usd]),
+            "1Y": (['Q1', 'Q2', 'Q3', 'Q4'], [38000, 41000, 44000, tot_market_usd]),
+            "3Y": (['2024', '2025', '2026'], [30000, 39000, tot_market_usd]),
+            "5Y": (['2022', '2023', '2024', '2025', '2026'], [20000, 26000, 32000, 39000, tot_market_usd]),
+            "MAX": (['Start', '2023', '2024', '2025', '2026'], [15000, 25000, 32000, 39000, tot_market_usd])
+        }
         
-        months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul']
-        trend_vals = [42000, 45000, 41000, 46000, 44500, 47800, tot_market_usd]
+        x_axis, y_axis = tf_points_map.get(selected_tf, tf_points_map["6M"])
         
         fig = go.Figure()
         fig.add_trace(go.Scatter(
-            x=months, y=trend_vals, mode='lines',
+            x=x_axis, y=y_axis, mode='lines+markers',
             line=dict(color='#38bdf8', width=3, shape='spline'),
             fill='tozeroy', fillcolor='rgba(56, 189, 248, 0.05)'
         ))
@@ -385,7 +446,7 @@ def render_dashboard():
             font=dict(color='#6b7280', family='Plus Jakarta Sans'),
             xaxis=dict(showgrid=False, zeroline=False),
             yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False),
-            margin=dict(t=5, b=10, l=10, r=10), height=270
+            margin=dict(t=10, b=10, l=10, r=10), height=250
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
@@ -405,15 +466,14 @@ def render_dashboard():
         st.markdown('<div style="font-size: 0.85rem; font-weight: 600; color: #9ca3af; margin-bottom: 10px;">Top Holdings Performance</div>', unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3)
         with g1:
-            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-between; align-items:center;"><span class="stock-symbol">🟢 NVDA</span><span class="badge-delta-pos" style="margin-left:auto;">+9.10%</span></div><div class="stock-price">$892,812.00</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 NVDA</span><span class="badge-delta-pos">+9.10%</span></div><div class="stock-price">$892,812.00</div></div>', unsafe_allow_html=True)
         with g2:
-            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-between; align-items:center;"><span class="stock-symbol">🔴 ABNB</span><span class="badge-delta-neg" style="margin-left:auto;">-3.89%</span></div><div class="stock-price">$92,900.00</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 ABNB</span><span class="badge-delta-neg">-3.89%</span></div><div class="stock-price">$92,900.00</div></div>', unsafe_allow_html=True)
         with g3:
-            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-between; align-items:center;"><span class="stock-symbol">🟢 AMZN</span><span class="badge-delta-pos" style="margin-left:auto;">+2.67%</span></div><div class="stock-price">$854,414.00</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 AMZN</span><span class="badge-delta-pos">+2.67%</span></div><div class="stock-price">$854,414.00</div></div>', unsafe_allow_html=True)
 
 # Smart Helper Function to Load Subpages Dynamic
 def load_page_module(file_name):
-    # Try exact match first, then fallback search
     possible_paths = [
         f"pages/{file_name}.py",
         f"pages/{file_name}",
@@ -425,7 +485,6 @@ def load_page_module(file_name):
             target_path = path
             break
             
-    # Search in pages folder if case mismatch exists
     if not target_path and os.path.exists("pages"):
         for f in os.listdir("pages"):
             if f.lower() == f"{file_name}.py".lower():
@@ -441,7 +500,7 @@ def load_page_module(file_name):
         st.info("กรุณาตรวจสอบว่ามีไฟล์ชื่อนี้ตรงๆ อยู่ในโฟลเดอร์ pages/ ครับ")
 
 # ==========================================
-# 3. SIDEBAR NAVIGATION (CORRECT FILE MAPPING)
+# 3. SIDEBAR NAVIGATION
 # ==========================================
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "Dashboard"
