@@ -145,6 +145,19 @@ if gc:
         records = ws_port.get_all_records()
         df_current_port = pd.DataFrame(records)
         
+        # ดึงรายชื่อหุ้นทั้งหมดในพอร์ตทุกหน้าเพื่อทำ Dropdown สรุปหุ้นปันผล
+        all_existing_tickers = []
+        for s_name in ["Dime_Portfolio", "Dime_TH_Portfolio"]:
+            try:
+                temp_records = sh.worksheet(s_name).get_all_records()
+                for r in temp_records:
+                    t_sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
+                    if t_sym and t_sym not in all_existing_tickers:
+                        all_existing_tickers.append(t_sym)
+            except Exception:
+                pass
+        all_existing_tickers.sort()
+
         tab_buy, tab_sell, tab_div = st.tabs([
             "🟢 บันทึกการซื้อ (Buy)", 
             "🔴 บันทึกการขาย (Sell)", 
@@ -250,7 +263,6 @@ if gc:
                                 else:
                                     row_idx = cell.row
                                     
-                                    # 1. Append to Dime_Closed_Orders
                                     try:
                                         ws_closed = sh.worksheet("Dime_Closed_Orders")
                                     except:
@@ -268,7 +280,6 @@ if gc:
                                     ]
                                     ws_closed.append_row(new_closed_row)
                                     
-                                    # 2. Update/Delete Stock Quantity
                                     remaining_qty = current_qty - sell_qty
                                     if remaining_qty <= 0.0001:
                                         ws_port.delete_rows(row_idx)
@@ -285,17 +296,32 @@ if gc:
                 st.warning("⚠️ ไม่พบข้อมูลในตารางพอร์ตโฟลิโอ")
 
         # ----------------------------------------------------
-        # TAB 3: DIVIDEND TRACKER (NEW FEATURE)
+        # TAB 3: DIVIDEND TRACKER (SELECT + CUSTOM INPUT)
         # ----------------------------------------------------
         with tab_div:
-            st.caption("📌 เป้าหมาย Worksheet: `Dividend_Tracker` (บันทึกรายรับปันผลสะสมเข้า Google Sheets)")
+            st.caption("📌 เลือกหุ้นจากพอร์ตที่มีอยู่ หรือระบุชื่อหุ้นใหม่เอง แล้วบันทึกลง `Dividend_Tracker`")
+            
+            # ตัวเลือก Dropdown รวมตัวเลือกคีย์เอง
+            dropdown_options = ["➕ พิมพ์ชื่อหุ้นใหม่ (Custom Ticker)..."] + all_existing_tickers
             
             with st.form("dividend_execution_form"):
                 d_c1, d_c2 = st.columns(2)
                 
                 with d_c1:
                     div_date = st.date_input("วันที่รับเงิน (Date Received):", datetime.now(), key="div_date_picker")
-                    div_ticker = st.text_input("หุ้น (Ticker Symbol):", placeholder="เช่น YMAG, CHPY, QLDY, NVDA").strip().upper()
+                    
+                    selected_div_option = st.selectbox(
+                        "เลือกหุ้นที่ได้รับปันผล:",
+                        dropdown_options,
+                        index=1 if len(dropdown_options) > 1 else 0
+                    )
+                    
+                    # ถ้าเลือกคีย์เอง -> แสดงช่อง Input
+                    if selected_div_option == "➕ พิมพ์ชื่อหุ้นใหม่ (Custom Ticker)...":
+                        div_ticker = st.text_input("ระบุชื่อหุ้น (Custom Ticker):", placeholder="เช่น NVDA, AAPL, PTT").strip().upper()
+                    else:
+                        div_ticker = selected_div_option
+                        
                     div_amount = st.number_input("จำนวนเงินที่ได้รับ (Amount Received):", min_value=0.0001, value=1.00, step=0.05)
                 
                 with d_c2:
@@ -307,7 +333,7 @@ if gc:
                 
                 if submit_div_btn:
                     if not div_ticker:
-                        st.error("⚠️ กรุณาระบุชื่อหุ้น (Ticker Symbol) ก่อนบันทึกครับ")
+                        st.error("⚠️ กรุณาระบุหรือเลือกชื่อหุ้น (Ticker Symbol) ก่อนบันทึกครับ")
                     else:
                         with st.spinner("⏳ กำลังบันทึกข้อมูลเงินปันผลลง Google Sheets..."):
                             try:
