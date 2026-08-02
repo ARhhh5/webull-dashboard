@@ -32,7 +32,7 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 st.title("📜 ประวัติการปิดไม้ & สรุปกำไรขาดทุนจริง (History & Realized PnL)")
-st.markdown("สรุปประวัติผลการขายหุ้นที่ปิดไม้เรียบร้อยแล้ว แยกตามสกุลเงิน THB และ USD ชัดเจน")
+st.markdown("สรุปประวัติผลการขายหุ้นที่ปิดไม้เรียบร้อยแล้ว ดึงตรงจาก Google Sheets (`Dime_Closed_Orders`) แยกตามสกุลเงิน THB และ USD ชัดเจน")
 st.markdown("---")
 
 # ==========================================
@@ -82,13 +82,14 @@ if gc:
         try:
             ws_closed = sh.worksheet("Dime_Closed_Orders")
             closed_records = ws_closed.get_all_records()
-        except:
+        except Exception as sheet_err:
+            st.error(f"🚨 ไม่สามารถเปิดแท็บ 'Dime_Closed_Orders' ได้: {str(sheet_err)}")
             closed_records = []
 
         if closed_records:
             df_closed = pd.DataFrame(closed_records)
             
-            # แปลงและทำความสะอาดตัวเลข
+            # แปลงและทำความสะอาดตัวเลข (ป้องกันการติดลูกน้ำหรือเว้นวรรค)
             df_closed["Qty"] = df_closed["จำนวนหุ้น (Qty)"].astype(str).str.replace(',', '').astype(float)
             df_closed["BuyPrice"] = df_closed["ราคาซื้อเฉลี่ย (Buy Price)"].astype(str).str.replace(',', '').astype(float)
             df_closed["SellPrice"] = df_closed["ราคาขายจริง (Sell Price)"].astype(str).str.replace(',', '').astype(float)
@@ -106,11 +107,11 @@ if gc:
             # TAB 1: ประวัติกำไรขาดทุน หุ้นไทย (THB)
             # ----------------------------------------------------
             with tab_th:
-                df_th = df_closed[df_closed["ตลาด (US/TH)"].astype(str).str.upper() == "TH"].copy()
+                df_th = df_closed[df_closed["ตลาด (US/TH)"].astype(str).str.strip().str.upper() == "TH"].copy()
                 
                 if not df_th.empty:
-                    # คำนวณภาพรวมกำไรขาดทุนสะสมหุ้นไทย
                     tot_th_cost = df_th["Total_Cost"].sum()
+                    tot_th_revenue = df_th["Total_Revenue"].sum()
                     tot_th_pnl = df_th["Realized_PnL"].sum()
                     tot_th_pnl_pct = (tot_th_pnl / tot_th_cost * 100) if tot_th_cost > 0 else 0.0
                     
@@ -122,7 +123,7 @@ if gc:
                     with m1:
                         st.markdown(f'<div class="metric-card"><div class="metric-label">💵 ต้นทุนรวมไม้ที่ปิด (TH)</div><div class="metric-value">฿{tot_th_cost:,.2f}</div></div>', unsafe_allow_html=True)
                     with m2:
-                        st.markdown(f'<div class="metric-card"><div class="metric-label">💰 ยอดเงินรับคืนรวม (TH)</div><div class="metric-value">฿{df_th["Total_Revenue"].sum():,.2f}</div></div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="metric-card"><div class="metric-label">💰 ยอดเงินรับคืนรวม (TH)</div><div class="metric-value">฿{tot_th_revenue:,.2f}</div></div>', unsafe_allow_html=True)
                     with m3:
                         st.markdown(f'<div class="metric-card"><div class="metric-label">📊 กำไร/ขาดทุนสะสมจริง (Realized PnL)</div><div class="metric-value {pnl_class}">{pnl_prefix}฿{tot_th_pnl:,.2f} ({tot_th_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
 
@@ -149,11 +150,11 @@ if gc:
             # TAB 2: ประวัติกำไรขาดทุน หุ้นสหรัฐฯ (USD)
             # ----------------------------------------------------
             with tab_us:
-                df_us = df_closed[df_closed["ตลาด (US/TH)"].astype(str).str.upper() == "US"].copy()
+                df_us = df_closed[df_closed["ตลาด (US/TH)"].astype(str).str.strip().str.upper() == "US"].copy()
                 
                 if not df_us.empty:
-                    # คำนวณภาพรวมกำไรขาดทุนสะสมหุ้นสหรัฐฯ
                     tot_us_cost = df_us["Total_Cost"].sum()
+                    tot_us_revenue = df_us["Total_Revenue"].sum()
                     tot_us_pnl = df_us["Realized_PnL"].sum()
                     tot_us_pnl_pct = (tot_us_pnl / tot_us_cost * 100) if tot_us_cost > 0 else 0.0
                     
@@ -165,7 +166,7 @@ if gc:
                     with m1:
                         st.markdown(f'<div class="metric-card"><div class="metric-label">💵 ต้นทุนรวมไม้ที่ปิด (US)</div><div class="metric-value">${tot_us_cost:,.2f}</div></div>', unsafe_allow_html=True)
                     with m2:
-                        st.markdown(f'<div class="metric-card"><div class="metric-label">💰 ยอดเงินรับคืนรวม (US)</div><div class="metric-value">${df_us["Total_Revenue"].sum():,.2f}</div></div>', unsafe_allow_html=True)
+                        st.markdown(f'<div class="metric-card"><div class="metric-label">💰 ยอดเงินรับคืนรวม (US)</div><div class="metric-value">${tot_us_revenue:,.2f}</div></div>', unsafe_allow_html=True)
                     with m3:
                         st.markdown(f'<div class="metric-card"><div class="metric-label">📊 กำไร/ขาดทุนสะสมจริง (Realized PnL)</div><div class="metric-value {pnl_class}">{pnl_prefix}${tot_us_pnl:,.2f} ({tot_us_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
 
