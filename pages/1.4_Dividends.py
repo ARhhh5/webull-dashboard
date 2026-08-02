@@ -111,7 +111,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Header Section
+# Minimal Header
 st.markdown('<div class="page-title-minimal">Dividend Income Analytics</div>', unsafe_allow_html=True)
 st.markdown('<div class="page-subtitle-minimal">วิเคราะห์กระแสเงินสดจากเงินปันผลสะสม รายเดือน และสัดส่วนรายหุ้น</div>', unsafe_allow_html=True)
 
@@ -140,12 +140,12 @@ def get_gspread_client():
     except Exception:
         return None
 
-def extract_numeric_value(val):
-    """ฟังก์ชันสกัดเฉพาะตัวเลขจาก String การเงิน"""
+def parse_amount(val):
+    """สกัดตัวเลขทศนิยมจากสตริงรูปแบบการเงินทุกประเภท"""
     if pd.isna(val) or val is None:
         return 0.0
-    s_val = str(val).strip()
-    match = re.search(r"[-+]?\d*\.\d+|\d+", s_val.replace(',', ''))
+    s_val = str(val).strip().replace(',', '')
+    match = re.search(r"[-+]?\d*\.\d+|\d+", s_val)
     if match:
         try:
             return float(match.group())
@@ -165,60 +165,53 @@ def load_dividend_data():
         except Exception:
             return pd.DataFrame()
             
-        all_values = ws.get_all_values()
-        if not all_values or len(all_values) < 2:
+        records = ws.get_all_records()
+        if not records:
             return pd.DataFrame()
             
-        headers = [str(h).strip() for h in all_values[0]]
-        rows = all_values[1:]
-        
-        df = pd.DataFrame(rows, columns=headers)
-        df = df.loc[:, ~df.columns.duplicated()]
-        
-        # Mapping Column Names
-        col_map = {}
-        for col in df.columns:
-            c_str = str(col).lower()
-            if "วัน" in c_str or "date" in c_str:
-                col_map[col] = "Date"
-            elif "หุ้น" in c_str or "ticker" in c_str:
-                col_map[col] = "Ticker"
-            elif "เงิน" in c_str or "amount" in c_str:
-                col_map[col] = "Amount"
-            elif "สกุล" in c_str or "curr" in c_str:
-                col_map[col] = "Currency"
-            elif "โบรก" in c_str or "broker" in c_str:
-                col_map[col] = "Broker"
-            
-        df = df.rename(columns=col_map)
-        
-        required_cols = ["Date", "Ticker", "Amount", "Currency", "Broker"]
-        for rc in required_cols:
-            if rc not in df.columns:
-                df[rc] = "" if rc in ["Ticker", "Currency", "Broker"] else "0"
+        df = pd.DataFrame(records)
+        if df.empty:
+            return pd.DataFrame()
 
-        # Safe Series Extraction
+        # 1. Normalize Column Names
+        df.columns = [str(col).strip() for col in df.columns]
+        
+        # 2. Smart Column Matching
+        date_col = next((c for c in df.columns if "วัน" in c.lower() or "date" in c.lower()), None)
+        ticker_col = next((c for c in df.columns if "หุ้น" in c.lower() or "ticker" in c.lower()), None)
+        amount_col_name = next((c for c in df.columns if "เงิน" in c.lower() or "amount" in c.lower()), None)
+        curr_col = next((c for c in df.columns if "สกุล" in c.lower() or "curr" in c.lower()), None)
+        broker_col = next((c for c in df.columns if "โบรก" in c.lower() or "broker" in c.lower()), None)
+
+        if not all([date_col, ticker_col, amount_col_name]):
+            return pd.DataFrame()
+
         clean_df = pd.DataFrame()
-        for rc in required_cols:
-            col_data = df[rc]
-            clean_df[rc] = col_data.iloc[:, 0] if isinstance(col_data, pd.DataFrame) else col_data
+        clean_df["Raw_Date"] = df[date_col].astype(str)
+        clean_df["Ticker"] = df[ticker_col].astype(str).str.strip().str.upper()
+        clean_df["Amount"] = df[amount_col_name].apply(parse_amount)
+        clean_df["Currency"] = df[curr_col].astype(str).str.strip().str.upper() if curr_col else "USD"
+        clean_df["Broker"] = df[broker_col].astype(str).str.strip().str.upper() if broker_col else "WEBULL"
 
-        # 1. Clean Amount Values using Regex Extraction
-        clean_df["Amount"] = clean_df["Amount"].apply(extract_numeric_value)
-        clean_df = clean_df[clean_df["Amount"] > 0]  # กรองเฉพาะบรรทัดที่มีจำนวนเงิน
-        
-        # 2. Clean Strings
-        clean_df["Ticker"] = clean_df["Ticker"].astype(str).str.strip().str.upper()
-        clean_df["Currency"] = clean_df["Currency"].astype(str).str.strip().str.upper()
-        clean_df["Broker"] = clean_df["Broker"].astype(str).str.strip().str.upper()
-        
-        # 3. Safe Date Parsing
-        clean_df["Date"] = pd.to_datetime(clean_df["Date"].astype(str), format="%d/%m/%Y", errors='coerce')
-        null_dates = clean_df["Date"].isna()
-        if null_dates.any():
-            clean_df.loc[null_dates, "Date"] = pd.to_datetime(df.loc[null_dates, "Date"], dayfirst=True, errors='coerce')
+        # 3. Filter valid positive amount records
+        clean_df = clean_df[clean_df["Amount"] > 0].copy()
+        if clean_df.empty:
+            return pd.DataFrame()
 
-        # 4. Currency Conversions
+        # 4. Ultra-Robust Date Parser (Day First Strategy)
+        clean_df["Date"] = pd.to_datetime(clean_df["Raw_Date"], format="%d/%m/%Y", errors='coerce')
+        
+        # Fallback parsing for weird date strings
+        null_mask = clean_df["Date"].isna()
+        if null_mask.any():
+            clean_df.loc[null_mask, "Date"] = pd.to_datetime(
+                clean_df.loc[null_mask, "Raw_Date"], dayfirst=True, errors='coerce'
+            )
+            
+        # Fill remaining missing dates with today to avoid wiping rows
+        clean_df["Date"] = clean_df["Date"].fillna(pd.Timestamp.now())
+
+        # 5. Currency Calculations
         clean_df["Amount_USD"] = clean_df.apply(
             lambda r: r["Amount"] if r["Currency"] == "USD" else (r["Amount"] / fx_rate if fx_rate > 0 else r["Amount"]),
             axis=1
@@ -232,7 +225,7 @@ def load_dividend_data():
         clean_df["YearMonth"] = clean_df["Date"].dt.strftime("%Y-%m")
         clean_df["Month_Name"] = clean_df["Date"].dt.strftime("%b %Y")
         
-        return clean_df.dropna(subset=["Date"])
+        return clean_df
         
     except Exception as e:
         st.error(f"❌ เกิดข้อผิดพลาดในการโหลดข้อมูล: {str(e)}")
@@ -424,4 +417,4 @@ if not df_div.empty:
             st.info("ไม่พบข้อมูลปันผลสำหรับหุ้นที่เลือก")
 
 else:
-    st.info("💡 ไม่พบข้อมูลปันผลใน Google Sheets หรือรูปแบบข้อมูลไม่ถูกต้อง สามารถไปบันทึกปันผลใหม่ได้ที่เมนู Trade Execution Desk ครับ")
+    st.info("💡 เปิดใช้งานระบบสำเร็จ! หากพบค่านี่แสดงว่ายังไม่มีข้อมูลปันผลใน Google Sheets หรือรูปแบบวันที่ไม่ถูกต้อง สามารถไปบันทึกปันผลใหม่ได้ที่เมนู Trade Execution Desk ครับ")
