@@ -191,10 +191,6 @@ with st.form(key="trade_execution_form", clear_on_submit=True):
                         sh = gc.open("หุ้นของเรา")
                         ws = sh.worksheet(target_sheet_name)
                         
-                        # ดึงข้อมูลเพื่ออัปเดตหรือเพิ่มใหม่
-                        records = ws.get_all_records()
-                        df_records = pd.DataFrame(records)
-                        
                         row_data = [
                             trade_date.strftime("%d/%m/%Y"),
                             ticker,
@@ -247,20 +243,37 @@ with st.form(key="trade_execution_form", clear_on_submit=True):
     else:
         st.markdown("### 💰 บันทึกรับเงินปันผล (Dividend Tracker)")
         c1, c2 = st.columns(2)
+        
+        # รายชื่อโบรกเกอร์ให้เลือกได้อิสระ
+        broker_options = ["WEBULL", "DIME", "INNOVESTX", "LIBERATOR", "K-X", "ระบุเอง (Custom)"]
+        default_broker_idx = 1 if curr_acc == "TH" else 0
+        
         with c1:
             div_ticker = st.text_input("ชื่อหุ้นที่จ่ายปันผล (Ticker Symbol):", placeholder="เช่น QQQI, QLDY, PTT").strip().upper()
             div_amount = st.number_input(f"จำนวนเงินปันผลสุทธิที่ได้รับ ({curr_symbol}):", min_value=0.0, format="%.4f")
+            
         with c2:
-            broker_name = "DIME" if curr_acc == "TH" else "WEBULL"
             curr_str = "THB" if curr_acc == "TH" else "USD"
             div_date = st.date_input("วันที่เงินปันผลเข้าบัญชี:", datetime.now())
-            st.text_input("โบรกเกอร์ (Broker):", value=broker_name, disabled=True)
+            
+            selected_broker = st.selectbox(
+                "โบรกเกอร์ที่รับเงินปันผล (Broker):",
+                options=broker_options,
+                index=default_broker_idx,
+                help="เลือกโบรกเกอร์ที่ปันผลเข้าบัญชี แม้จะเป็นหุ้นเดียวกันก็สามารถแยกเลือกได้ครับ"
+            )
+            
+            # ถ้าเลือก "ระบุเอง (Custom)" ให้เปิดช่องเติมข้อความ
+            if selected_broker == "ระบุเอง (Custom)":
+                final_broker = st.text_input("ระบุชื่อโบรกเกอร์:", placeholder="พิมพ์ชื่อโบรกเกอร์...").strip().upper()
+            else:
+                final_broker = selected_broker
 
         submit_div = st.form_submit_button("💵 บันทึกเงินปันผลเข้า Google Sheets", use_container_width=True)
         
         if submit_div:
-            if not div_ticker or div_amount <= 0:
-                st.warning("⚠️ กรุณากรอกชื่อหุ้นและยอดเงินปันผลให้ถูกต้อง")
+            if not div_ticker or div_amount <= 0 or not final_broker:
+                st.warning("⚠️ กรุณากรอกชื่อหุ้น ยอดเงินปันผล และเลือกโบรกเกอร์ให้ถูกต้องครบถ้วน")
             else:
                 gc = get_gspread_client()
                 if gc:
@@ -277,10 +290,10 @@ with st.form(key="trade_execution_form", clear_on_submit=True):
                             div_ticker,
                             div_amount,
                             curr_str,
-                            broker_name
+                            final_broker
                         ]
                         
                         ws_div.append_row(div_row)
-                        st.success(f"✅ บันทึกเงินปันผล {div_ticker} จำนวน {div_amount:,.2f} {curr_str} ลงใน `Dividend_Tracker` สำเร็จ!")
+                        st.success(f"✅ บันทึกเงินปันผล {div_ticker} ({final_broker}) จำนวน {div_amount:,.2f} {curr_str} ลงใน `Dividend_Tracker` สำเร็จ!")
                     except Exception as e:
                         st.error(f"❌ เกิดข้อผิดพลาดในการบันทึกปันผล: {str(e)}")
