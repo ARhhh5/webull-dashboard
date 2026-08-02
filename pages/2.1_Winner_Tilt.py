@@ -12,30 +12,86 @@ import yfinance as yf
 import gspread
 from datetime import datetime, timezone
 
+# ==========================================
+# 1. PAGE CONFIG & MODERN DARK CSS
+# ==========================================
 st.set_page_config(page_title="Winner Tilt Strategy", layout="wide")
 
 st.markdown("""
     <style>
+    @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+
+    /* Minimal Header */
+    .page-title-minimal {
+        font-family: 'Plus Jakarta Sans', sans-serif;
+        font-size: 1.4rem;
+        font-weight: 800;
+        color: #ffffff;
+        letter-spacing: -0.5px;
+        margin-bottom: 2px;
+    }
+    .page-subtitle-minimal {
+        color: #6b7280;
+        font-size: 0.85rem;
+        margin-bottom: 18px;
+    }
+
+    /* Modern Pill Action Buttons */
+    div[data-testid="stColumn"] div.stButton > button {
+        background-color: #0f1115 !important;
+        border: 1px solid #1a1d24 !important;
+        border-radius: 10px !important;
+        padding: 8px 14px !important;
+        color: #9ca3af !important;
+        font-weight: 600 !important;
+        font-size: 0.85rem !important;
+        transition: all 0.25s ease !important;
+        width: 100% !important;
+    }
+
+    div[data-testid="stColumn"] div.stButton > button:hover {
+        border-color: #38bdf8 !important;
+        color: #ffffff !important;
+        background-color: #141822 !important;
+    }
+
+    /* Active Segmented Button Highlight */
+    div[data-testid="stColumn"] div.stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+        border: 1px solid #38bdf8 !important;
+        color: #ffffff !important;
+        box-shadow: 0 4px 12px rgba(56, 189, 248, 0.25) !important;
+    }
+
+    /* Status Cards */
     .status-card {
-        background-color: #1e222d;
+        background-color: #0f1115;
         padding: 18px;
-        border-radius: 10px;
-        border: 1px solid #2a2e39;
+        border-radius: 12px;
+        border: 1px solid #1a1d24;
         text-align: center;
     }
-    .status-title { color: #848e9c; font-size: 14px; font-weight: 500; margin-bottom: 5px; }
-    .status-value { font-size: 22px; font-weight: bold; }
-    .status-bull { color: #00c853 !important; }
-    .status-bear { color: #ff3d00 !important; }
+    .status-title { color: #9ca3af; font-size: 13px; font-weight: 600; margin-bottom: 5px; text-transform: uppercase; }
+    .status-value { font-size: 24px; font-weight: 800; font-family: 'JetBrains Mono', monospace; }
+    .status-bull { color: #4ade80 !important; }
+    .status-bear { color: #f87171 !important; }
+
+    /* Custom Input Controls */
+    div[data-baseweb="input"] > div {
+        background-color: #0f1115 !important;
+        border-color: #1a1d24 !important;
+        color: #ffffff !important;
+        border-radius: 8px !important;
+    }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("🏆 The Winner Tilt Playbook Engine")
-st.markdown("ระบบวิเคราะห์กลยุทธ์ **Winner Tilt 25** พร้อมระบบสแกนเส้น SMA 200 วัน แบบ multi-tab")
-st.markdown("---")
+# Minimal Header
+st.markdown('<div class="page-title-minimal">🏆 The Winner Tilt Playbook Engine</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-subtitle-minimal">ระบบวิเคราะห์กลยุทธ์ Winner Tilt 25 พร้อมระบบสแกนเส้น SMA 200 วัน</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 1. Universe หุ้นตาม Playbook
+# 2. UNIVERSE & MARKET DATA PIPELINE
 # ==========================================
 UNIVERSE_QQQ_15 = ["NVDA", "AAPL", "MU", "MSFT", "AMZN", "AMD", "GOOGL", "TSLA", "INTC", "AVGO", "META", "AMAT", "LRCX", "CSCO", "SNDK"]
 UNIVERSE_VOO_5 = ["LLY", "BRK-B", "JPM", "JNJ", "V"]
@@ -44,9 +100,17 @@ HEDGE_ASSET = ["GLD"]
 
 ALL_STRATEGY_TICKERS = list(set(UNIVERSE_QQQ_15 + UNIVERSE_VOO_5 + UNIVERSE_SMH_5 + HEDGE_ASSET))
 
-# ==========================================
-# 2. ฟังก์ชันดึงราคาและคำนวณ SMA 200
-# ==========================================
+def format_ticker_for_yf(symbol):
+    sym_clean = str(symbol).strip().upper()
+    if not sym_clean:
+        return ""
+    # ถ้าเป็นหุ้นไทย (ไม่มีจุด และยาวไม่เกิน 5 ตัวอักษร เช่น KKP, JAS, SUSCO)
+    if "." not in sym_clean and len(sym_clean) <= 6 and sym_clean not in ALL_STRATEGY_TICKERS and sym_clean not in ["SPY", "QQQ", "SMH", "GLD"]:
+        # เช็กกรณีหุ้นไทย
+        if not sym_clean.endswith(".BK"):
+            return f"{sym_clean}.BK"
+    return sym_clean
+
 @st.cache_data(ttl=1800)
 def fetch_market_data(tickers):
     if not tickers:
@@ -54,50 +118,74 @@ def fetch_market_data(tickers):
         
     data_list = []
     for symbol in tickers:
-        sym_clean = str(symbol).strip().upper()
-        if not sym_clean:
+        raw_sym = str(symbol).strip().upper()
+        if not raw_sym:
             continue
             
-        yf_sym = f"{sym_clean}.BK" if not sym_clean.endswith(".BK") and len(sym_clean) <= 5 and not sym_clean.isalpha() else sym_clean
+        yf_sym = format_ticker_for_yf(raw_sym)
         
         try:
             ticker = yf.Ticker(yf_sym)
             df_hist = ticker.history(period="1y")
-            if not df_hist.empty and len(df_hist) >= 200:
+            
+            # ลองดึงข้อมูลย้อนหลังถ้า period="1y" ว่างเปล่า
+            if df_hist.empty:
+                yf_sym_alt = raw_sym if yf_sym.endswith(".BK") else f"{raw_sym}.BK"
+                ticker = yf.Ticker(yf_sym_alt)
+                df_hist = ticker.history(period="1y")
+
+            if not df_hist.empty and len(df_hist) >= 10:
                 current_price = float(df_hist['Close'].iloc[-1])
-                sma_200 = float(df_hist['Close'].rolling(window=200).mean().iloc[-1])
-                diff_pct = ((current_price - sma_200) / sma_200) * 100
+                
+                # ถ้ามีข้อมูลเกิน 200 วัน คำนวณ SMA 200
+                if len(df_hist) >= 200:
+                    sma_200 = float(df_hist['Close'].rolling(window=200).mean().iloc[-1])
+                else:
+                    sma_200 = float(df_hist['Close'].mean()) # ใช้ค่าเฉลี่ยเท่าที่มีถ้าไม่ถึง 200 วัน
+                
+                if sma_200 > 0:
+                    diff_pct = ((current_price - sma_200) / sma_200) * 100
+                else:
+                    diff_pct = 0.0
+                    
                 is_above_sma = current_price >= sma_200
                 
                 data_list.append({
-                    "Symbol": sym_clean,
+                    "Symbol": raw_sym,
                     "Current_Price": current_price,
                     "SMA_200": sma_200,
                     "Diff_Pct": diff_pct,
                     "Above_SMA200": is_above_sma
                 })
             else:
-                data_list.append({
-                    "Symbol": sym_clean, "Current_Price": 0.0, "SMA_200": 0.0, "Diff_Pct": 0.0, "Above_SMA200": False
-                })
+                # Fallback ด้วย FastInfo ป้องกันราคาเป็น 0.00
+                try:
+                    fast_p = ticker.fast_info.get('lastPrice', 0.0)
+                    if fast_p > 0:
+                        data_list.append({
+                            "Symbol": raw_sym, "Current_Price": float(fast_p), "SMA_200": float(fast_p), "Diff_Pct": 0.0, "Above_SMA200": True
+                        })
+                    else:
+                        data_list.append({"Symbol": raw_sym, "Current_Price": 0.0, "SMA_200": 0.0, "Diff_Pct": 0.0, "Above_SMA200": False})
+                except Exception:
+                    data_list.append({"Symbol": raw_sym, "Current_Price": 0.0, "SMA_200": 0.0, "Diff_Pct": 0.0, "Above_SMA200": False})
         except Exception:
-            data_list.append({
-                "Symbol": sym_clean, "Current_Price": 0.0, "SMA_200": 0.0, "Diff_Pct": 0.0, "Above_SMA200": False
-            })
+            data_list.append({"Symbol": raw_sym, "Current_Price": 0.0, "SMA_200": 0.0, "Diff_Pct": 0.0, "Above_SMA200": False})
+            
     return pd.DataFrame(data_list)
 
 # ==========================================
-# 3. ดึงหุ้นในพอร์ตโฟลิโอจริง
+# 3. GET USER PORTFOLIO SYMBOLS
 # ==========================================
 def get_user_portfolio_symbols():
     symbols = set()
     
     # 3.1 Webull
     webull_config = st.secrets.get("Webull", {})
-    APP_KEY = webull_config.get("AppKey", "").strip()
-    APP_SECRET = webull_config.get("AppSecret", "").strip()
+    APP_KEY = webull_config.get("AppKey", "").strip() or webull_config.get("app_key", "").strip()
+    APP_SECRET = webull_config.get("AppSecret", "").strip() or webull_config.get("app_secret", "").strip()
     ACCESS_TOKEN = webull_config.get("AccessToken", "").strip()
-    ACCOUNT_ID = webull_config.get("AccountId", "").strip()
+    ACCOUNT_ID = webull_config.get("AccountId", "").strip() or webull_config.get("account_id", "").strip()
     HOST = "api.webull.co.th"
 
     if APP_KEY and ACCOUNT_ID:
@@ -118,7 +206,7 @@ def get_user_portfolio_symbols():
                 for p in data:
                     if p.get("instrument_type") == "EQUITY":
                         symbols.add(str(p.get("symbol", "")).strip().upper())
-        except:
+        except Exception:
             pass
 
     # 3.2 Google Sheets (Dime US & Dime TH)
@@ -134,46 +222,68 @@ def get_user_portfolio_symbols():
             try:
                 ws_us = sh.worksheet("Dime_Portfolio")
                 for r in ws_us.get_all_records():
-                    sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
+                    sym = str(r.get("หุ้น (Ticker)", r.get("Ticker", r.get("Symbol", "")))).strip().upper()
                     if sym: symbols.add(sym)
-            except: pass
+            except Exception: pass
 
             # Dime TH
             try:
                 ws_th = sh.worksheet("Dime_TH_Portfolio")
                 for r in ws_th.get_all_records():
-                    sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
+                    sym = str(r.get("หุ้น (Ticker)", r.get("Ticker", r.get("Symbol", "")))).strip().upper()
                     if sym: symbols.add(sym)
-            except: pass
-    except:
+            except Exception: pass
+    except Exception:
         pass
 
     return list(symbols)
 
-# ==========================================
-# 🎨 ฟังก์ชันใส่สีกระทิง / หมี ในตาราง
-# ==========================================
 def style_trend_table(val):
     if "PASS" in str(val):
-        return 'background-color: #0b3818; color: #00e676; font-weight: bold;'
+        return 'background-color: #052e16; color: #4ade80; font-weight: bold;'
     elif "FAIL" in str(val):
-        return 'background-color: #3b1111; color: #ff5252; font-weight: bold;'
+        return 'background-color: #450a0a; color: #f87171; font-weight: bold;'
     return ''
 
 # ==========================================
-# 4. โครงสร้าง 3 แท็บ (3-Tab Layout)
+# 4. SEGMENTED PILL BUTTON NAVIGATION
 # ==========================================
-tab_universe, tab_my_portfolio, tab_target = st.tabs([
-    "📊 1. Winner Tilt Universe",
-    "💼 2. หุ้นในพอร์ตของฉัน",
-    "🎯 3. หุ้นที่ต้องการซื้อ"
-])
+if "wt_tab_mode" not in st.session_state:
+    st.session_state["wt_tab_mode"] = "UNIVERSE"
+
+tab_mode = st.session_state["wt_tab_mode"]
+
+c_b1, c_b2, c_b3 = st.columns(3)
+
+with c_b1:
+    b1_type = "primary" if tab_mode == "UNIVERSE" else "secondary"
+    if st.button("📊 1. Winner Tilt Universe", key="btn_wt_univ", type=b1_type, use_container_width=True):
+        st.session_state["wt_tab_mode"] = "UNIVERSE"
+        st.rerun()
+
+with c_b2:
+    b2_type = "primary" if tab_mode == "MY_PORT" else "secondary"
+    if st.button("💼 2. หุ้นในพอร์ตของฉัน", key="btn_wt_port", type=b2_type, use_container_width=True):
+        st.session_state["wt_tab_mode"] = "MY_PORT"
+        st.rerun()
+
+with c_b3:
+    b3_type = "primary" if tab_mode == "TARGET" else "secondary"
+    if st.button("🎯 3. หุ้นที่ต้องการซื้อ", key="btn_wt_target", type=b3_type, use_container_width=True):
+        st.session_state["wt_tab_mode"] = "TARGET"
+        st.rerun()
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ==========================================
+# 5. TAB CONTENTS
+# ==========================================
 
 # ------------------------------------------
-# TAB 1: WINNER TILT UNIVERSE
+# MODE 1: WINNER TILT UNIVERSE
 # ------------------------------------------
-with tab_universe:
-    st.subheader("1. 📈 Market Regime First (เช็กสภาวะตลาดใหญ่)")
+if tab_mode == "UNIVERSE":
+    st.markdown("### 1. 📈 Market Regime First (เช็กสภาวะตลาดใหญ่)")
     st.caption("ดัชนีหลักต้องอยู่เหนือเส้น SMA 200 วัน เพื่อยืนยันว่าตลาดยังอยู่ในสภาวะขาขึ้นที่เกื้อหนุนกลยุทธ์")
 
     with st.spinner("⏳ กำลังวิเคราะห์สภาวะตลาดใหญ่ (S&P 500, Nasdaq 100, SMH)..."):
@@ -197,8 +307,8 @@ with tab_universe:
                     </div>
                 """, unsafe_allow_html=True)
 
-    st.markdown("---")
-    st.subheader("2. 🔍 Winner Tilt 25 Checklist")
+    st.markdown("<br>", unsafe_allow_html=True)
+    st.markdown("### 2. 🔍 Winner Tilt 25 Checklist")
 
     with st.spinner("⏳ กำลังสแกนหุ้น Winner Tilt Universe..."):
         df_assets = fetch_market_data(ALL_STRATEGY_TICKERS)
@@ -236,13 +346,13 @@ with tab_universe:
                 "ระยะห่างจาก SMA200 (%)": "{:+.2f}%"
             }).map(style_trend_table, subset=["สถานะสัญญาณ Rebalance"])
             
-            st.dataframe(formatted_df, use_container_width=True)
+            st.dataframe(formatted_df, use_container_width=True, hide_index=True)
 
 # ------------------------------------------
-# TAB 2: หุ้นในพอร์ตของฉัน
+# MODE 2: หุ้นในพอร์ตของฉัน
 # ------------------------------------------
-with tab_my_portfolio:
-    st.subheader("💼 ตรวจสอบสุขภาพหุ้นที่ถือครองอยู่จริงในพอร์ต (My Portfolio Trend Filter)")
+elif tab_mode == "MY_PORT":
+    st.markdown("### 💼 ตรวจสอบสุขภาพหุ้นที่ถือครองอยู่จริงในพอร์ต (My Portfolio Trend Filter)")
     st.caption("ดึงข้อมูลจาก Webull, Dime US และ Dime TH เพื่อสแกนว่าหุ้นที่คุณถืออยู่ ตัวไหนยังยืนเหนือเส้น SMA 200 วัน")
     
     with st.spinner("⏳ กำลังดึงรายชื่อหุ้นในพอร์ตของคุณและประมวลผลเส้น 200 วัน..."):
@@ -269,9 +379,9 @@ with tab_my_portfolio:
                     "ระยะห่างจาก SMA200 (%)": "{:+.2f}%"
                 }).map(style_trend_table, subset=["สถานะสัญญาณ Rebalance"])
                 
-                st.dataframe(formatted_my_df, use_container_width=True)
+                st.dataframe(formatted_my_df, use_container_width=True, hide_index=True)
                 
-                st.markdown("---")
+                st.markdown("<br>", unsafe_allow_html=True)
                 df_my_failed = df_my_p[~df_my_p["Above_SMA200"]]
                 if not df_my_failed.empty:
                     st.error("🚨 **คำเตือนหุ้นในพอร์ตที่หลุดเส้น 200 วัน:**")
@@ -280,23 +390,22 @@ with tab_my_portfolio:
                 else:
                     st.success("✅ ยินดีด้วย! หุ้นทุกตัวในพอร์ตของคุณยังคงยืนเหนือเส้น SMA 200 วัน ได้ทั้งหมด")
         else:
-            st.info("ไม่พบรายการหุ้นในพอร์ตของคุณ")
+            st.info("💡 ไม่พบรายการหุ้นในพอร์ตของคุณจาก Webull หรือ Google Sheets")
 
 # ------------------------------------------
-# TAB 3: หุ้นที่ต้องการซื้อ (อิสระ พิมพ์ค้นหาได้ทุก Ticker)
+# MODE 3: หุ้นที่ต้องการซื้อ
 # ------------------------------------------
-with tab_target:
-    st.subheader("🎯 สแกนหุ้นที่กำลังเล็งไว้ก่อนตัดสินใจซื้อ (Target Buying Watchlist)")
-    st.caption("พิมพ์ชื่อ Ticker หุ้นที่ต้องการสแกน (เช่น MU, IQQQ, NVDA, PLTR) หากต้องการค้นหาหลายตัวให้คั่นด้วยเครื่องหมายจุลภาค ( , )")
+elif tab_mode == "TARGET":
+    st.markdown("### 🎯 สแกนหุ้นที่กำลังเล็งไว้ก่อนตัดสินใจซื้อ (Target Buying Watchlist)")
+    st.caption("พิมพ์ชื่อ Ticker หุ้นที่ต้องการสแกน (เช่น MU, NVDA, PLTR, PTT) หากต้องการค้นหาหลายตัวให้คั่นด้วยเครื่องหมายจุลภาค ( , )")
     
     input_symbols = st.text_input(
         "🔎 พิมพ์ชื่อ Ticker หุ้นที่ต้องการสแกน:",
         value="",
-        placeholder="ตัวอย่าง: MU, IQQQ, NVDA, TSLA"
+        placeholder="ตัวอย่าง: MU, NVDA, TSLA, PTT"
     )
     
     if input_symbols.strip():
-        # แยกข้อความตามจุลภาค และลบช่องว่างออก
         target_list = [s.strip().upper() for s in input_symbols.split(",") if s.strip()]
         
         with st.spinner("⏳ กำลังสแกนหุ้นเป้าหมาย..."):
@@ -308,18 +417,18 @@ with tab_target:
                 )
                 
                 df_target_disp = df_target[["Symbol", "Current_Price", "SMA_200", "Diff_Pct", "Status_Signal"]].rename(columns={
-                    "Current_Price": "ราคาปัจจุบัน ($)",
-                    "SMA_200": "เส้น SMA 200 วัน ($)",
+                    "Current_Price": "ราคาปัจจุบัน ($/฿)",
+                    "SMA_200": "เส้น SMA 200 วัน ($/฿)",
                     "Diff_Pct": "ระยะห่างจาก SMA200 (%)",
                     "Status_Signal": "คำแนะนำการเข้าซื้อ"
                 })
                 
                 formatted_target_df = df_target_disp.style.format({
-                    "ราคาปัจจุบัน ($)": "${:,.2f}",
-                    "เส้น SMA 200 วัน ($)": "${:,.2f}",
+                    "ราคาปัจจุบัน ($/฿)": "{:,.2f}",
+                    "เส้น SMA 200 วัน ($/฿)": "{:,.2f}",
                     "ระยะห่างจาก SMA200 (%)": "{:+.2f}%"
                 }).map(style_trend_table, subset=["คำแนะนำการเข้าซื้อ"])
                 
-                st.dataframe(formatted_target_df, use_container_width=True)
+                st.dataframe(formatted_target_df, use_container_width=True, hide_index=True)
     else:
         st.info("💡 พิมพ์รายชื่อ Ticker หุ้นในช่องด้านบน แล้วกด Enter เพื่อเริ่มสแกนสัญญาณซื้อตามเส้น SMA 200 วันได้ทันที!")
