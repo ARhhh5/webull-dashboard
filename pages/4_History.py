@@ -231,22 +231,24 @@ def color_pnl(val):
     return ''
 
 # ==========================================
-# แยกเป็น 3 แท็บตามความต้องการของบอส
+# แยกเป็น 4 แท็บตามความต้องการของบอส
 # ==========================================
-tab_normal, tab_raw_logs, tab_split_stocks = st.tabs([
-    "🎯 1. ตารางสรุปกำไรจากการขายจริง (Realized PnL - หุ้นปกติ)", 
-    "📜 2. ประวัติคำสั่งซื้อขายดิบแยกตาม Sheet",
-    "🔄 3. หุ้นที่มีการรวมหุ้น (Reverse Split)"
+tab_us_pnl, tab_th_pnl, tab_raw_logs, tab_split_stocks = st.tabs([
+    "🎯 1. ตารางสรุปกำไรจากการขายจริง หุ้น US", 
+    "🎯 2. ตารางสรุปกำไรจากการขายจริง หุ้นไทย",
+    "📜 3. ประวัติคำสั่งซื้อขายดิบแยกตาม Sheet",
+    "🔄 4. หุ้นที่มีการรวมหุ้น"
 ])
 
 # ==========================================
-# แท็บที่ 1: หุ้นปกติ (ไม่มี Reverse Split) - คิด FIFO ปกติแบบเรียงลำดับเวลา
+# แท็บที่ 1: ตารางสรุปกำไรจากการขายจริง หุ้น US ($)
 # ==========================================
-with tab_normal:
-    st.markdown("### 📊 กำไร/ขาดทุนสุทธิเฉพาะไม้ออเดอร์ที่ขายปิดจบแล้ว (หุ้นปกติ)")
+with tab_us_pnl:
+    st.markdown("### 📊 กำไร/ขาดทุนสุทธิเฉพาะไม้ออเดอร์ที่ขายปิดจบแล้ว (หุ้น US - $)")
     
-    closed_summary = []
+    us_closed_summary = []
     
+    # 1.1 ประมวลผลจาก Webull_Order_History (FIFO)
     if not df_webull.empty:
         df_w = df_webull.copy()
         df_w.columns = [str(c).strip() for c in df_w.columns]
@@ -261,12 +263,9 @@ with tab_normal:
             for symbol, group in df_w.groupby(sym_c):
                 symbol_clean = str(symbol).strip().upper()
                 if not symbol_clean or symbol_clean == 'NAN': continue
-                
-                # ข้ามหุ้นกลุ่ม Split เอาไปคิดในแท็บ 3
                 if symbol_clean in SPLIT_STOCKS: continue
                 
                 group_sorted = group.copy()
-                # แปลงเวลาและจัดเรียงลำดับจากอดีตไปปัจจุบันเพื่อความถูกต้องของ FIFO
                 if time_c in group_sorted.columns:
                     if pd.api.types.is_numeric_dtype(group_sorted[time_c]):
                         group_sorted['parsed_time'] = pd.to_datetime(group_sorted[time_c], unit='ms', errors='coerce')
@@ -316,21 +315,26 @@ with tab_normal:
                     remaining_in_queue = sum(b['qty'] for b in buy_queue)
                     status_text = "ปิดขายเกลี้ยงแล้ว" if remaining_in_queue < 0.01 else "ขายแล้วบางส่วน"
                     
-                    closed_summary.append({
+                    us_closed_summary.append({
                         "ชื่อหุ้น": symbol_clean,
                         "โบรกเกอร์": "Webull",
                         "จำนวนหุ้นที่ปิดขายแล้ว": total_matched_qty,
-                        "ราคาซื้อเฉลี่ย": avg_buy,
-                        "ราคาขายเฉลี่ย": avg_sell,
+                        "ราคาซื้อเฉลี่ย ($)": avg_buy,
+                        "ราคาขายเฉลี่ย ($)": avg_sell,
                         "กำไร/ขาดทุนสุทธิ ($)": total_realized_pnl,
                         "ผลตอบแทน (%)": ret_pct,
                         "สถานะ": status_text
                     })
 
+    # 1.2 ประมวลผลจาก Dime_Closed_Orders (ฝั่ง US)
     if not df_dime_closed.empty:
         df_dc = df_dime_closed.copy()
         df_dc.columns = [str(c).strip() for c in df_dc.columns]
-        for _, r in df_dc.iterrows():
+        
+        # กรองเฉพาะหุ้น US
+        df_dc_us = df_dc[df_dc["ตลาด (US/TH)"].astype(str).str.strip().str.upper() == "US"] if "ตลาด (US/TH)" in df_dc.columns else df_dc
+        
+        for _, r in df_dc_us.iterrows():
             sym = str(r.get('หุ้น (Ticker)') or r.get('Ticker') or r.get('Symbol', '')).strip().upper()
             if not sym or sym in SPLIT_STOCKS: continue
             
@@ -343,48 +347,117 @@ with tab_normal:
             if qty > 0 and buy_p > 0 and sell_p > 0:
                 pnl = qty * (sell_p - buy_p)
                 ret_pct = ((sell_p - buy_p) / buy_p * 100)
-                closed_summary.append({
+                us_closed_summary.append({
                     "ชื่อหุ้น": sym,
-                    "โบรกเกอร์": "Dime",
+                    "โบรกเกอร์": "Dime US",
                     "จำนวนหุ้นที่ปิดขายแล้ว": qty,
-                    "ราคาซื้อเฉลี่ย": buy_p,
-                    "ราคาขายเฉลี่ย": sell_p,
+                    "ราคาซื้อเฉลี่ย ($)": buy_p,
+                    "ราคาขายเฉลี่ย ($)": sell_p,
                     "กำไร/ขาดทุนสุทธิ ($)": pnl,
                     "ผลตอบแทน (%)": ret_pct,
                     "สถานะ": "ปิดขายเกลี้ยงแล้ว"
                 })
 
-    if closed_summary:
-        df_closed_res = pd.DataFrame(closed_summary).sort_values(by="กำไร/ขาดทุนสุทธิ ($)", ascending=True)
+    if us_closed_summary:
+        df_us_res = pd.DataFrame(us_closed_summary).sort_values(by="กำไร/ขาดทุนสุทธิ ($)", ascending=True)
         
-        total_pnl = df_closed_res["กำไร/ขาดทุนสุทธิ ($)"].sum()
-        pnl_class = "pnl-positive" if total_pnl >= 0 else "pnl-negative"
-        pnl_prefix = "+" if total_pnl >= 0 else ""
+        total_us_pnl = df_us_res["กำไร/ขาดทุนสุทธิ ($)"].sum()
+        pnl_class = "pnl-positive" if total_us_pnl >= 0 else "pnl-negative"
+        pnl_prefix = "+" if total_us_pnl >= 0 else ""
         
         c1, c2 = st.columns(2)
         with c1:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไร/ขาดทุนสะสมรวมจากการขายจริง (หุ้นปกติ)</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_pnl:,.2f}</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไร/ขาดทุนสะสมรวมหุ้น US (Realized PnL)</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_us_pnl:,.2f}</div></div>', unsafe_allow_html=True)
         with c2:
-            st.markdown(f'<div class="metric-container"><div class="metric-label">🎯 จำนวนหุ้นปกติที่มีรายการขาย</div><div class="metric-value">{len(df_closed_res)} ตัว</div></div>', unsafe_allow_html=True)
+            st.markdown(f'<div class="metric-container"><div class="metric-label">🎯 จำนวนหุ้น US ที่มีรายการขาย</div><div class="metric-value">{len(df_us_res)} ตัว</div></div>', unsafe_allow_html=True)
             
         st.markdown("---")
 
         st.dataframe(
-            df_closed_res.style.map(color_pnl, subset=["กำไร/ขาดทุนสุทธิ ($)", "ผลตอบแทน (%)"])
+            df_us_res.style.map(color_pnl, subset=["กำไร/ขาดทุนสุทธิ ($)", "ผลตอบแทน (%)"])
             .format({
-                "จำนวนหุ้นที่ปิดขายแล้ว": "{:,.2f}",
-                "ราคาซื้อเฉลี่ย": "${:,.2f}",
-                "ราคาขายเฉลี่ย": "${:,.2f}",
+                "จำนวนหุ้นที่ปิดขายแล้ว": "{:,.4f}",
+                "ราคาซื้อเฉลี่ย ($)": "${:,.2f}",
+                "ราคาขายเฉลี่ย ($)": "${:,.2f}",
                 "กำไร/ขาดทุนสุทธิ ($)": "${:,.2f}",
                 "ผลตอบแทน (%)": "{:+.2f}%"
             }),
             use_container_width=True
         )
     else:
-        st.info("💡 ไม่พบรายการหุ้นปกติที่มีการขายเกิดขึ้นในประวัติ")
+        st.info("💡 ไม่พบรายการหุ้น US ที่มีประวัติการขายปิดจบ")
 
 # ==========================================
-# แท็บที่ 2: แสดงข้อมูลดิบจาก 4 Sheets
+# แท็บที่ 2: ตารางสรุปกำไรจากการขายจริง หุ้นไทย (฿)
+# ==========================================
+with tab_th_pnl:
+    st.markdown("### 📊 กำไร/ขาดทุนสุทธิเฉพาะไม้ออเดอร์ที่ขายปิดจบแล้ว (หุ้นไทย - ฿)")
+    
+    th_closed_summary = []
+    
+    if not df_dime_closed.empty:
+        df_dc = df_dime_closed.copy()
+        df_dc.columns = [str(c).strip() for c in df_dc.columns]
+        
+        # กรองเอาเฉพาะหุ้นไทย (TH)
+        df_dc_th = df_dc[df_dc["ตลาด (US/TH)"].astype(str).str.strip().str.upper() == "TH"] if "ตลาด (US/TH)" in df_dc.columns else pd.DataFrame()
+        
+        if not df_dc_th.empty:
+            for _, r in df_dc_th.iterrows():
+                sym = str(r.get('หุ้น (Ticker)') or r.get('Ticker') or r.get('Symbol', '')).strip().upper()
+                if not sym: continue
+                
+                try:
+                    qty = float(str(r.get('จำนวนหุ้น (Qty)') or r.get('Qty', 0)).replace(",", "").replace("฿", ""))
+                    buy_p = float(str(r.get('ราคาซื้อเฉลี่ย (Buy Price)') or r.get('Buy Price', 0)).replace(",", "").replace("฿", ""))
+                    sell_p = float(str(r.get('ราคาขายจริง (Sell Price)') or r.get('Sell Price', 0)).replace(",", "").replace("฿", ""))
+                except: continue
+                
+                if qty > 0 and buy_p > 0 and sell_p > 0:
+                    pnl = qty * (sell_p - buy_p)
+                    ret_pct = ((sell_p - buy_p) / buy_p * 100)
+                    th_closed_summary.append({
+                        "ชื่อหุ้น": sym,
+                        "โบรกเกอร์": "Dime TH",
+                        "จำนวนหุ้นที่ปิดขายแล้ว": qty,
+                        "ราคาซื้อเฉลี่ย (฿)": buy_p,
+                        "ราคาขายเฉลี่ย (฿)": sell_p,
+                        "กำไร/ขาดทุนสุทธิ (฿)": pnl,
+                        "ผลตอบแทน (%)": ret_pct,
+                        "สถานะ": "ปิดขายเกลี้ยงแล้ว"
+                    })
+
+    if th_closed_summary:
+        df_th_res = pd.DataFrame(th_closed_summary).sort_values(by="กำไร/ขาดทุนสุทธิ (฿)", ascending=True)
+        
+        total_th_pnl = df_th_res["กำไร/ขาดทุนสุทธิ (฿)"].sum()
+        pnl_class = "pnl-positive" if total_th_pnl >= 0 else "pnl-negative"
+        pnl_prefix = "+" if total_th_pnl >= 0 else ""
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไร/ขาดทุนสะสมรวมหุ้นไทย (Realized PnL)</div><div class="metric-value {pnl_class}">{pnl_prefix}฿{total_th_pnl:,.2f}</div></div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'<div class="metric-container"><div class="metric-label">🎯 จำนวนหุ้นไทยที่มีรายการขาย</div><div class="metric-value">{len(df_th_res)} ตัว</div></div>', unsafe_allow_html=True)
+            
+        st.markdown("---")
+
+        st.dataframe(
+            df_th_res.style.map(color_pnl, subset=["กำไร/ขาดทุนสุทธิ (฿)", "ผลตอบแทน (%)"])
+            .format({
+                "จำนวนหุ้นที่ปิดขายแล้ว": "{:,.2f}",
+                "ราคาซื้อเฉลี่ย (฿)": "฿{:,.2f}",
+                "ราคาขายเฉลี่ย (฿)": "฿{:,.2f}",
+                "กำไร/ขาดทุนสุทธิ (฿)": "฿{:,.2f}",
+                "ผลตอบแทน (%)": "{:+.2f}%"
+            }),
+            use_container_width=True
+        )
+    else:
+        st.info("💡 ไม่พบรายการหุ้นไทยที่มีประวัติการขายปิดจบในแผ่นงาน `Dime_Closed_Orders`")
+
+# ==========================================
+# แท็บที่ 3: แสดงข้อมูลดิบจาก 4 Sheets
 # ==========================================
 with tab_raw_logs:
     sub1, sub2, sub3, sub4 = st.tabs([
@@ -423,7 +496,7 @@ with tab_raw_logs:
             st.info("ไม่พบข้อมูลในชีท Dime_TH_Portfolio")
 
 # ==========================================
-# แท็บที่ 3: คำนวณหุ้นที่มีการรวมหุ้น (Reverse Split เช่น ULTY)
+# แท็บที่ 4: คำนวณหุ้นที่มีการรวมหุ้น (Reverse Split เช่น ULTY)
 # ==========================================
 with tab_split_stocks:
     st.markdown("### 🔄 คำนวณเฉพาะหุ้นที่มีการรวมหุ้น (Reverse Split / Corporate Actions)")
