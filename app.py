@@ -400,13 +400,16 @@ with st.sidebar:
             st.session_state["current_page"] = "2.4_News"
             st.rerun()
 
-    # --- SECTION 3.0 AI STOCK SELECTION & BUYING DECISIONS (NEW!) ---
+    # --- SECTION 3.0 AI STOCK SELECTION & BUYING DECISIONS ---
     with st.expander("🧠 3.0 AI Stock Selection", expanded=True):
         if st.button("🎯 3.1 AI Fundamental (GOD MODE)", use_container_width=True):
             st.session_state["current_page"] = "3.1_AI_Fundamental"
             st.rerun()
-        if st.button("🔍 3.2 Peer Comparison", use_container_width=True):
-            st.session_state["current_page"] = "3.2_Peer_Comparison"
+        if st.button("💎 3.2 Diamond Hunter OS (v3.0)", use_container_width=True):
+            st.session_state["current_page"] = "3.2_Diamond_Hunter"
+            st.rerun()
+        if st.button("🔍 3.3 Peer Comparison", use_container_width=True):
+            st.session_state["current_page"] = "3.3_Peer_Comparison"
             st.rerun()
 
 # ==========================================
