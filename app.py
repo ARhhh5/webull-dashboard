@@ -1,12 +1,18 @@
-import streamlit as st
-import pandas as pd
+import os
 import json
 import base64
-import gspread
-import plotly.graph_objects as go
+import urllib.parse
+import http.client
+import uuid
+import hmac
+import hashlib
 import importlib.util
-import os
-from datetime import datetime
+from datetime import datetime, timezone
+import streamlit as st
+import pandas as pd
+import plotly.graph_objects as go
+import yfinance as yf
+import gspread
 
 # ==========================================
 # 1. PAGE CONFIGURATION & GLOBAL STYLE
@@ -109,14 +115,14 @@ def inject_custom_css():
         }
 
         /* ------------------------------------------------ */
-        /* FEATURE 1: INFINITE RUNNING TICKER MARQUEE       */
+        /* INFINITE RUNNING TICKER MARQUEE                  */
         /* ------------------------------------------------ */
         .ticker-container {
             width: 100%;
             overflow: hidden;
             background-color: #0d0e12;
             border: 1px solid #1f232d;
-            border-radius: 8px;
+            border-radius: 10px;
             padding: 8px 0;
             margin-bottom: 20px;
             white-space: nowrap;
@@ -125,8 +131,8 @@ def inject_custom_css():
 
         .ticker-track {
             display: inline-flex;
-            gap: 15px;
-            animation: marquee 25s linear infinite;
+            gap: 12px;
+            animation: marquee 30s linear infinite;
         }
 
         .ticker-container:hover .ticker-track {
@@ -138,16 +144,44 @@ def inject_custom_css():
             100% { transform: translateX(-50%); }
         }
 
-        .ticker-pill {
+        .ticker-card-pill {
             background-color: #111318;
             border: 1px solid #1f232d;
-            border-radius: 6px;
-            padding: 4px 12px;
-            font-size: 0.8rem;
+            border-radius: 8px;
+            padding: 6px 14px;
+            font-size: 0.82rem;
             font-family: 'JetBrains Mono', monospace;
             display: inline-flex;
             align-items: center;
-            gap: 8px;
+            gap: 10px;
+        }
+
+        .ticker-card-symbol {
+            font-weight: 700;
+            color: #ffffff;
+        }
+
+        .ticker-card-price {
+            color: #e2e8f0;
+            font-weight: 600;
+        }
+
+        .badge-mini-pos {
+            background-color: rgba(34, 197, 94, 0.15);
+            color: #4ade80;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
+        }
+
+        .badge-mini-neg {
+            background-color: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            padding: 2px 6px;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            font-weight: 700;
         }
 
         /* Main Dashboard Cards */
@@ -269,59 +303,62 @@ def inject_custom_css():
 inject_custom_css()
 
 # ==========================================
-# 2. DASHBOARD MAIN RENDER FUNCTION
+# 2. DATA PIPELINE & GOOGLE SHEETS SERVICES
+# ==========================================
+@st.cache_resource
+def get_gspread_client():
+    try:
+        google_secrets = st.secrets.get("Google", {})
+        cred_base64 = google_secrets.get("credentials_base64", "")
+        if cred_base64:
+            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
+            return gspread.service_account_from_dict(cred_dict)
+        return None
+    except Exception:
+        return None
+
+def fetch_portfolio_stock_data():
+    gc = get_gspread_client()
+    holdings = []
+    sh_obj = None
+    if gc:
+        try:
+            sh_obj = gc.open("หุ้นของเรา")
+            # Fetch Dime US
+            try:
+                ws_us = sh_obj.worksheet("Dime_Portfolio")
+                for r in ws_us.get_all_records():
+                    sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
+                    if sym:
+                        holdings.append({
+                            "Symbol": sym,
+                            "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
+                            "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
+                            "Broker": "Dime US"
+                        })
+            except Exception: pass
+            
+            # Fetch Dime TH
+            try:
+                ws_th = sh_obj.worksheet("Dime_TH_Portfolio")
+                for r in ws_th.get_all_records():
+                    sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
+                    if sym:
+                        holdings.append({
+                            "Symbol": sym,
+                            "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
+                            "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
+                            "Broker": "Dime TH"
+                        })
+            except Exception: pass
+        except Exception: pass
+    return pd.DataFrame(holdings), sh_obj
+
+# ==========================================
+# 3. DASHBOARD MAIN RENDER FUNCTION
 # ==========================================
 def render_dashboard():
-    @st.cache_resource
-    def get_gspread_client():
-        try:
-            google_secrets = st.secrets.get("Google", {})
-            cred_base64 = google_secrets.get("credentials_base64", "")
-            if cred_base64:
-                cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
-                return gspread.service_account_from_dict(cred_dict)
-            return None
-        except Exception:
-            return None
-
-    def load_summary_data():
-        gc = get_gspread_client()
-        if not gc:
-            return pd.DataFrame(), pd.DataFrame(), None
-        df_us, df_th = pd.DataFrame(), pd.DataFrame()
-        sh = None
-        try:
-            sh = gc.open("หุ้นของเรา")
-            try: df_us = pd.DataFrame(sh.worksheet("Dime_Portfolio").get_all_records())
-            except: pass
-            try: df_th = pd.DataFrame(sh.worksheet("Dime_TH_Portfolio").get_all_records())
-            except: pass
-        except Exception: pass
-        return df_us, df_th, sh
-
-    df_us_raw, df_th_raw, sh_obj = load_summary_data()
-
-    # Dynamic Ticker Generation
-    tickers_list = ["PG", "YMAG", "QQQM", "CYN", "ETOR", "INM", "SCHG", "SLDE", "JEPQ", "CHPY", "QQQI"]
-    if not df_us_raw.empty and "หุ้น (Ticker)" in df_us_raw.columns:
-        fetched_tickers = df_us_raw["หุ้น (Ticker)"].dropna().unique().tolist()
-        if fetched_tickers:
-            tickers_list = [str(t) for t in fetched_tickers if str(t).strip() != ""]
-
-    ticker_items_html = ""
-    for t in tickers_list:
-        ticker_items_html += f'<div class="ticker-pill"><span style="color:#38bdf8;">⚡ {t}</span> <span style="color:#4ade80;">Active</span></div>'
-    
-    # Repeat track for smooth seamless looping
-    full_track_html = f"""
-    <div class="ticker-container">
-        <div class="ticker-track">
-            {ticker_items_html}
-            {ticker_items_html}
-        </div>
-    </div>
-    """
-    st.markdown(full_track_html, unsafe_allow_html=True)
+    df_holdings, sh_obj = fetch_portfolio_stock_data()
 
     # Title & Currency Control
     c_title, c_curr = st.columns([3, 1])
@@ -339,6 +376,72 @@ def render_dashboard():
     is_usd = "USD" in currency_selected
     symbol = "$" if is_usd else "฿"
 
+    # Process Ticker Cards Data (Price & PnL%)
+    ticker_cards_html = ""
+    
+    if not df_holdings.empty:
+        # Group by Symbol to aggregate cost & volume
+        grouped_stocks = []
+        for sym, group in df_holdings.groupby("Symbol"):
+            tot_qty = group["Qty"].sum()
+            avg_cost = (group["Qty"] * group["Cost"]).sum() / tot_qty if tot_qty > 0 else 0
+            grouped_stocks.append({"Symbol": sym, "Qty": tot_qty, "Cost": avg_cost})
+        
+        df_ticker_stocks = pd.DataFrame(grouped_stocks)
+        
+        # Mock/Fetch Prices for Stock Ticker Cards
+        default_prices = {
+            "PG": 162.40, "YMAG": 15.80, "QQQM": 182.50, "CYN": 24.10, 
+            "ETOR": 68.20, "INM": 5.10, "SCHG": 36.80, "SLDE": 24.50, 
+            "JEPQ": 55.40, "CHPY": 91.20, "QQQI": 56.80, "NVDA": 875.20, "AMZN": 178.35
+        }
+
+        for idx, row in df_ticker_stocks.iterrows():
+            sym = row["Symbol"]
+            cost = row["Cost"]
+            price = default_prices.get(sym, cost * 1.05 if cost > 0 else 100.0)
+            
+            pnl_pct = ((price - cost) / cost * 100) if cost > 0 else 0.0
+            badge_class = "badge-mini-pos" if pnl_pct >= 0 else "badge-mini-neg"
+            pnl_sign = "+" if pnl_pct >= 0 else ""
+            
+            card_item = f"""
+            <div class="ticker-card-pill">
+                <span class="ticker-card-symbol">{sym}</span>
+                <span class="ticker-card-price">${price:,.2f}</span>
+                <span class="{badge_class}">{pnl_sign}{pnl_pct:.2f}%</span>
+            </div>
+            """
+            ticker_cards_html += card_item
+    else:
+        # Default Fallback Display if Sheet empty
+        sample_data = [
+            ("NVDA", 875.20, 9.10), ("TSLA", 215.30, -0.80), ("AAPL", 182.50, 1.20),
+            ("MSFT", 420.10, 0.50), ("AMZN", 178.35, 2.10), ("QQQM", 182.50, 3.40)
+        ]
+        for sym, price, pnl_pct in sample_data:
+            badge_class = "badge-mini-pos" if pnl_pct >= 0 else "badge-mini-neg"
+            pnl_sign = "+" if pnl_pct >= 0 else ""
+            ticker_cards_html += f"""
+            <div class="ticker-card-pill">
+                <span class="ticker-card-symbol">{sym}</span>
+                <span class="ticker-card-price">${price:,.2f}</span>
+                <span class="{badge_class}">{pnl_sign}{pnl_pct:.2f}%</span>
+            </div>
+            """
+
+    # Render Infinite Running Marquee Top Strip
+    full_track_html = f"""
+    <div class="ticker-container">
+        <div class="ticker-track">
+            {ticker_cards_html}
+            {ticker_cards_html}
+        </div>
+    </div>
+    """
+    st.markdown(full_track_html, unsafe_allow_html=True)
+
+    # Portfolio Totals
     tot_invested_usd = 48180.96
     tot_market_usd = 43870.99
     tot_pnl_usd = tot_market_usd - tot_invested_usd
@@ -468,9 +571,9 @@ def render_dashboard():
         with g1:
             st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 NVDA</span><span class="badge-delta-pos">+9.10%</span></div><div class="stock-price">$892,812.00</div></div>', unsafe_allow_html=True)
         with g2:
-            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 ABNB</span><span class="badge-delta-neg">-3.89%</span></div><div class="stock-price">$92,900.00</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-between; align-items:center;"><span class="stock-symbol">🔴 ABNB</span><span class="badge-delta-neg">+3.89%</span></div><div class="stock-price">$92,900.00</div></div>', unsafe_allow_html=True)
         with g3:
-            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 AMZN</span><span class="badge-delta-pos">+2.67%</span></div><div class="stock-price">$854,414.00</div></div>', unsafe_allow_html=True)
+            st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-between; align-items:center;"><span class="stock-symbol">🟢 AMZN</span><span class="badge-delta-pos">+2.67%</span></div><div class="stock-price">$854,414.00</div></div>', unsafe_allow_html=True)
 
 # Smart Helper Function to Load Subpages Dynamic
 def load_page_module(file_name):
@@ -500,7 +603,7 @@ def load_page_module(file_name):
         st.info("กรุณาตรวจสอบว่ามีไฟล์ชื่อนี้ตรงๆ อยู่ในโฟลเดอร์ pages/ ครับ")
 
 # ==========================================
-# 3. SIDEBAR NAVIGATION
+# 4. SIDEBAR NAVIGATION
 # ==========================================
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "Dashboard"
@@ -552,7 +655,7 @@ with st.sidebar:
         st.caption("พื้นที่สำรองสำหรับการขยายระบบในอนาคต")
 
 # ==========================================
-# 4. PAGE SWITCHER ROUTER
+# 5. PAGE SWITCHER ROUTER
 # ==========================================
 selected_page = st.session_state["current_page"]
 
