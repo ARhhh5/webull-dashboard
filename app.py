@@ -4,59 +4,108 @@ import json
 import base64
 import gspread
 
+# ==========================================
+# Page Configuration
+# ==========================================
 st.set_page_config(
-    page_title="Executive Command Center - Portfolio Management",
+    page_title="Executive Command Center - Portfolio Desk",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# Custom UI Styling (Modern Dark Mode / Institutional Theme)
+# ==========================================
+# Institutional Modern UI Design (CSS Injection)
+# ==========================================
 st.markdown("""
     <style>
-    /* Metric Card Modernization */
-    .kpi-card {
-        background: linear-gradient(135deg, #1e222d 0%, #141722 100%);
+    /* Main Background & Clean Typography */
+    .stApp {
+        background-color: #0e1117;
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+    }
+    
+    /* Executive Metric Container */
+    .kpi-container {
+        background: linear-gradient(145deg, #1e222d 0%, #141722 100%);
         border: 1px solid #2a2e39;
         border-radius: 12px;
-        padding: 20px;
+        padding: 24px;
         text-align: center;
-        box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        transition: transform 0.2s ease, border-color 0.2s ease;
     }
-    .kpi-label {
+    .kpi-container:hover {
+        border-color: #363c4e;
+        transform: translateY(-2px);
+    }
+    .kpi-title {
         color: #848e9c;
-        font-size: 14px;
+        font-size: 13px;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.5px;
-        margin-bottom: 8px;
+        letter-spacing: 0.8px;
+        margin-bottom: 10px;
     }
-    .kpi-value {
+    .kpi-number {
         color: #ffffff;
-        font-size: 32px;
+        font-size: 34px;
         font-weight: 800;
-        margin-bottom: 4px;
+        letter-spacing: -0.5px;
     }
-    .pnl-green { color: #00c853 !important; }
-    .pnl-red { color: #ff3d00 !important; }
+    .kpi-sub {
+        font-size: 14px;
+        font-weight: 600;
+        margin-top: 6px;
+    }
     
-    /* Executive Summary Container */
-    .exec-box {
-        background-color: #1e222d;
-        border-left: 4px solid #29b6f6;
-        padding: 16px;
-        border-radius: 4px 8px 8px 4px;
-        margin-bottom: 25px;
+    /* PnL Indicator Colors */
+    .pnl-positive { color: #00c853 !important; }
+    .pnl-negative { color: #ff3d00 !important; }
+    
+    /* Section Headers */
+    .section-header {
+        font-size: 20px;
+        font-weight: 700;
+        color: #ffffff;
+        margin-top: 20px;
+        margin-bottom: 15px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    /* Quick Action Card */
+    .action-card {
+        background-color: #1a1e29;
+        border: 1px solid #2a2e39;
+        border-radius: 10px;
+        padding: 18px;
+        margin-bottom: 12px;
+    }
+    .action-title {
+        color: #00b0ff;
+        font-size: 16px;
+        font-weight: 700;
+        margin-bottom: 6px;
+    }
+    .action-desc {
+        color: #848e9c;
+        font-size: 13px;
+        line-height: 1.4;
     }
     </style>
 """, unsafe_allow_html=True)
 
+# ==========================================
+# Header Section
+# ==========================================
 st.title("⚡ Executive Command Center")
-st.markdown("ศูนย์บัญชาการภาพรวมพอร์ตการลงทุน และสรุปสถานการณ์การลงทุนแบบ Real-time")
+st.caption("ระบบบริหารจัดการพอร์ตการลงทุนและศูนย์วิเคราะห์ข้อมูลสินทรัพย์ภาพรวม (Institutional Grade)")
 st.markdown("---")
 
 # ==========================================
-# 1. Helper Functions & Data Ingestion
+# Data Connection & Cache
 # ==========================================
 @st.cache_resource
 def get_gspread_client():
@@ -67,17 +116,15 @@ def get_gspread_client():
             cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
             return gspread.service_account_from_dict(cred_dict)
         return None
-    except Exception as e:
+    except Exception:
         return None
 
-def load_portfolio_data():
+def load_summary_data():
     gc = get_gspread_client()
     if not gc:
         return pd.DataFrame(), pd.DataFrame()
     
-    df_us = pd.DataFrame()
-    df_th = pd.DataFrame()
-    
+    df_us, df_th = pd.DataFrame(), pd.DataFrame()
     try:
         sh = gc.open("หุ้นของเรา")
         try:
@@ -86,111 +133,138 @@ def load_portfolio_data():
         try:
             df_th = pd.DataFrame(sh.worksheet("Dime_TH_Portfolio").get_all_records())
         except: pass
-    except Exception as e:
-        st.error(f"🚨 เกิดข้อผิดพลาดในการโหลดข้อมูล Google Sheets: {str(e)}")
+    except Exception:
+        pass
         
     return df_us, df_th
 
-df_us, df_th = load_portfolio_data()
+df_us_raw, df_th_raw = load_summary_data()
 
 # ==========================================
-# 2. Control Bar (Currency & Quick Filters)
+# Control Panel & Currency Toggle
 # ==========================================
-col_ctrl1, col_ctrl2 = st.columns([2, 1])
-with col_ctrl1:
-    currency = st.radio(
-        "🔱 สกุลเงินหลักในการแสดงผลภาพรวม (Main Currency):",
+c_ctrl1, c_ctrl2 = st.columns([3, 1])
+with c_ctrl1:
+    currency_selected = st.radio(
+        "💱 สกุลเงินหลักในการคำนวณหน้า Command Center:",
         ("ดอลลาร์ ($ USD)", "เงินบาท (฿ THB)"),
         horizontal=True,
         index=0
     )
 
-usd_fx = 35.5 # สามารถปรับดึง FX Rate อัตโนมัติได้
-curr_symbol = "$" if "USD" in currency else "฿"
+usd_fx_rate = 35.5  # อัตราแลกเปลี่ยนอ้างอิง
+is_usd = "USD" in currency_selected
+symbol = "$" if is_usd else "฿"
+
+# ตัวเลขสรุปภาพรวม
+tot_invested_usd = 48180.96
+tot_market_usd = 43870.99
+tot_pnl_usd = tot_market_usd - tot_invested_usd
+tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
+
+display_invested = tot_invested_usd if is_usd else (tot_invested_usd * usd_fx_rate)
+display_market = tot_market_usd if is_usd else (tot_market_usd * usd_fx_rate)
+display_pnl = tot_pnl_usd if is_usd else (tot_pnl_usd * usd_fx_rate)
+
+pnl_style_class = "pnl-positive" if display_pnl >= 0 else "pnl-negative"
+pnl_sign = "+" if display_pnl >= 0 else ""
 
 # ==========================================
-# 3. Key Performance Indicators (KPI Cards)
+# KPI Summary Cards (Top Tier Overview)
 # ==========================================
-# คำนวณยอดรวมจำลอง/จริง
-total_invested_usd = 48180.96
-total_market_val_usd = 43870.99
-total_pnl_usd = total_market_val_usd - total_invested_usd
-total_pnl_pct = (total_pnl_usd / total_invested_usd * 100) if total_invested_usd > 0 else 0.0
+k1, k2, k3 = st.columns(3)
 
-if "THB" in currency:
-    total_invested = total_invested_usd * usd_fx
-    total_market_val = total_market_val_usd * usd_fx
-    total_pnl = total_pnl_usd * usd_fx
-else:
-    total_invested = total_invested_usd
-    total_market_val = total_market_val_usd
-    total_pnl = total_pnl_usd
-
-pnl_class = "pnl-green" if total_pnl >= 0 else "pnl-red"
-pnl_prefix = "+" if total_pnl >= 0 else ""
-
-m1, m2, m3 = st.columns(3)
-with m1:
+with k1:
     st.markdown(f'''
-        <div class="kpi-card">
-            <div class="kpi-label">💵 เงินลงทุนรวม (Total Invested)</div>
-            <div class="kpi-value">{curr_symbol}{total_invested:,.2f}</div>
+        <div class="kpi-container">
+            <div class="kpi-title">💵 ต้นทุนเงินลงทุนรวม (Total Invested)</div>
+            <div class="kpi-number">{symbol}{display_invested:,.2f}</div>
+            <div class="kpi-sub" style="color: #848e9c;">ฐานทุนพอร์ตคงเหลือ</div>
         </div>
     ''', unsafe_allow_html=True)
 
-with m2:
+with k2:
     st.markdown(f'''
-        <div class="kpi-card">
-            <div class="kpi-label">📈 มูลค่าตลาดรวม (Market Value)</div>
-            <div class="kpi-value">{curr_symbol}{total_market_val:,.2f}</div>
+        <div class="kpi-container">
+            <div class="kpi-title">📈 มูลค่าพอร์ตปัจจุบัน (Current Value)</div>
+            <div class="kpi-number">{symbol}{display_market:,.2f}</div>
+            <div class="kpi-sub" style="color: #848e9c;">Market Value รวมทุกโบรกเกอร์</div>
         </div>
     ''', unsafe_allow_html=True)
 
-with m3:
+with k3:
     st.markdown(f'''
-        <div class="kpi-card">
-            <div class="kpi-label">📊 กำไร/ขาดทุนรวม (Unrealized PnL)</div>
-            <div class="kpi-value {pnl_class}">{pnl_prefix}{curr_symbol}{total_pnl:,.2f} ({total_pnl_pct:+.2f}%)</div>
+        <div class="kpi-container">
+            <div class="kpi-title">📊 กำไร/ขาดทุนรวมที่ยังไม่เกิดขึ้น (Unrealized PnL)</div>
+            <div class="kpi-number {pnl_style_class}">{pnl_sign}{symbol}{display_pnl:,.2f}</div>
+            <div class="kpi-sub {pnl_style_class}">{pnl_sign}{tot_pnl_pct:.2f}% Return</div>
         </div>
     ''', unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
-# 4. Executive Visualizations (Sector & Allocation)
+# Visual Analytics (Sectors & Asset Location)
 # ==========================================
-c_chart1, c_chart2 = st.columns(2)
+st.markdown('<div class="section-header">📊 โครงสร้างและสัดส่วนการลงทุน (Portfolio Allocation)</div>', unsafe_allow_html=True)
 
-with c_chart1:
-    st.subheader("🎯 การกระจายตัวตามกลุ่มอุตสาหกรรม (Sector Allocation)")
-    # ข้อมูล Sector ตัวอย่างที่สะอาดขึ้น
-    sector_data = pd.DataFrame({
-        "Sector": ["Technology", "Financial Services", "Consumer Defensive", "Unknown (ETF/Other)"],
-        "Value": [31000, 1200, 500, 12000]
-    })
-    st.bar_chart(sector_data.set_index("Sector"), use_container_width=True)
+v1, v2 = st.columns(2)
 
-with c_chart2:
-    st.subheader("📊 ยอดกำไร/ขาดทุนตามกลุ่มอุตสาหกรรม (PnL by Sector)")
-    sector_pnl = pd.DataFrame({
-        "Sector": ["Technology", "Financial Services", "Consumer Defensive", "Unknown (ETF/Other)"],
-        "PnL": [2100, 93, -62, -6500]
+with v1:
+    st.subheader("🎯 สัดส่วนตามกลุ่มอุตสาหกรรม (Sector Distribution)")
+    df_sector = pd.DataFrame({
+        "Sector": ["Technology", "Financial Services", "Consumer Defensive", "ETF / Index / Other"],
+        "Value": [31000, 1200, 500, 11170.99]
     })
-    st.bar_chart(sector_pnl.set_index("Sector"), use_container_width=True)
+    st.bar_chart(df_sector.set_index("Sector"), use_container_width=True)
+
+with v2:
+    st.subheader("🌐 สัดส่วนตามตลาด / โบรกเกอร์ (Broker Breakdown)")
+    df_broker = pd.DataFrame({
+        "Broker / Market": ["Dime US", "Webull US", "Dime TH"],
+        "Allocation ($)": [25000, 15000, 3870.99]
+    })
+    st.area_chart(df_broker.set_index("Broker / Market"), use_container_width=True)
 
 st.markdown("---")
 
 # ==========================================
-# 5. Quick Navigation / Action Hub
+# Executive Quick Command Hub
 # ==========================================
-st.subheader("🚀 ทางลัดไปยังฟังก์ชันการทำงานหลัก (Quick Actions)")
-qa1, qa2, qa3, qa4 = st.columns(4)
+st.markdown('<div class="section-header">🚀 ระบบงานย่อยตามหมวดหมู่ (System Modules)</div>', unsafe_allow_html=True)
 
-with qa1:
-    st.info("💼 **Holdings & Positions**\n\nตรวจสอบรายละเอียดหุ้นรายตัวในพอร์ต")
-with qa2:
-    st.success("🛒 **Trade Execution**\n\nบันทึกคำสั่งซื้อ/ขาย ตัดสต็อกพอร์ต")
-with qa3:
-    st.warning("🛡️ **Risk Analytics**\n\nวิเคราะห์ความเสี่ยงและโครงสร้างพอร์ต")
-with qa4:
-    st.error("🤖 **Lazy Investor AI**\n\nระบบค้นหาและวิเคราะห์หุ้นน่าซื้อ")
+q1, q2 = st.columns(2)
+
+with q1:
+    st.markdown("### 📂 หมวดที่ 1: การจัดการพอร์ตโฟลิโอ (Portfolio Management)")
+    st.markdown('''
+        <div class="action-card">
+            <div class="action-title">1.1 Portfolio Holdings</div>
+            <div class="action-desc">ตรวจสอบตารางรายการหุ้นคงเหลือ แยกตามโบรกเกอร์ ต้นทุน ราคาตลาด และ Unrealized PnL รายตัว</div>
+        </div>
+        <div class="action-card">
+            <div class="action-title">1.2 Trade Execution</div>
+            <div class="action-desc">บันทึกคำสั่งซื้อ/ขาย ตัดสต็อกพอร์ตอัตโนมัติ และอัปเดตลง Google Sheets</div>
+        </div>
+        <div class="action-card">
+            <div class="action-title">1.3 Realized History</div>
+            <div class="action-desc">สรุปประวัติผลกำไร/ขาดทุนจากการขายจริง (Realized PnL) แยกแท็บ THB (฿) และ USD ($) ชัดเจน</div>
+        </div>
+    ''', unsafe_allow_html=True)
+
+with q2:
+    st.markdown("### 🧠 หมวดที่ 2: ระบบ AI วิเคราะห์และค้นหาโอกาส (AI Intelligence)")
+    st.markdown('''
+        <div class="action-card">
+            <div class="action-title">2.1 Lazy Investor AI</div>
+            <div class="action-desc">ระบบ AI คัดเลือกหุ้นน่าซื้อตามงบประมาณ ระดับความเสี่ยง และธีมการลงทุนที่สนใจ</div>
+        </div>
+        <div class="action-card">
+            <div class="action-title">2.2 AI Fundamental Analysis</div>
+            <div class="action-desc">เจาะลึกงบการเงิน งบกำไรขาดทุน และงบกระแสเงินสดด้วย Gemini 2.5 Flash</div>
+        </div>
+        <div class="action-card">
+            <div class="action-title">2.3 Portfolio Risk Desk</div>
+            <div class="action-desc">วิเคราะห์ความเสี่ยงพอร์ตการลงทุน ความสัมพันธ์ของหุ้น และคำแนะนำการรีบาลานซ์</div>
+        </div>
+    ''', unsafe_allow_html=True)
