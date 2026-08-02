@@ -164,7 +164,6 @@ def load_dividend_data():
         for rc in required_cols:
             col_data = df[rc]
             if isinstance(col_data, pd.DataFrame):
-                # If duplicate columns existed, take the first valid column
                 clean_df[rc] = col_data.iloc[:, 0]
             else:
                 clean_df[rc] = col_data
@@ -172,7 +171,6 @@ def load_dividend_data():
         # 5. Safe Data Types Parsing
         clean_df["Date"] = pd.to_datetime(clean_df["Date"].astype(str), format="%d/%m/%Y", errors='coerce')
         
-        # Fallback date parser for different formats
         null_dates = clean_df["Date"].isna()
         if null_dates.any():
             clean_df.loc[null_dates, "Date"] = pd.to_datetime(df.loc[null_dates, "Date"], dayfirst=True, errors='coerce')
@@ -182,9 +180,18 @@ def load_dividend_data():
         clean_df["Currency"] = clean_df["Currency"].astype(str).str.strip().str.upper()
         clean_df["Broker"] = clean_df["Broker"].astype(str).str.strip().str.upper()
         
-        # 6. Currency Normalization
-        clean_df["Amount_USD"] = clean_df.apply(lambda r: r["Amount"] if r["Currency"] == "USD" else r["Amount"] / fx_rate, axis=1)
-        clean_df["Amount_THB"] = clean_df.apply(lambda r: r["Amount"] * fx_rate if r["Currency"] == "USD" else r["Amount"], axis=1)
+        # 6. Correct Currency Normalization Logic
+        # Amount_USD: If already USD, keep Amount. If THB, convert to USD (/ fx_rate)
+        clean_df["Amount_USD"] = clean_df.apply(
+            lambda r: r["Amount"] if r["Currency"] == "USD" else (r["Amount"] / fx_rate if fx_rate > 0 else r["Amount"]),
+            axis=1
+        )
+        
+        # Amount_THB: If already THB, keep Amount. If USD, convert to THB (* fx_rate)
+        clean_df["Amount_THB"] = clean_df.apply(
+            lambda r: r["Amount"] * fx_rate if r["Currency"] == "USD" else r["Amount"],
+            axis=1
+        )
         
         clean_df["YearMonth"] = clean_df["Date"].dt.strftime("%Y-%m")
         clean_df["Month_Name"] = clean_df["Date"].dt.strftime("%b %Y")
