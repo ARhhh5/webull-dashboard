@@ -13,8 +13,7 @@ import yfinance as yf
 import gspread
 from datetime import datetime, timezone
 
-st.set_page_config(page_title="Portfolio Overview", layout="wide")
-
+# CSS Styling for Table & Metric Cards
 st.markdown("""
     <style>
     .metric-card {
@@ -43,18 +42,14 @@ st.markdown("""
 st.title("💼 สรุปภาพรวมพอร์ตการลงทุน (Total Portfolio Overview)")
 st.markdown("---")
 
-# ==========================================
-# 🎯 ปุ่มสลับสกุลเงิน (USD / THB)
-# ==========================================
+# Сurrency Selection Toggle
 currency_mode = st.radio(
     "💱 เลือกสกุลเงินหลักในการแสดงผล Portfolio Overview:",
     ("แสดงเป็นดอลลาร์ ($ USD)", "แสดงเป็นเงินบาท (฿ THB)"),
     horizontal=True
 )
 
-# ==========================================
-# 1. Config & API Setup
-# ==========================================
+# Webull & API Configs
 webull_config = st.secrets.get("Webull", {})
 APP_KEY = webull_config.get("AppKey", "").strip()
 APP_SECRET = webull_config.get("AppSecret", "").strip()
@@ -172,9 +167,7 @@ def get_dime_th_holdings():
         pass
     return holdings
 
-# ==========================================
-# 2. โหลดและรวมข้อมูลพอร์ต
-# ==========================================
+# Load All Portfolio Data
 with st.spinner("⏳ กำลังรวบรวมข้อมูลพอร์ตรวม..."):
     webull_prices = get_webull_live_prices()
     w_holdings = get_webull_holdings()
@@ -247,12 +240,8 @@ with st.spinner("⏳ กำลังรวบรวมข้อมูลพอ�
     else:
         df_port = pd.DataFrame()
 
-# บันทึก df_port ลง Session State
 st.session_state["all_holdings_df"] = df_port
 
-# ==========================================
-# 🎨 ฟังก์ชันแต่งสีกำไร/ขาดทุนในตาราง
-# ==========================================
 def highlight_pnl(val):
     if val is None or pd.isna(val):
         return ''
@@ -273,9 +262,7 @@ def highlight_pnl(val):
         
     return 'color: #848e9c;'
 
-# ==========================================
-# 3. โครงสร้าง 5 แท็บ (5-Tab Layout)
-# ==========================================
+# 5-Tab Layout Render
 tab_all, tab_webull, tab_dime_us, tab_dime_th, tab_consolidated = st.tabs([
     "📊 1. ภาพรวมทั้งหมด (All In One)", 
     "🦅 2. Webull", 
@@ -284,9 +271,6 @@ tab_all, tab_webull, tab_dime_us, tab_dime_th, tab_consolidated = st.tabs([
     "🧩 5. รวมหุ้นทุกตัว (US Only)"
 ])
 
-# ------------------------------------------
-# TAB 1: ALL IN ONE OVERVIEW
-# ------------------------------------------
 with tab_all:
     is_thb = "เงินบาท" in currency_mode
     multiplier = fx_rate if is_thb else 1.0
@@ -329,9 +313,6 @@ with tab_all:
     else:
         st.info("ยังไม่มีข้อมูลหุ้นในพอร์ตโฟลิโอ")
 
-# ------------------------------------------
-# TAB 2: WEBULL PORTFOLIO
-# ------------------------------------------
 with tab_webull:
     st.subheader("🦅 พอร์ตการลงทุน Webull (Live API Data)")
     df_w = df_port[df_port["Broker"] == "Webull"] if not df_port.empty else pd.DataFrame()
@@ -349,9 +330,6 @@ with tab_webull:
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Webull")
 
-# ------------------------------------------
-# TAB 3: DIME US PORTFOLIO
-# ------------------------------------------
 with tab_dime_us:
     st.subheader("💵 พอร์ตการลงทุน Dime US")
     df_dus = df_port[df_port["Broker"] == "Dime US"] if not df_port.empty else pd.DataFrame()
@@ -369,9 +347,6 @@ with tab_dime_us:
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime US")
 
-# ------------------------------------------
-# TAB 4: DIME TH PORTFOLIO
-# ------------------------------------------
 with tab_dime_th:
     st.subheader("🇹🇭 พอร์ตการลงทุน Dime TH (หุ้นไทย)")
     df_dth = df_port[df_port["Broker"] == "Dime TH"] if not df_port.empty else pd.DataFrame()
@@ -394,13 +369,8 @@ with tab_dime_th:
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime TH")
 
-# ------------------------------------------
-# TAB 5: CONSOLIDATED HOLDINGS (เฉพาะหุ้นสหรัฐฯ)
-# ------------------------------------------
 with tab_consolidated:
     st.subheader("🧩 รวมหุ้นทุกตัวเฉพาะหุ้นสหรัฐฯ (US Consolidated Holdings)")
-    st.markdown("นำหุ้นสหรัฐฯ ตัวเดียวกันจาก Webull และ Dime US มารวมจำนวนหุ้นและคิดราคาต้นทุนเฉลี่ยถัวน้ำหนัก (Weighted Avg Cost)")
-    
     df_us_only = df_port[df_port["Broker"].isin(["Webull", "Dime US"])] if not df_port.empty else pd.DataFrame()
     
     if not df_us_only.empty:
@@ -428,8 +398,6 @@ with tab_consolidated:
             })
             
         df_grouped = pd.DataFrame(grouped_rows)
-        
-        # 🔑 บันทึกตาราง US Consolidated เข้า Session State ไว้ให้หน้า Portfolio Risk Desk เรียกใช้
         st.session_state["us_consolidated_df"] = df_grouped
         
         df_grouped_disp = df_grouped.copy()
