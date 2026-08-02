@@ -411,18 +411,37 @@ def render_dashboard():
         with g3:
             st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-between; align-items:center;"><span class="stock-symbol">🟢 AMZN</span><span class="badge-delta-pos" style="margin-left:auto;">+2.67%</span></div><div class="stock-price">$854,414.00</div></div>', unsafe_allow_html=True)
 
-# Helper Function to Load Subpages Dynamic
-def load_page_module(file_path):
-    if os.path.exists(file_path):
-        spec = importlib.util.spec_from_file_location("subpage_module", file_path)
+# Smart Helper Function to Load Subpages Dynamic
+def load_page_module(file_name):
+    # Try exact match first, then fallback search
+    possible_paths = [
+        f"pages/{file_name}.py",
+        f"pages/{file_name}",
+    ]
+    
+    target_path = None
+    for path in possible_paths:
+        if os.path.exists(path):
+            target_path = path
+            break
+            
+    # Search in pages folder if case mismatch exists
+    if not target_path and os.path.exists("pages"):
+        for f in os.listdir("pages"):
+            if f.lower() == f"{file_name}.py".lower():
+                target_path = os.path.join("pages", f)
+                break
+
+    if target_path:
+        spec = importlib.util.spec_from_file_location("subpage_module", target_path)
         module = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(module)
     else:
-        st.warning(f"⚠️ ไม่พบไฟล์ระบบย่อยที่ตำแหน่ง: `{file_path}`")
-        st.info("กรุณาสร้างไฟล์นี้ในโฟลเดอร์ pages/ เพื่อเริ่มพัฒนาหน้างานนี้ครับ")
+        st.warning(f"⚠️ ไม่พบไฟล์ระบบย่อยที่ตำแหน่ง: `pages/{file_name}.py`")
+        st.info("กรุณาตรวจสอบว่ามีไฟล์ชื่อนี้ตรงๆ อยู่ในโฟลเดอร์ pages/ ครับ")
 
 # ==========================================
-# 3. SIDEBAR NAVIGATION (NUMBERED GROUPS)
+# 3. SIDEBAR NAVIGATION (CORRECT FILE MAPPING)
 # ==========================================
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "Dashboard"
@@ -430,7 +449,6 @@ if "current_page" not in st.session_state:
 with st.sidebar:
     st.markdown('<div class="sidebar-brand">♾️ WEBULL DESK</div>', unsafe_allow_html=True)
     
-    # Dashboard Home Button
     is_dash_active = "primary" if st.session_state["current_page"] == "Dashboard" else "secondary"
     if st.button("🏠 Executive Dashboard", use_container_width=True, type=is_dash_active):
         st.session_state["current_page"] = "Dashboard"
@@ -441,30 +459,36 @@ with st.sidebar:
     # หมวดหมู่ที่ 1: Portfolio Management
     with st.expander("📁 1.0 Portfolio", expanded=True):
         if st.button("📊 1.1 Portfolio Holdings", use_container_width=True):
-            st.session_state["current_page"] = "1.1_portfolio"
+            st.session_state["current_page"] = "1.1_Portfolio"
             st.rerun()
         if st.button("⚡ 1.2 Trade Execution", use_container_width=True):
-            st.session_state["current_page"] = "1.2_trade_execution"
+            st.session_state["current_page"] = "1.2_Trade_Execution"
             st.rerun()
         if st.button("📜 1.3 Trade History", use_container_width=True):
-            st.session_state["current_page"] = "1.3_trade_history"
+            st.session_state["current_page"] = "1.3_History"
+            st.rerun()
+        if st.button("💰 1.4 Dividends", use_container_width=True):
+            st.session_state["current_page"] = "1.4_Dividends"
             st.rerun()
 
     # หมวดหมู่ที่ 2: Assistant & AI Intelligence
     with st.expander("🧠 2.0 Assistant & AI", expanded=True):
         if st.button("🎯 2.1 Winner Tilt", use_container_width=True):
-            st.session_state["current_page"] = "2.1_winner_tilt"
+            st.session_state["current_page"] = "2.1_Winner_Tilt"
             st.rerun()
         if st.button("🤖 2.2 AI Fundamental", use_container_width=True):
-            st.session_state["current_page"] = "2.2_ai_fundamental"
+            st.session_state["current_page"] = "2.2_AI_Fundamental"
             st.rerun()
         if st.button("🛡️ 2.3 Portfolio Risk Desk", use_container_width=True):
-            st.session_state["current_page"] = "2.3_risk_desk"
+            st.session_state["current_page"] = "2.3_Portfolio_Risk_Desk"
             st.rerun()
         if st.button("🧮 2.4 MM Calculator", use_container_width=True):
-            st.session_state["current_page"] = "2.4_mm_calculator"
+            st.session_state["current_page"] = "2.4_MM_Calculator"
+        if st.button("📰 2.5 News", use_container_width=True):
+            st.session_state["current_page"] = "2.5_News"
+            st.rerun()
 
-    # หมวดหมู่ที่ 3: Future Extensions (สำรองไว้อนาคต)
+    # หมวดหมู่ที่ 3: Future Extensions
     with st.expander("🚀 3.0 Future Extensions", expanded=False):
         st.caption("พื้นที่สำรองสำหรับการขยายระบบในอนาคต")
 
@@ -476,5 +500,4 @@ selected_page = st.session_state["current_page"]
 if selected_page == "Dashboard":
     render_dashboard()
 else:
-    target_file = f"pages/{selected_page}.py"
-    load_page_module(target_file)
+    load_page_module(selected_page)
