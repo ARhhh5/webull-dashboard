@@ -1,194 +1,494 @@
-import streamlit as st
-import pandas as pd
+import os
 import json
 import base64
+import urllib.parse
+import http.client
+import uuid
+import hmac
+import hashlib
+import streamlit as st
+import pandas as pd
 import gspread
+from datetime import datetime, timezone
 
-st.set_page_config(page_title="Closed Orders History", layout="wide")
+st.set_page_config(page_title="Trade History & Realized PnL", layout="wide")
 
 st.markdown("""
     <style>
-    .metric-card {
+    .metric-container {
         background-color: #1e222d;
         padding: 20px;
         border-radius: 10px;
         border: 1px solid #2a2e39;
         text-align: center;
-        margin-bottom: 20px;
     }
-    .metric-label {
-        color: #848e9c;
-        font-size: 14px;
-        margin-bottom: 8px;
-    }
-    .metric-value {
-        font-size: 24px;
-        font-weight: bold;
-        color: #ffffff;
-    }
-    .text-green { color: #00c853 !important; font-weight: bold; }
-    .text-red { color: #ff3d00 !important; font-weight: bold; }
+    .metric-label { color: #848e9c; font-size: 16px; font-weight: 500; margin-bottom: 8px; }
+    .metric-value { color: #ffffff; font-size: 32px; font-weight: 700; }
+    .pnl-positive { color: #00c853 !important; }
+    .pnl-negative { color: #ff3d00 !important; }
     </style>
 """, unsafe_allow_html=True)
 
-st.title("📜 ประวัติการปิดไม้ & สรุปกำไรขาดทุนจริง (History & Realized PnL)")
-st.markdown("สรุปประวัติผลการขายหุ้นที่ปิดไม้เรียบร้อยแล้ว ดึงตรงจาก Google Sheets (`Dime_Closed_Orders`) แยกตามสกุลเงิน THB และ USD ชัดเจน")
+st.title("📜 ประวัติการขาย & กำไร/ขาดทุนที่เกิดขึ้นจริง (Realized PnL)")
 st.markdown("---")
 
+# รายชื่อหุ้นที่มี Reverse Split หรือ Corporate Actions
+SPLIT_STOCKS = ["ULTY"]
+
 # ==========================================
-# 1. Helper Functions
+# ฟังก์ชันสำหรับ Sync ข้อมูลจาก Webull ลง Google Sheet
 # ==========================================
-def get_gspread_client():
+def sync_webull_to_gsheet():
     try:
         google_secrets = st.secrets.get("Google", {})
         cred_base64 = google_secrets.get("credentials_base64", "")
-        if cred_base64:
-            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
-            gc = gspread.service_account_from_dict(cred_dict)
-            return gc
-        else:
-            st.error("🚨 ไม่พบ `credentials_base64` ใน Streamlit Secrets")
-            return None
+        if not cred_base64:
+            return False, "❌ ไม่พบกุญแจ Google ใน Secrets"
+            
+        cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
+        gc = gspread.service_account_from_dict(cred_dict)
+        sh = gc.open("หุ้นของเรา")
+        worksheet = sh.worksheet("Webull_Order_History")
     except Exception as e:
-        st.error(f"🚨 เกิดข้อผิดพลาดในการเชื่อมต่อ Google Sheets: {str(e)}")
+        return False, f"❌ ไม่สามารถเชื่อมต่อ Google Sheet ได้: {str(e)}"
+
+    existing_records = worksheet.get_all_records()
+    df_existing = pd.DataFrame(existing_records)
+    
+    existing_ids = set()
+    existing_combos = set()
+    
+    if not df_existing.empty:
+        for _, row in df_existing.iterrows():
+            oid = str(row.get("Order ID", "")).strip()
+            if oid:
+                existing_ids.add(oid)
+            
+            combo = f"{str(row.get('Time',''))}_{str(row.get('Symbol',''))}_{str(row.get('Buy/Sell', row.get('Side','')))}_\
+{str(row.get('Qty',''))}_{str(row.get('Price',''))}"
+            existing_combos.add(combo)
+
+    webull_config = st.secrets.get("Webull", {})
+    APP_KEY = webull_config.get("AppKey", "").strip() or webull_config.get("app_key", "").strip()
+    APP_SECRET = webull_config.get("AppSecret", "").strip() or webull_config.get("app_secret", "").strip()
+    ACCOUNT_ID = webull_config.get("AccountId", "").strip() or webull_config.get("account_id", "").strip()
+    HOST = "api.webull.co.th"
+
+    if not APP_KEY or not APP_SECRET or not ACCOUNT_ID:
+        return False, "❌ ไม่พบข้อมูล Webull API Key ใน Secrets"
+
+    try:
+        path = "/openapi/assets/positions"
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        nonce = uuid.uuid4().hex
+        
+        signing_values = {
+            "host": HOST,
+            "x-app-key": APP_KEY,
+            "x-signature-algorithm": "HMAC-SHA1",
+            "x-signature-nonce": nonce,
+            "x-signature-version": "1.0",
+            "x-timestamp": timestamp,
+            "account_id": ACCOUNT_ID
+        }
+        string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
+        signature = base64.b64encode(
+            hmac.new(
+                f"{APP_SECRET}&".encode("utf-8"),
+                urllib.parse.quote(f"{path}&{string_1}", safe="").encode("utf-8"),
+                hashlib.sha1
+            ).digest()
+        ).decode("utf-8")
+
+        headers = {
+            "Accept": "application/json",
+            "x-app-key": APP_KEY,
+            "x-timestamp": timestamp,
+            "x-signature-version": "1.0",
+            "x-signature-algorithm": "HMAC-SHA1",
+            "x-signature-nonce": nonce,
+            "x-version": "v2",
+            "x-signature": signature,
+            "x-access-token": webull_config.get("AccessToken", "").strip()
+        }
+
+        conn = http.client.HTTPSConnection(HOST)
+        conn.request("GET", f"{path}?account_id={ACCOUNT_ID}", "", headers)
+        res = conn.getresponse()
+        data = res.read()
+        conn.close()
+
+        orders = json.loads(data.decode("utf-8"))
+        if not isinstance(orders, list):
+            orders = []
+
+    except Exception as e:
+        return False, f"⚠️ ยิง Webull API ไม่สำเร็จ: {str(e)}"
+
+    new_rows = []
+    for order in orders:
+        order_id = str(order.get("order_id", order.get("orderId", uuid.uuid4().hex[:8])))
+        symbol = str(order.get("symbol", "")).upper()
+        action = str(order.get("action", order.get("side", ""))).upper()
+        side_formatted = "BUY" if "BUY" in action else ("SELL" if "SELL" in action else action)
+        
+        qty = float(order.get("quantity", order.get("filledQuantity", 0)))
+        price = float(order.get("cost_price", order.get("avgFilledPrice", 0)))
+        order_time = order.get("create_time", datetime.now().strftime("%Y-%m-%d"))
+
+        full_order_id = f"{order_id}_{symbol}_{side_formatted}"
+        combo_check = f"{order_time}_{symbol}_{side_formatted}_{qty}_{price}"
+
+        if full_order_id not in existing_ids and combo_check not in existing_combos:
+            if qty > 0 and price > 0:
+                new_rows.append([full_order_id, order_time, symbol, side_formatted, qty, price])
+
+    if new_rows:
+        worksheet.append_rows(new_rows)
+        return True, f"✅ Auto Sync สำเร็จ! เพิ่มรายการใหม่ลง Google Sheet ทั้งหมด {len(new_rows)} รายการ"
+    else:
+        return True, "ℹ️ ข้อมูลล่าสุดตรงกันแล้ว ไม่มีรายการใหม่ต้องเพิ่ม"
+
+# ==========================================
+# 🎯 ส่วนปุ่ม Auto Sync ด้านบนสุด
+# ==========================================
+with st.expander("🔄 แผงควบคุม Auto Sync ข้อมูลจาก Webull API", expanded=False):
+    col_sync1, col_sync2 = st.columns([3, 1])
+    with col_sync1:
+        st.write("กดปุ่มเพื่อดึงออเดอร์ล่าสุดจาก Webull บันทึกเติมลง Google Sheet อัตโนมัติ")
+    with col_sync2:
+        if st.button("🚀 กด Sync ตอนนี้", type="primary", use_container_width=True):
+            with st.spinner("⏳ กำลัง Sync ออเดอร์..."):
+                success, msg = sync_webull_to_gsheet()
+                if success:
+                    st.success(msg)
+                    st.rerun()
+                else:
+                    st.error(msg)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ==========================================
+# ดึงข้อมูลจาก Google Sheet
+# ==========================================
+@st.cache_resource
+def init_gsheet():
+    try:
+        google_secrets = st.secrets.get("Google", {})
+        cred_base64 = google_secrets.get("credentials_base64", "")
+        if not cred_base64: return None
+        cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
+        gc = gspread.service_account_from_dict(cred_dict)
+        return gc
+    except Exception as e:
         return None
 
-def highlight_pnl(val):
-    if val is None or pd.isna(val):
-        return ''
-    s = str(val).strip()
-    if s.startswith("+") or (not s.startswith("-") and not s.startswith("0") and any(char.isdigit() for char in s)):
-        try:
-            val_num = float(s.replace('$', '').replace('฿', '').replace(',', '').replace('%', '').replace('+', ''))
-            if val_num > 0:
-                return 'background-color: #0b3818; color: #00e676; font-weight: bold;'
-            elif val_num < 0:
-                return 'background-color: #3b1111; color: #ff5252; font-weight: bold;'
-        except:
-            if s.startswith("+"):
-                return 'background-color: #0b3818; color: #00e676; font-weight: bold;'
-    elif s.startswith("-"):
-        return 'background-color: #3b1111; color: #ff5252; font-weight: bold;'
-    return 'color: #848e9c;'
-
-# ==========================================
-# 2. ดึงข้อมูลจาก Google Sheets (Dime_Closed_Orders)
-# ==========================================
-gc = get_gspread_client()
-
-if gc:
+def load_all_history_sheets():
+    gc = init_gsheet()
+    if not gc:
+        return pd.DataFrame(), pd.DataFrame(), pd.DataFrame(), pd.DataFrame()
+    
+    df_webull_orders = pd.DataFrame()
+    df_dime_closed = pd.DataFrame()
+    df_dime_us_port = pd.DataFrame()
+    df_dime_th_port = pd.DataFrame()
+    
     try:
         sh = gc.open("หุ้นของเรา")
+        
         try:
-            ws_closed = sh.worksheet("Dime_Closed_Orders")
-            closed_records = ws_closed.get_all_records()
-        except Exception as sheet_err:
-            st.error(f"🚨 ไม่สามารถเปิดแท็บ 'Dime_Closed_Orders' ได้: {str(sheet_err)}")
-            closed_records = []
+            ws1 = sh.worksheet("Webull_Order_History")
+            df_webull_orders = pd.DataFrame(ws1.get_all_records())
+        except: pass
+        
+        try:
+            ws2 = sh.worksheet("Dime_Closed_Orders")
+            df_dime_closed = pd.DataFrame(ws2.get_all_records())
+        except: pass
+        
+        try:
+            ws3 = sh.worksheet("Dime_Portfolio")
+            df_dime_us_port = pd.DataFrame(ws3.get_all_records())
+        except: pass
+        
+        try:
+            ws4 = sh.worksheet("Dime_TH_Portfolio")
+            df_dime_th_port = pd.DataFrame(ws4.get_all_records())
+        except: pass
 
-        if closed_records:
-            df_closed = pd.DataFrame(closed_records)
-            
-            # แปลงและทำความสะอาดตัวเลข (ป้องกันการติดลูกน้ำหรือเว้นวรรค)
-            df_closed["Qty"] = df_closed["จำนวนหุ้น (Qty)"].astype(str).str.replace(',', '').astype(float)
-            df_closed["BuyPrice"] = df_closed["ราคาซื้อเฉลี่ย (Buy Price)"].astype(str).str.replace(',', '').astype(float)
-            df_closed["SellPrice"] = df_closed["ราคาขายจริง (Sell Price)"].astype(str).str.replace(',', '').astype(float)
-            
-            # คำนวณยอดเงินและ PnL
-            df_closed["Total_Cost"] = df_closed["Qty"] * df_closed["BuyPrice"]
-            df_closed["Total_Revenue"] = df_closed["Qty"] * df_closed["SellPrice"]
-            df_closed["Realized_PnL"] = df_closed["Total_Revenue"] - df_closed["Total_Cost"]
-            df_closed["PnL_Pct"] = (df_closed["Realized_PnL"] / df_closed["Total_Cost"] * 100)
-
-            # สร้าง 2 แท็บสำหรับแยก หุ้นไทย และ หุ้นสหรัฐฯ
-            tab_th, tab_us = st.tabs(["🇹🇭 ประวัติกำไรขาดทุน หุ้นไทย (THB - ฿)", "💵 ประวัติกำไรขาดทุน หุ้นสหรัฐฯ (USD - $)"])
-
-            # ----------------------------------------------------
-            # TAB 1: ประวัติกำไรขาดทุน หุ้นไทย (THB)
-            # ----------------------------------------------------
-            with tab_th:
-                df_th = df_closed[df_closed["ตลาด (US/TH)"].astype(str).str.strip().str.upper() == "TH"].copy()
-                
-                if not df_th.empty:
-                    tot_th_cost = df_th["Total_Cost"].sum()
-                    tot_th_revenue = df_th["Total_Revenue"].sum()
-                    tot_th_pnl = df_th["Realized_PnL"].sum()
-                    tot_th_pnl_pct = (tot_th_pnl / tot_th_cost * 100) if tot_th_cost > 0 else 0.0
-                    
-                    pnl_class = "text-green" if tot_th_pnl >= 0 else "text-red"
-                    pnl_prefix = "+" if tot_th_pnl >= 0 else ""
-                    
-                    # สรุปการ์ด Metric
-                    m1, m2, m3 = st.columns(3)
-                    with m1:
-                        st.markdown(f'<div class="metric-card"><div class="metric-label">💵 ต้นทุนรวมไม้ที่ปิด (TH)</div><div class="metric-value">฿{tot_th_cost:,.2f}</div></div>', unsafe_allow_html=True)
-                    with m2:
-                        st.markdown(f'<div class="metric-card"><div class="metric-label">💰 ยอดเงินรับคืนรวม (TH)</div><div class="metric-value">฿{tot_th_revenue:,.2f}</div></div>', unsafe_allow_html=True)
-                    with m3:
-                        st.markdown(f'<div class="metric-card"><div class="metric-label">📊 กำไร/ขาดทุนสะสมจริง (Realized PnL)</div><div class="metric-value {pnl_class}">{pnl_prefix}฿{tot_th_pnl:,.2f} ({tot_th_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
-
-                    st.markdown("### 📋 รายละเอียดคำสั่งขายหุ้นไทยที่ปิดไม้แล้ว")
-                    
-                    disp_th = df_th[["หุ้น (Ticker)", "จำนวนหุ้น (Qty)", "BuyPrice", "SellPrice", "Total_Cost", "Total_Revenue", "Realized_PnL", "PnL_Pct", "วันที่ปิดไม้ (Date)"]].copy()
-                    disp_th.columns = ["หุ้น (Ticker)", "จำนวน (Qty)", "ราคาซื้อ (฿)", "ราคาขาย (฿)", "ต้นทุนรวม (฿)", "ยอดขาย (฿)", "กำไร/ขาดทุน (฿)", "PnL (%)", "วันที่ปิดไม้"]
-                    
-                    fmt_th = disp_th.style.format({
-                        "จำนวน (Qty)": "{:,.2f}",
-                        "ราคาซื้อ (฿)": "฿{:,.2f}",
-                        "ราคาขาย (฿)": "฿{:,.2f}",
-                        "ต้นทุนรวม (฿)": "฿{:,.2f}",
-                        "ยอดขาย (฿)": "฿{:,.2f}",
-                        "กำไร/ขาดทุน (฿)": "฿{:+,.2f}",
-                        "PnL (%)": "{:+.2f}%"
-                    }).map(highlight_pnl, subset=["กำไร/ขาดทุน (฿)", "PnL (%)"])
-                    
-                    st.dataframe(fmt_th, use_container_width=True)
-                else:
-                    st.info("ยังไม่มีรายการประวัติการปิดไม้ของหุ้นไทย")
-
-            # ----------------------------------------------------
-            # TAB 2: ประวัติกำไรขาดทุน หุ้นสหรัฐฯ (USD)
-            # ----------------------------------------------------
-            with tab_us:
-                df_us = df_closed[df_closed["ตลาด (US/TH)"].astype(str).str.strip().str.upper() == "US"].copy()
-                
-                if not df_us.empty:
-                    tot_us_cost = df_us["Total_Cost"].sum()
-                    tot_us_revenue = df_us["Total_Revenue"].sum()
-                    tot_us_pnl = df_us["Realized_PnL"].sum()
-                    tot_us_pnl_pct = (tot_us_pnl / tot_us_cost * 100) if tot_us_cost > 0 else 0.0
-                    
-                    pnl_class = "text-green" if tot_us_pnl >= 0 else "text-red"
-                    pnl_prefix = "+" if tot_us_pnl >= 0 else ""
-                    
-                    # สรุปการ์ด Metric
-                    m1, m2, m3 = st.columns(3)
-                    with m1:
-                        st.markdown(f'<div class="metric-card"><div class="metric-label">💵 ต้นทุนรวมไม้ที่ปิด (US)</div><div class="metric-value">${tot_us_cost:,.2f}</div></div>', unsafe_allow_html=True)
-                    with m2:
-                        st.markdown(f'<div class="metric-card"><div class="metric-label">💰 ยอดเงินรับคืนรวม (US)</div><div class="metric-value">${tot_us_revenue:,.2f}</div></div>', unsafe_allow_html=True)
-                    with m3:
-                        st.markdown(f'<div class="metric-card"><div class="metric-label">📊 กำไร/ขาดทุนสะสมจริง (Realized PnL)</div><div class="metric-value {pnl_class}">{pnl_prefix}${tot_us_pnl:,.2f} ({tot_us_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
-
-                    st.markdown("### 📋 รายละเอียดคำสั่งขายหุ้นสหรัฐฯ ที่ปิดไม้แล้ว")
-                    
-                    disp_us = df_us[["หุ้น (Ticker)", "จำนวนหุ้น (Qty)", "BuyPrice", "SellPrice", "Total_Cost", "Total_Revenue", "Realized_PnL", "PnL_Pct", "วันที่ปิดไม้ (Date)"]].copy()
-                    disp_us.columns = ["หุ้น (Ticker)", "จำนวน (Qty)", "ราคาซื้อ ($)", "ราคาขาย ($)", "ต้นทุนรวม ($)", "ยอดขาย ($)", "กำไร/ขาดทุน ($)", "PnL (%)", "วันที่ปิดไม้"]
-                    
-                    fmt_us = disp_us.style.format({
-                        "จำนวน (Qty)": "{:,.4f}",
-                        "ราคาซื้อ ($)": "${:,.2f}",
-                        "ราคาขาย ($)": "${:,.2f}",
-                        "ต้นทุนรวม ($)": "${:,.2f}",
-                        "ยอดขาย ($)": "${:,.2f}",
-                        "กำไร/ขาดทุน ($)": "${:+,.2f}",
-                        "PnL (%)": "{:+.2f}%"
-                    }).map(highlight_pnl, subset=["กำไร/ขาดทุน ($)", "PnL (%)"])
-                    
-                    st.dataframe(fmt_us, use_container_width=True)
-                else:
-                    st.info("ยังไม่มีรายการประวัติการปิดไม้ของหุ้นสหรัฐฯ")
-        else:
-            st.info("ยังไม่มีประวัติรายการปิดไม้ในแผ่นงาน `Dime_Closed_Orders`")
     except Exception as e:
-        st.error(f"🚨 ไม่สามารถดึงข้อมูลประวัติการปิดไม้ได้: {str(e)}")
+        st.error(f"เกิดข้อผิดพลาดในการโหลดข้อมูลจาก Google Sheet: {e}")
+
+    return df_webull_orders, df_dime_closed, df_dime_us_port, df_dime_th_port
+
+df_webull, df_dime_closed, df_dime_us, df_dime_th = load_all_history_sheets()
+
+# Helper styling
+def color_pnl(val):
+    if isinstance(val, (int, float)):
+        color = '#00c853' if val > 0 else ('#ff3d00' if val < 0 else '#848e9c')
+        return f'color: {color}; font-weight: bold;'
+    return ''
+
+# ==========================================
+# แยกเป็น 3 แท็บตามความต้องการของบอส
+# ==========================================
+tab_normal, tab_raw_logs, tab_split_stocks = st.tabs([
+    "🎯 1. ตารางสรุปกำไรจากการขายจริง (Realized PnL - หุ้นปกติ)", 
+    "📜 2. ประวัติคำสั่งซื้อขายดิบแยกตาม Sheet",
+    "🔄 3. หุ้นที่มีการรวมหุ้น (Reverse Split)"
+])
+
+# ==========================================
+# แท็บที่ 1: หุ้นปกติ (ไม่มี Reverse Split) - คิด FIFO ปกติแบบเรียงลำดับเวลา
+# ==========================================
+with tab_normal:
+    st.markdown("### 📊 กำไร/ขาดทุนสุทธิเฉพาะไม้ออเดอร์ที่ขายปิดจบแล้ว (หุ้นปกติ)")
+    
+    closed_summary = []
+    
+    if not df_webull.empty:
+        df_w = df_webull.copy()
+        df_w.columns = [str(c).strip() for c in df_w.columns]
+        
+        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Symbol')
+        side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
+        qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
+        price_c = next((c for c in df_w.columns if 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Price')
+        time_c = next((c for c in df_w.columns if 'time' in str(c).lower() or 'date' in str(c).lower() or 'เวลา' in str(c).lower()), 'Time')
+        
+        if all(c in df_w.columns for c in [sym_c, side_c, qty_c, price_c]):
+            for symbol, group in df_w.groupby(sym_c):
+                symbol_clean = str(symbol).strip().upper()
+                if not symbol_clean or symbol_clean == 'NAN': continue
+                
+                # ข้ามหุ้นกลุ่ม Split เอาไปคิดในแท็บ 3
+                if symbol_clean in SPLIT_STOCKS: continue
+                
+                group_sorted = group.copy()
+                # แปลงเวลาและจัดเรียงลำดับจากอดีตไปปัจจุบันเพื่อความถูกต้องของ FIFO
+                if time_c in group_sorted.columns:
+                    if pd.api.types.is_numeric_dtype(group_sorted[time_c]):
+                        group_sorted['parsed_time'] = pd.to_datetime(group_sorted[time_c], unit='ms', errors='coerce')
+                    else:
+                        group_sorted['parsed_time'] = pd.to_datetime(group_sorted[time_c], errors='coerce')
+                    group_sorted = group_sorted.sort_values(by='parsed_time', ascending=True)
+
+                buy_queue = []
+                total_realized_pnl = 0.0
+                total_matched_qty = 0.0
+                total_buy_cost = 0.0
+                total_sell_rev = 0.0
+                
+                for _, row in group_sorted.iterrows():
+                    raw_side = str(row[side_c]).upper().strip()
+                    try:
+                        qty = float(str(row[qty_c]).replace(",", "").replace("$", "").strip())
+                        price = float(str(row[price_c]).replace(",", "").replace("$", "").strip())
+                    except: continue
+                    
+                    if qty <= 0 or price <= 0: continue
+
+                    if "BUY" in raw_side or "ซื้อ" in raw_side:
+                        buy_queue.append({'qty': qty, 'price': price})
+                    elif "SELL" in raw_side or "ขาย" in raw_side:
+                        sell_qty_left = qty
+                        while sell_qty_left > 0 and buy_queue:
+                            b = buy_queue[0]
+                            matched_qty = min(sell_qty_left, b['qty'])
+                            
+                            pnl = matched_qty * (price - b['price'])
+                            total_realized_pnl += pnl
+                            total_matched_qty += matched_qty
+                            total_buy_cost += (matched_qty * b['price'])
+                            total_sell_rev += (matched_qty * price)
+                            
+                            sell_qty_left -= matched_qty
+                            b['qty'] -= matched_qty
+                            if b['qty'] <= 0:
+                                buy_queue.pop(0)
+                                
+                if total_matched_qty > 0:
+                    avg_buy = total_buy_cost / total_matched_qty
+                    avg_sell = total_sell_rev / total_matched_qty
+                    ret_pct = (total_realized_pnl / total_buy_cost * 100) if total_buy_cost > 0 else 0.0
+                    
+                    remaining_in_queue = sum(b['qty'] for b in buy_queue)
+                    status_text = "ปิดขายเกลี้ยงแล้ว" if remaining_in_queue < 0.01 else "ขายแล้วบางส่วน"
+                    
+                    closed_summary.append({
+                        "ชื่อหุ้น": symbol_clean,
+                        "โบรกเกอร์": "Webull",
+                        "จำนวนหุ้นที่ปิดขายแล้ว": total_matched_qty,
+                        "ราคาซื้อเฉลี่ย": avg_buy,
+                        "ราคาขายเฉลี่ย": avg_sell,
+                        "กำไร/ขาดทุนสุทธิ ($)": total_realized_pnl,
+                        "ผลตอบแทน (%)": ret_pct,
+                        "สถานะ": status_text
+                    })
+
+    if not df_dime_closed.empty:
+        df_dc = df_dime_closed.copy()
+        df_dc.columns = [str(c).strip() for c in df_dc.columns]
+        for _, r in df_dc.iterrows():
+            sym = str(r.get('หุ้น (Ticker)') or r.get('Ticker') or r.get('Symbol', '')).strip().upper()
+            if not sym or sym in SPLIT_STOCKS: continue
+            
+            try:
+                qty = float(str(r.get('จำนวนหุ้น (Qty)') or r.get('Qty', 0)).replace(",", "").replace("$", ""))
+                buy_p = float(str(r.get('ราคาซื้อเฉลี่ย (Buy Price)') or r.get('Buy Price', 0)).replace(",", "").replace("$", ""))
+                sell_p = float(str(r.get('ราคาขายจริง (Sell Price)') or r.get('Sell Price', 0)).replace(",", "").replace("$", ""))
+            except: continue
+            
+            if qty > 0 and buy_p > 0 and sell_p > 0:
+                pnl = qty * (sell_p - buy_p)
+                ret_pct = ((sell_p - buy_p) / buy_p * 100)
+                closed_summary.append({
+                    "ชื่อหุ้น": sym,
+                    "โบรกเกอร์": "Dime",
+                    "จำนวนหุ้นที่ปิดขายแล้ว": qty,
+                    "ราคาซื้อเฉลี่ย": buy_p,
+                    "ราคาขายเฉลี่ย": sell_p,
+                    "กำไร/ขาดทุนสุทธิ ($)": pnl,
+                    "ผลตอบแทน (%)": ret_pct,
+                    "สถานะ": "ปิดขายเกลี้ยงแล้ว"
+                })
+
+    if closed_summary:
+        df_closed_res = pd.DataFrame(closed_summary).sort_values(by="กำไร/ขาดทุนสุทธิ ($)", ascending=True)
+        
+        total_pnl = df_closed_res["กำไร/ขาดทุนสุทธิ ($)"].sum()
+        pnl_class = "pnl-positive" if total_pnl >= 0 else "pnl-negative"
+        pnl_prefix = "+" if total_pnl >= 0 else ""
+        
+        c1, c2 = st.columns(2)
+        with c1:
+            st.markdown(f'<div class="metric-container"><div class="metric-label">💰 กำไร/ขาดทุนสะสมรวมจากการขายจริง (หุ้นปกติ)</div><div class="metric-value {pnl_class}">{pnl_prefix}${total_pnl:,.2f}</div></div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'<div class="metric-container"><div class="metric-label">🎯 จำนวนหุ้นปกติที่มีรายการขาย</div><div class="metric-value">{len(df_closed_res)} ตัว</div></div>', unsafe_allow_html=True)
+            
+        st.markdown("---")
+
+        st.dataframe(
+            df_closed_res.style.map(color_pnl, subset=["กำไร/ขาดทุนสุทธิ ($)", "ผลตอบแทน (%)"])
+            .format({
+                "จำนวนหุ้นที่ปิดขายแล้ว": "{:,.2f}",
+                "ราคาซื้อเฉลี่ย": "${:,.2f}",
+                "ราคาขายเฉลี่ย": "${:,.2f}",
+                "กำไร/ขาดทุนสุทธิ ($)": "${:,.2f}",
+                "ผลตอบแทน (%)": "{:+.2f}%"
+            }),
+            use_container_width=True
+        )
+    else:
+        st.info("💡 ไม่พบรายการหุ้นปกติที่มีการขายเกิดขึ้นในประวัติ")
+
+# ==========================================
+# แท็บที่ 2: แสดงข้อมูลดิบจาก 4 Sheets
+# ==========================================
+with tab_raw_logs:
+    sub1, sub2, sub3, sub4 = st.tabs([
+        "1. Webull_Order_History", 
+        "2. Dime_Closed_Orders", 
+        "3. Dime_Portfolio (US)", 
+        "4. Dime_TH_Portfolio (TH)"
+    ])
+    
+    with sub1:
+        st.subheader("📋 1. Webull_Order_History")
+        if not df_webull.empty:
+            st.dataframe(df_webull, use_container_width=True)
+        else:
+            st.info("ไม่พบข้อมูลในชีท Webull_Order_History")
+            
+    with sub2:
+        st.subheader("📝 2. Dime_Closed_Orders")
+        if not df_dime_closed.empty:
+            st.dataframe(df_dime_closed, use_container_width=True)
+        else:
+            st.warning("ยังไม่มีข้อมูลบันทึกในชีท Dime_Closed_Orders")
+            
+    with sub3:
+        st.subheader("🇺🇸 3. Dime_Portfolio (หุ้น US ปัจจุบัน)")
+        if not df_dime_us.empty:
+            st.dataframe(df_dime_us, use_container_width=True)
+        else:
+            st.info("ไม่พบข้อมูลในชีท Dime_Portfolio")
+            
+    with sub4:
+        st.subheader("🇹🇭 4. Dime_TH_Portfolio (หุ้นไทยปัจจุบัน)")
+        if not df_dime_th.empty:
+            st.dataframe(df_dime_th, use_container_width=True)
+        else:
+            st.info("ไม่พบข้อมูลในชีท Dime_TH_Portfolio")
+
+# ==========================================
+# แท็บที่ 3: คำนวณหุ้นที่มีการรวมหุ้น (Reverse Split เช่น ULTY)
+# ==========================================
+with tab_split_stocks:
+    st.markdown("### 🔄 คำนวณเฉพาะหุ้นที่มีการรวมหุ้น (Reverse Split / Corporate Actions)")
+    st.info("💡 แท็บนี้ใช้หลักการคิดจากกระแสเงินสดจริง (Total Buy Cash vs Total Sell Cash) เพื่อป้องกันตัวเลขเพี้ยนจากการเปลี่ยนจำนวนหุ้น")
+    
+    split_summary = []
+    
+    if not df_webull.empty:
+        df_w = df_webull.copy()
+        df_w.columns = [str(c).strip() for c in df_w.columns]
+        
+        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Symbol')
+        side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
+        qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
+        price_c = next((c for c in df_w.columns if 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Price')
+        
+        if all(c in df_w.columns for c in [sym_c, side_c, qty_c, price_c]):
+            for symbol in SPLIT_STOCKS:
+                group = df_w[df_w[sym_c].astype(str).str.strip().str.upper() == symbol]
+                if group.empty: continue
+                
+                total_buy_cash = 0.0
+                total_sell_cash = 0.0
+                
+                for _, row in group.iterrows():
+                    raw_side = str(row[side_c]).upper().strip()
+                    try:
+                        qty = float(str(row[qty_c]).replace(",", "").replace("$", "").strip())
+                        price = float(str(row[price_c]).replace(",", "").replace("$", "").strip())
+                    except: continue
+                    
+                    if qty <= 0 or price <= 0: continue
+                    trade_val = qty * price
+
+                    if "BUY" in raw_side or "ซื้อ" in raw_side:
+                        total_buy_cash += trade_val
+                    elif "SELL" in raw_side or "ขาย" in raw_side:
+                        total_sell_cash += trade_val
+                
+                if total_sell_cash > 0:
+                    realized_pnl = total_sell_cash - total_buy_cash
+                    ret_pct = (realized_pnl / total_buy_cash * 100) if total_buy_cash > 0 else 0.0
+                    
+                    split_summary.append({
+                        "ชื่อหุ้น": symbol,
+                        "โบรกเกอร์": "Webull",
+                        "เงินลงทุนซื้อรวม ($)": total_buy_cash,
+                        "เงินขายได้คืนรวม ($)": total_sell_cash,
+                        "กำไร/ขาดทุนสุทธิจริง ($)": realized_pnl,
+                        "ผลตอบแทน (%)": ret_pct,
+                        "หมายเหตุ": "รวมหุ้น (Reverse Split)"
+                    })
+
+    if split_summary:
+        df_split_res = pd.DataFrame(split_summary)
+        
+        st.dataframe(
+            df_split_res.style.map(color_pnl, subset=["กำไร/ขาดทุนสุทธิจริง ($)", "ผลตอบแทน (%)"])
+            .format({
+                "เงินลงทุนซื้อรวม ($)": "${:,.2f}",
+                "เงินขายได้คืนรวม ($)": "${:,.2f}",
+                "กำไร/ขาดทุนสุทธิจริง ($)": "${:,.2f}",
+                "ผลตอบแทน (%)": "{:+.2f}%"
+            }),
+            use_container_width=True
+        )
+    else:
+        st.write("ยังไม่มีข้อมูลหุ้นกลุ่มรวมหุ้นที่มีรายการขาย")
