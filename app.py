@@ -8,131 +8,181 @@ import gspread
 # 1. PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Executive Command Center - Portfolio Desk",
+    page_title="Executive Command Center - Webull Pro",
     page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ==========================================
-# 2. INSTITUTIONAL MODERN DARK UI DESIGN (CSS)
+# 2. GLOBAL HYBRID MODERN DARK UI DESIGN (CSS)
 # ==========================================
-st.markdown("""
+def inject_custom_css():
+    st.markdown("""
     <style>
-    /* Import Font: Inter */
-    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+        /* Import Font: Inter */
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
 
-    /* Main Background & Clean Typography */
-    html, body, [class*="css"] {
-        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
-        background-color: #0d0f12 !important;
-        color: #e2e8f0;
-    }
-    
-    .stApp {
-        background-color: #0d0f12;
-    }
+        /* Global Canvas Theme */
+        html, body, [class*="css"] {
+            font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+            background-color: #0d0f12 !important;
+            color: #e2e8f0;
+        }
 
-    /* Sidebar Styling */
-    [data-testid="stSidebar"] {
-        background-color: #131722 !important;
-        border-right: 1px solid #1e222d;
-    }
+        .stApp {
+            background-color: #0d0f12;
+        }
 
-    [data-testid="stSidebarNav"]::before {
-        content: "⚡ EXECUTIVE DESK";
-        margin-left: 20px;
-        margin-top: 20px;
-        font-size: 18px;
-        font-weight: 800;
-        color: #00b0ff;
-        letter-spacing: 1px;
-        display: block;
-        margin-bottom: 15px;
-    }
-    
-    /* Executive Metric Container */
-    .kpi-container {
-        background: linear-gradient(145deg, #1e222d 0%, #141722 100%);
-        border: 1px solid #2a2e39;
-        border-radius: 12px;
-        padding: 20px;
-        text-align: center;
-        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
-        transition: transform 0.2s ease, border-color 0.2s ease;
-    }
-    .kpi-container:hover {
-        border-color: #363c4e;
-        transform: translateY(-2px);
-    }
-    .kpi-title {
-        color: #848e9c;
-        font-size: 13px;
-        font-weight: 600;
-        text-transform: uppercase;
-        letter-spacing: 0.8px;
-        margin-bottom: 8px;
-    }
-    .kpi-number {
-        color: #ffffff;
-        font-size: 30px;
-        font-weight: 800;
-        letter-spacing: -0.5px;
-    }
-    .kpi-sub {
-        font-size: 13px;
-        font-weight: 600;
-        margin-top: 6px;
-    }
-    
-    /* PnL Indicator Colors */
-    .pnl-positive { color: #00c853 !important; }
-    .pnl-negative { color: #ff3d00 !important; }
-    
-    /* Section Headers */
-    .section-header {
-        font-size: 18px;
-        font-weight: 700;
-        color: #ffffff;
-        margin-top: 20px;
-        margin-bottom: 15px;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-    }
-    
-    /* Quick Action Card */
-    .action-card {
-        background-color: #1a1e29;
-        border: 1px solid #2a2e39;
-        border-radius: 10px;
-        padding: 16px;
-        margin-bottom: 12px;
-    }
-    .action-title {
-        color: #00b0ff;
-        font-size: 15px;
-        font-weight: 700;
-        margin-bottom: 6px;
-    }
-    .action-desc {
-        color: #848e9c;
-        font-size: 13px;
-        line-height: 1.4;
-    }
+        /* Sidebar Customization */
+        [data-testid="stSidebar"] {
+            background-color: #131722 !important;
+            border-right: 1px solid #1e222d;
+        }
 
-    /* Hide Streamlit Menu / Footer */
-    #MainMenu {visibility: hidden;}
-    footer {visibility: hidden;}
+        [data-testid="stSidebarNav"]::before {
+            content: "⚡ WEBULL PRO";
+            margin-left: 20px;
+            margin-top: 20px;
+            font-size: 18px;
+            font-weight: 800;
+            color: #6366f1;
+            letter-spacing: 1px;
+            display: block;
+            margin-bottom: 15px;
+        }
+
+        /* Top Market Ticker Banner */
+        .ticker-banner {
+            background-color: #161a25;
+            border: 1px solid #222736;
+            border-radius: 12px;
+            padding: 12px 24px;
+            margin-bottom: 20px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            font-size: 0.9rem;
+            box-shadow: 0 4px 12px rgba(0,0,0,0.2);
+        }
+
+        .status-dot {
+            height: 10px;
+            width: 10px;
+            background-color: #10b981;
+            border-radius: 50%;
+            display: inline-block;
+            margin-right: 6px;
+            box-shadow: 0 0 8px #10b981;
+        }
+
+        /* KPI Premium Glass Cards */
+        .kpi-card {
+            background: linear-gradient(145deg, #181c28 0%, #12151e 100%);
+            border: 1px solid #262c3d;
+            border-radius: 14px;
+            padding: 20px 24px;
+            margin-bottom: 15px;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.25);
+            transition: transform 0.2s ease, border-color 0.2s ease;
+        }
+
+        .kpi-card:hover {
+            border-color: #3b4358;
+            transform: translateY(-2px);
+        }
+
+        .kpi-title {
+            color: #8b94a0;
+            font-size: 0.85rem;
+            font-weight: 600;
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+        }
+
+        .kpi-value {
+            color: #ffffff;
+            font-size: 2rem;
+            font-weight: 800;
+            letter-spacing: -0.5px;
+        }
+
+        .kpi-delta-positive {
+            color: #10b981;
+            font-size: 0.88rem;
+            font-weight: 600;
+            margin-top: 6px;
+        }
+
+        .kpi-delta-negative {
+            color: #ef4444;
+            font-size: 0.88rem;
+            font-weight: 600;
+            margin-top: 6px;
+        }
+
+        /* Section Header Customization */
+        .section-header {
+            font-size: 1.25rem;
+            font-weight: 700;
+            color: #ffffff;
+            margin-top: 25px;
+            margin-bottom: 15px;
+            letter-spacing: -0.3px;
+        }
+
+        /* Quick Action Module Card */
+        .action-card {
+            background-color: #161a25;
+            border: 1px solid #222736;
+            border-radius: 12px;
+            padding: 18px;
+            margin-bottom: 12px;
+            transition: border-color 0.2s ease;
+        }
+
+        .action-card:hover {
+            border-color: #6366f1;
+        }
+
+        .action-title {
+            color: #6366f1;
+            font-size: 1rem;
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+
+        .action-desc {
+            color: #8b94a0;
+            font-size: 0.85rem;
+            line-height: 1.4;
+        }
+
+        /* Hide Default Elements */
+        #MainMenu {visibility: hidden;}
+        footer {visibility: hidden;}
     </style>
-""", unsafe_allow_html=True)
+    """, unsafe_allow_html=True)
+
+inject_custom_css()
 
 # ==========================================
-# 3. HEADER SECTION
+# 3. HEADER & TITLE SECTION
 # ==========================================
 st.title("⚡ Executive Command Center")
 st.caption("ระบบบริหารจัดการพอร์ตการลงทุนและศูนย์วิเคราะห์ข้อมูลสินทรัพย์ภาพรวม (Institutional Grade)")
-st.markdown("---")
+
+# Top Ticker / Market Status Banner
+st.markdown("""
+<div class="ticker-banner">
+    <div><span class="status-dot"></span><span style="color: #10b981; font-weight: 600;">Market Open</span></div>
+    <div><b>AAPL</b> <span style="color: #10b981;">$182.50 (+1.2%)</span></div>
+    <div><b>TSLA</b> <span style="color: #ef4444;">$215.30 (-0.8%)</span></div>
+    <div><b>NVDA</b> <span style="color: #10b981;">$875.20 (+3.4%)</span></div>
+    <div><b>MSFT</b> <span style="color: #10b981;">$420.10 (+0.5%)</span></div>
+</div>
+""", unsafe_allow_html=True)
 
 # ==========================================
 # 4. DATA CONNECTION & CACHE (YOUR GSHEET)
@@ -186,7 +236,7 @@ usd_fx_rate = 35.5  # อัตราแลกเปลี่ยนอ้าง�
 is_usd = "USD" in currency_selected
 symbol = "$" if is_usd else "฿"
 
-# ข้อมูลการคำนวณเดิมของคุณ
+# ตัวเลขสรุปข้อมูลจริงของคุณ
 tot_invested_usd = 48180.96
 tot_market_usd = 43870.99
 tot_pnl_usd = tot_market_usd - tot_invested_usd
@@ -196,45 +246,45 @@ display_invested = tot_invested_usd if is_usd else (tot_invested_usd * usd_fx_ra
 display_market = tot_market_usd if is_usd else (tot_market_usd * usd_fx_rate)
 display_pnl = tot_pnl_usd if is_usd else (tot_pnl_usd * usd_fx_rate)
 
-pnl_style_class = "pnl-positive" if display_pnl >= 0 else "pnl-negative"
-pnl_sign = "+" if display_pnl >= 0 else ""
+pnl_class = "kpi-delta-positive" if display_pnl >= 0 else "kpi-delta-negative"
+pnl_sign = "▲ +" if display_pnl >= 0 else "▼ "
 
 # ==========================================
-# 6. KPI SUMMARY CARDS
+# 6. KPI SUMMARY CARDS (PREMIUM GLASS STYLE)
 # ==========================================
 k1, k2, k3 = st.columns(3)
 
 with k1:
     st.markdown(f'''
-        <div class="kpi-container">
+        <div class="kpi-card">
             <div class="kpi-title">💵 ต้นทุนเงินลงทุนรวม (Total Invested)</div>
-            <div class="kpi-number">{symbol}{display_invested:,.2f}</div>
-            <div class="kpi-sub" style="color: #848e9c;">ฐานทุนพอร์ตคงเหลือ</div>
+            <div class="kpi-value">{symbol}{display_invested:,.2f}</div>
+            <div style="color: #6b7280; font-size: 0.85rem; margin-top: 6px;">ฐานทุนพอร์ตคงเหลือ</div>
         </div>
     ''', unsafe_allow_html=True)
 
 with k2:
     st.markdown(f'''
-        <div class="kpi-container">
+        <div class="kpi-card">
             <div class="kpi-title">📈 มูลค่าพอร์ตปัจจุบัน (Current Value)</div>
-            <div class="kpi-number">{symbol}{display_market:,.2f}</div>
-            <div class="kpi-sub" style="color: #848e9c;">Market Value รวมทุกโบรกเกอร์</div>
+            <div class="kpi-value">{symbol}{display_market:,.2f}</div>
+            <div style="color: #6b7280; font-size: 0.85rem; margin-top: 6px;">Market Value รวมทุกโบรกเกอร์</div>
         </div>
     ''', unsafe_allow_html=True)
 
 with k3:
     st.markdown(f'''
-        <div class="kpi-container">
+        <div class="kpi-card">
             <div class="kpi-title">📊 กำไร/ขาดทุนรวมที่ยังไม่เกิดขึ้น (Unrealized PnL)</div>
-            <div class="kpi-number {pnl_style_class}">{pnl_sign}{symbol}{display_pnl:,.2f}</div>
-            <div class="kpi-sub {pnl_style_class}">{pnl_sign}{tot_pnl_pct:.2f}% Return</div>
+            <div class="kpi-value">{symbol}{display_pnl:,.2f}</div>
+            <div class="{pnl_class}">{pnl_sign}{tot_pnl_pct:.2f}% Return</div>
         </div>
     ''', unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
-# 7. VISUAL ANALYTICS
+# 7. VISUAL ANALYTICS (SECTOR & BROKER)
 # ==========================================
 st.markdown('<div class="section-header">📊 โครงสร้างและสัดส่วนการลงทุน (Portfolio Allocation)</div>', unsafe_allow_html=True)
 
@@ -256,10 +306,10 @@ with v2:
     })
     st.area_chart(df_broker.set_index("Broker / Market"), use_container_width=True)
 
-st.markdown("---")
+st.divider()
 
 # ==========================================
-# 8. EXECUTIVE MODULE HUB
+# 8. SYSTEM MODULES QUICK HUB
 # ==========================================
 st.markdown('<div class="section-header">🚀 ระบบงานย่อยตามหมวดหมู่ (System Modules)</div>', unsafe_allow_html=True)
 
