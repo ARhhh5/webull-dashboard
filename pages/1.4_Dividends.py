@@ -1,17 +1,16 @@
-import os
-import json
 import base64
+import json
 import streamlit as st
 import pandas as pd
+import gspread
+import yfinance as yf
 import plotly.express as px
 import plotly.graph_objects as go
-import yfinance as yf
-import gspread
 
 # ==========================================
 # 1. PAGE CONFIG & MODERN DARK CSS
 # ==========================================
-st.set_page_config(page_title="Dividend Analytics", layout="wide")
+st.set_page_config(page_title="Dividend Income Analytics", layout="wide")
 
 st.markdown("""
     <style>
@@ -86,7 +85,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Header Section
+# Minimal Header
 st.markdown('<div class="page-title-minimal">Dividend Income Analytics</div>', unsafe_allow_html=True)
 st.markdown('<div class="page-subtitle-minimal">วิเคราะห์กระแสเงินสดจากเงินปันผลสะสม รายเดือน และสัดส่วนรายหุ้น</div>', unsafe_allow_html=True)
 
@@ -99,7 +98,7 @@ def get_usd_thb_rate():
         ticker = yf.Ticker("USDTHB=X")
         rate = ticker.fast_info.get('last_price') or ticker.info.get('regularMarketPrice') or 35.0
         return float(rate)
-    except:
+    except Exception:
         return 35.0
 
 fx_rate = get_usd_thb_rate()
@@ -124,7 +123,7 @@ def load_dividend_data():
         sh = gc.open("หุ้นของเรา")
         try:
             ws = sh.worksheet("Dividend_Tracker")
-        except:
+        except Exception:
             return pd.DataFrame()
             
         records = ws.get_all_records()
@@ -133,25 +132,42 @@ def load_dividend_data():
             
         df = pd.DataFrame(records)
         
-        # Mapping column names flexibly
+        # Robust Column Name Mapping
         col_map = {}
         for col in df.columns:
-            c_str = str(col).lower()
-            if "วัน" in c_str or "date" in c_str: col_map[col] = "Date"
-            elif "หุ้น" in c_str or "ticker" in c_str: col_map[col] = "Ticker"
-            elif "เงิน" in c_str or "amount" in c_str: col_map[col] = "Amount"
-            elif "สกุล" in c_str or "curr" in c_str: col_map[col] = "Currency"
-            elif "โบรก" in c_str or "broker" in c_str: col_map[col] = "Broker"
+            c_str = str(col).lower().strip()
+            if "วัน" in c_str or "date" in c_str:
+                col_map[col] = "Date"
+            elif "หุ้น" in c_str or "ticker" in c_str:
+                col_map[col] = "Ticker"
+            elif "เงิน" in c_str or "amount" in c_str:
+                col_map[col] = "Amount"
+            elif "สกุล" in c_str or "curr" in c_str:
+                col_map[col] = "Currency"
+            elif "โบรก" in c_str or "broker" in c_str:
+                col_map[col] = "Broker"
             
         df = df.rename(columns=col_map)
         
-        # Clean Data
+        # Validate Required Columns
+        required_cols = ["Date", "Ticker", "Amount", "Currency", "Broker"]
+        for rc in required_cols:
+            if rc not in df.columns:
+                df[rc] = "" if rc in ["Ticker", "Currency", "Broker"] else 0
+        
+        # Robust Date Parsing (Day/Month/Year Format)
         df["Date"] = pd.to_datetime(df["Date"], format="%d/%m/%Y", errors='coerce')
+        # Fallback for alternative date formats
+        null_dates = df["Date"].isna()
+        if null_dates.any():
+            df.loc[null_dates, "Date"] = pd.to_datetime(df.loc[null_dates, "Date"], dayfirst=True, errors='coerce')
+            
         df["Amount"] = pd.to_numeric(df["Amount"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
         df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
         df["Currency"] = df["Currency"].astype(str).str.strip().str.upper()
+        df["Broker"] = df["Broker"].astype(str).str.strip().str.upper()
         
-        # Standardize Amount to USD and THB
+        # Currency Normalization
         df["Amount_USD"] = df.apply(lambda r: r["Amount"] if r["Currency"] == "USD" else r["Amount"] / fx_rate, axis=1)
         df["Amount_THB"] = df.apply(lambda r: r["Amount"] * fx_rate if r["Currency"] == "USD" else r["Amount"], axis=1)
         
@@ -159,7 +175,8 @@ def load_dividend_data():
         df["Month_Name"] = df["Date"].dt.strftime("%b %Y")
         
         return df.dropna(subset=["Date"])
-    except Exception:
+    except Exception as e:
+        st.error(f"❌ เกิดข้อผิดพลาดในการโหลดข้อมูล: {str(e)}")
         return pd.DataFrame()
 
 df_div = load_dividend_data()
@@ -294,7 +311,8 @@ if not df_div.empty:
                     "ปันผลที่ได้รับ (Original)": "{:,.2f}",
                     f"มูลค่าในระบบ ({curr_sym})": f"{curr_sym}{{:,.2f}}"
                 }),
-                use_container_width=True
+                use_container_width=True,
+                hide_index=True
             )
         else:
             st.info("ไม่พบข้อมูลปันผลในเดือนที่เลือก")
@@ -321,10 +339,11 @@ if not df_div.empty:
                     "ปันผลที่ได้รับ (Original)": "{:,.2f}",
                     f"มูลค่าในระบบ ({curr_sym})": f"{curr_sym}{{:,.2f}}"
                 }),
-                use_container_width=True
+                use_container_width=True,
+                hide_index=True
             )
         else:
             st.info("ไม่พบข้อมูลปันผลสำหรับหุ้นที่เลือก")
 
 else:
-    st.info("💡 ยังไม่มีประวัติการรับเงินปันผลในระบบ คุณสามารถบันทึกปันผลใหม่ได้ที่เมนู Trade Execution Desk")
+    st.info("💡 เปิดใช้งานระบบสำเร็จ! หากพบค่านี่แสดงว่ายังไม่มีข้อมูลปันผลใน Google Sheets หรือรูปแบบวันที่ไม่ถูกต้อง สามารถไปบันทึกปันผลใหม่ได้ที่เมนู Trade Execution Desk ครับ")
