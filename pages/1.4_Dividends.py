@@ -132,10 +132,14 @@ def load_dividend_data():
             
         df = pd.DataFrame(records)
         
-        # Robust Column Name Mapping
+        # 1. Clean Column Names & Remove Duplicate Columns
+        df.columns = [str(col).strip() for col in df.columns]
+        df = df.loc[:, ~df.columns.duplicated()]
+        
+        # 2. Flexible Column Name Mapping
         col_map = {}
         for col in df.columns:
-            c_str = str(col).lower().strip()
+            c_str = str(col).lower()
             if "วัน" in c_str or "date" in c_str:
                 col_map[col] = "Date"
             elif "หุ้น" in c_str or "ticker" in c_str:
@@ -149,32 +153,44 @@ def load_dividend_data():
             
         df = df.rename(columns=col_map)
         
-        # Validate Required Columns
+        # 3. Ensure All Required Columns Exist
         required_cols = ["Date", "Ticker", "Amount", "Currency", "Broker"]
         for rc in required_cols:
             if rc not in df.columns:
                 df[rc] = "" if rc in ["Ticker", "Currency", "Broker"] else 0
+
+        # 4. Handle Case If Multiple Columns Mapped to Same Target (Force Series)
+        clean_df = pd.DataFrame()
+        for rc in required_cols:
+            col_data = df[rc]
+            if isinstance(col_data, pd.DataFrame):
+                # If duplicate columns existed, take the first valid column
+                clean_df[rc] = col_data.iloc[:, 0]
+            else:
+                clean_df[rc] = col_data
+
+        # 5. Safe Data Types Parsing
+        clean_df["Date"] = pd.to_datetime(clean_df["Date"].astype(str), format="%d/%m/%Y", errors='coerce')
         
-        # Robust Date Parsing (Day/Month/Year Format)
-        df["Date"] = pd.to_datetime(df["Date"], format="%d/%m/%Y", errors='coerce')
-        # Fallback for alternative date formats
-        null_dates = df["Date"].isna()
+        # Fallback date parser for different formats
+        null_dates = clean_df["Date"].isna()
         if null_dates.any():
-            df.loc[null_dates, "Date"] = pd.to_datetime(df.loc[null_dates, "Date"], dayfirst=True, errors='coerce')
-            
-        df["Amount"] = pd.to_numeric(df["Amount"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
-        df["Ticker"] = df["Ticker"].astype(str).str.strip().str.upper()
-        df["Currency"] = df["Currency"].astype(str).str.strip().str.upper()
-        df["Broker"] = df["Broker"].astype(str).str.strip().str.upper()
+            clean_df.loc[null_dates, "Date"] = pd.to_datetime(df.loc[null_dates, "Date"], dayfirst=True, errors='coerce')
+
+        clean_df["Amount"] = pd.to_numeric(clean_df["Amount"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+        clean_df["Ticker"] = clean_df["Ticker"].astype(str).str.strip().str.upper()
+        clean_df["Currency"] = clean_df["Currency"].astype(str).str.strip().str.upper()
+        clean_df["Broker"] = clean_df["Broker"].astype(str).str.strip().str.upper()
         
-        # Currency Normalization
-        df["Amount_USD"] = df.apply(lambda r: r["Amount"] if r["Currency"] == "USD" else r["Amount"] / fx_rate, axis=1)
-        df["Amount_THB"] = df.apply(lambda r: r["Amount"] * fx_rate if r["Currency"] == "USD" else r["Amount"], axis=1)
+        # 6. Currency Normalization
+        clean_df["Amount_USD"] = clean_df.apply(lambda r: r["Amount"] if r["Currency"] == "USD" else r["Amount"] / fx_rate, axis=1)
+        clean_df["Amount_THB"] = clean_df.apply(lambda r: r["Amount"] * fx_rate if r["Currency"] == "USD" else r["Amount"], axis=1)
         
-        df["YearMonth"] = df["Date"].dt.strftime("%Y-%m")
-        df["Month_Name"] = df["Date"].dt.strftime("%b %Y")
+        clean_df["YearMonth"] = clean_df["Date"].dt.strftime("%Y-%m")
+        clean_df["Month_Name"] = clean_df["Date"].dt.strftime("%b %Y")
         
-        return df.dropna(subset=["Date"])
+        return clean_df.dropna(subset=["Date"])
+        
     except Exception as e:
         st.error(f"❌ เกิดข้อผิดพลาดในการโหลดข้อมูล: {str(e)}")
         return pd.DataFrame()
