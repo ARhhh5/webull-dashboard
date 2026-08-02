@@ -1,10 +1,10 @@
 import base64
 import json
+import re
 import streamlit as st
 import pandas as pd
 import gspread
 import yfinance as yf
-import plotly.express as px
 import plotly.graph_objects as go
 
 # ==========================================
@@ -74,6 +74,32 @@ st.markdown("""
         align-items: center;
         gap: 8px;
     }
+
+    /* Modern Drill-down Action Buttons Override */
+    div[data-testid="stColumn"] div.stButton > button {
+        background-color: #0f1115 !important;
+        border: 1px solid #1a1d24 !important;
+        border-radius: 10px !important;
+        padding: 10px 16px !important;
+        color: #9ca3af !important;
+        font-weight: 600 !important;
+        font-size: 0.88rem !important;
+        transition: all 0.25s ease !important;
+    }
+
+    div[data-testid="stColumn"] div.stButton > button:hover {
+        border-color: #38bdf8 !important;
+        color: #ffffff !important;
+        background-color: #141822 !important;
+    }
+
+    /* Active Segmented Button Highlight */
+    div[data-testid="stColumn"] div.stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #0284c7 0%, #0369a1 100%) !important;
+        border: 1px solid #38bdf8 !important;
+        color: #ffffff !important;
+        box-shadow: 0 4px 12px rgba(56, 189, 248, 0.25) !important;
+    }
     
     /* Custom Input Controls */
     div[data-baseweb="select"] > div {
@@ -85,7 +111,7 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
-# Minimal Header
+# Header Section
 st.markdown('<div class="page-title-minimal">Dividend Income Analytics</div>', unsafe_allow_html=True)
 st.markdown('<div class="page-subtitle-minimal">วิเคราะห์กระแสเงินสดจากเงินปันผลสะสม รายเดือน และสัดส่วนรายหุ้น</div>', unsafe_allow_html=True)
 
@@ -114,6 +140,19 @@ def get_gspread_client():
     except Exception:
         return None
 
+def extract_numeric_value(val):
+    """ฟังก์ชันสกัดเฉพาะตัวเลขจาก String การเงิน"""
+    if pd.isna(val) or val is None:
+        return 0.0
+    s_val = str(val).strip()
+    match = re.search(r"[-+]?\d*\.\d+|\d+", s_val.replace(',', ''))
+    if match:
+        try:
+            return float(match.group())
+        except Exception:
+            return 0.0
+    return 0.0
+
 def load_dividend_data():
     gc = get_gspread_client()
     if not gc:
@@ -126,17 +165,17 @@ def load_dividend_data():
         except Exception:
             return pd.DataFrame()
             
-        records = ws.get_all_records()
-        if not records:
+        all_values = ws.get_all_values()
+        if not all_values or len(all_values) < 2:
             return pd.DataFrame()
             
-        df = pd.DataFrame(records)
+        headers = [str(h).strip() for h in all_values[0]]
+        rows = all_values[1:]
         
-        # 1. Clean Column Names & Remove Duplicate Columns
-        df.columns = [str(col).strip() for col in df.columns]
+        df = pd.DataFrame(rows, columns=headers)
         df = df.loc[:, ~df.columns.duplicated()]
         
-        # 2. Flexible Column Name Mapping
+        # Mapping Column Names
         col_map = {}
         for col in df.columns:
             c_str = str(col).lower()
@@ -153,41 +192,38 @@ def load_dividend_data():
             
         df = df.rename(columns=col_map)
         
-        # 3. Ensure All Required Columns Exist
         required_cols = ["Date", "Ticker", "Amount", "Currency", "Broker"]
         for rc in required_cols:
             if rc not in df.columns:
-                df[rc] = "" if rc in ["Ticker", "Currency", "Broker"] else 0
+                df[rc] = "" if rc in ["Ticker", "Currency", "Broker"] else "0"
 
-        # 4. Handle Case If Multiple Columns Mapped to Same Target (Force Series)
+        # Safe Series Extraction
         clean_df = pd.DataFrame()
         for rc in required_cols:
             col_data = df[rc]
-            if isinstance(col_data, pd.DataFrame):
-                clean_df[rc] = col_data.iloc[:, 0]
-            else:
-                clean_df[rc] = col_data
+            clean_df[rc] = col_data.iloc[:, 0] if isinstance(col_data, pd.DataFrame) else col_data
 
-        # 5. Safe Data Types Parsing
-        clean_df["Date"] = pd.to_datetime(clean_df["Date"].astype(str), format="%d/%m/%Y", errors='coerce')
+        # 1. Clean Amount Values using Regex Extraction
+        clean_df["Amount"] = clean_df["Amount"].apply(extract_numeric_value)
+        clean_df = clean_df[clean_df["Amount"] > 0]  # กรองเฉพาะบรรทัดที่มีจำนวนเงิน
         
-        null_dates = clean_df["Date"].isna()
-        if null_dates.any():
-            clean_df.loc[null_dates, "Date"] = pd.to_datetime(df.loc[null_dates, "Date"], dayfirst=True, errors='coerce')
-
-        clean_df["Amount"] = pd.to_numeric(clean_df["Amount"].astype(str).str.replace(',', ''), errors='coerce').fillna(0)
+        # 2. Clean Strings
         clean_df["Ticker"] = clean_df["Ticker"].astype(str).str.strip().str.upper()
         clean_df["Currency"] = clean_df["Currency"].astype(str).str.strip().str.upper()
         clean_df["Broker"] = clean_df["Broker"].astype(str).str.strip().str.upper()
         
-        # 6. Correct Currency Normalization Logic
-        # Amount_USD: If already USD, keep Amount. If THB, convert to USD (/ fx_rate)
+        # 3. Safe Date Parsing
+        clean_df["Date"] = pd.to_datetime(clean_df["Date"].astype(str), format="%d/%m/%Y", errors='coerce')
+        null_dates = clean_df["Date"].isna()
+        if null_dates.any():
+            clean_df.loc[null_dates, "Date"] = pd.to_datetime(df.loc[null_dates, "Date"], dayfirst=True, errors='coerce')
+
+        # 4. Currency Conversions
         clean_df["Amount_USD"] = clean_df.apply(
             lambda r: r["Amount"] if r["Currency"] == "USD" else (r["Amount"] / fx_rate if fx_rate > 0 else r["Amount"]),
             axis=1
         )
         
-        # Amount_THB: If already THB, keep Amount. If USD, convert to THB (* fx_rate)
         clean_df["Amount_THB"] = clean_df.apply(
             lambda r: r["Amount"] * fx_rate if r["Currency"] == "USD" else r["Amount"],
             axis=1
@@ -309,13 +345,32 @@ if not df_div.empty:
     st.markdown("<br>", unsafe_allow_html=True)
 
     # ----------------------------------------------------
-    # INTERACTIVE DRILL-DOWN SECTION
+    # INTERACTIVE DRILL-DOWN BUTTONS SECTION
     # ----------------------------------------------------
     st.markdown("### 🔍 เจาะลึกข้อมูลปันผล (Interactive Drill-down)")
     
-    view_tab1, view_tab2 = st.tabs(["📅 แยกดูรายเดือน (Monthly Breakdowns)", "📌 แยกดูรายหุ้น (By Ticker)"])
+    if "div_drill_mode" not in st.session_state:
+        st.session_state["div_drill_mode"] = "monthly"
+        
+    drill_mode = st.session_state["div_drill_mode"]
     
-    with view_tab1:
+    col_b1, col_b2, col_b_space = st.columns([1.2, 1.2, 2.6])
+    
+    with col_b1:
+        b1_type = "primary" if drill_mode == "monthly" else "secondary"
+        if st.button("📅 แยกดูรายเดือน (Monthly)", key="btn_drill_m", use_container_width=True, type=b1_type):
+            st.session_state["div_drill_mode"] = "monthly"
+            st.rerun()
+            
+    with col_b2:
+        b2_type = "primary" if drill_mode == "ticker" else "secondary"
+        if st.button("📌 แยกดูรายหุ้น (By Ticker)", key="btn_drill_t", use_container_width=True, type=b2_type):
+            st.session_state["div_drill_mode"] = "ticker"
+            st.rerun()
+
+    st.markdown("<br>", unsafe_allow_html=True)
+
+    if drill_mode == "monthly":
         month_list = ["ทั้งหมด (All Months)"] + sorted(df_div["Month_Name"].unique().tolist(), reverse=True)
         selected_month = st.selectbox("เลือกเดือนที่ต้องการดูรายละเอียด:", month_list, key="select_month_drill")
         
@@ -340,7 +395,7 @@ if not df_div.empty:
         else:
             st.info("ไม่พบข้อมูลปันผลในเดือนที่เลือก")
 
-    with view_tab2:
+    else:
         ticker_list = ["ทั้งหมด (All Tickers)"] + sorted(df_div["Ticker"].unique().tolist())
         selected_ticker = st.selectbox("เลือกหุ้นที่ต้องการดูประวัติปันผล:", ticker_list, key="select_ticker_drill")
         
@@ -369,4 +424,4 @@ if not df_div.empty:
             st.info("ไม่พบข้อมูลปันผลสำหรับหุ้นที่เลือก")
 
 else:
-    st.info("💡 เปิดใช้งานระบบสำเร็จ! หากพบค่านี่แสดงว่ายังไม่มีข้อมูลปันผลใน Google Sheets หรือรูปแบบวันที่ไม่ถูกต้อง สามารถไปบันทึกปันผลใหม่ได้ที่เมนู Trade Execution Desk ครับ")
+    st.info("💡 ไม่พบข้อมูลปันผลใน Google Sheets หรือรูปแบบข้อมูลไม่ถูกต้อง สามารถไปบันทึกปันผลใหม่ได้ที่เมนู Trade Execution Desk ครับ")
