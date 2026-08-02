@@ -1,212 +1,300 @@
 import streamlit as st
+import pandas as pd
+import json
+import base64
+import gspread
 
 # ==========================================
 # 1. PAGE CONFIGURATION
 # ==========================================
 st.set_page_config(
-    page_title="Webull Dashboard Pro",
-    page_icon="📈",
+    page_title="Executive Command Center - Portfolio Desk",
+    page_icon="⚡",
     layout="wide",
     initial_sidebar_state="expanded"
 )
 
 # ==========================================
-# 2. GLOBAL MODERN DARK THEME (CUSTOM CSS)
+# 2. INSTITUTIONAL MODERN DARK UI DESIGN (CSS)
 # ==========================================
-def inject_custom_css():
-    st.markdown("""
-    <style>
-        /* Import Font: Inter */
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700&display=swap');
-
-        /* Global Theme Setting */
-        html, body, [class*="css"] {
-            font-family: 'Inter', sans-serif;
-            background-color: #0d0f12 !important;
-            color: #e2e8f0;
-        }
-
-        /* App Background */
-        .stApp {
-            background-color: #0d0f12;
-        }
-
-        /* Sidebar Styling */
-        [data-testid="stSidebar"] {
-            background-color: #131722 !important;
-            border-right: 1px solid #1e222d;
-        }
-
-        /* Sidebar Header Title */
-        [data-testid="stSidebarNav"]::before {
-            content: "⚡ WEBULL PRO";
-            margin-left: 20px;
-            margin-top: 20px;
-            font-size: 20px;
-            font-weight: 700;
-            color: #6366f1;
-            letter-spacing: 1px;
-            display: block;
-            margin-bottom: 10px;
-        }
-
-        /* Card Container - Modern Dark Box */
-        div[data-testid="stVerticalBlock"] > div[style*="flex"] {
-            background-color: #161a25;
-            border: 1px solid #222736;
-            border-radius: 12px;
-            padding: 16px;
-        }
-
-        /* Streamlit Metric Customization */
-        div[data-testid="stMetric"] {
-            background-color: #161a25;
-            border: 1px solid #232838;
-            border-radius: 12px;
-            padding: 16px 20px;
-            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.2);
-        }
-
-        div[data-testid="stMetricLabel"] {
-            font-size: 0.85rem !important;
-            color: #8b949e !important;
-            font-weight: 500;
-        }
-
-        div[data-testid="stMetricValue"] {
-            font-size: 1.8rem !important;
-            font-weight: 700 !important;
-            color: #ffffff !important;
-        }
-
-        /* Custom Stat Card Class */
-        .metric-card {
-            background: linear-gradient(135deg, #181c28 0%, #12151e 100%);
-            border: 1px solid #262c3d;
-            border-radius: 14px;
-            padding: 20px;
-            margin-bottom: 15px;
-        }
-
-        .metric-title {
-            color: #8b94a0;
-            font-size: 0.85rem;
-            font-weight: 500;
-            margin-bottom: 6px;
-        }
-
-        .metric-value {
-            color: #ffffff;
-            font-size: 1.8rem;
-            font-weight: 700;
-        }
-
-        .metric-delta-positive {
-            color: #10b981;
-            font-size: 0.85rem;
-            font-weight: 600;
-            margin-top: 4px;
-        }
-
-        .metric-delta-negative {
-            color: #ef4444;
-            font-size: 0.85rem;
-            font-weight: 600;
-            margin-top: 4px;
-        }
-
-        /* Tab Customization */
-        .stTabs [data-baseweb="tab-list"] {
-            gap: 10px;
-            background-color: #131722;
-            padding: 6px;
-            border-radius: 10px;
-            border: 1px solid #1e222d;
-        }
-
-        .stTabs [data-baseweb="tab"] {
-            height: 40px;
-            white-space: pre-wrap;
-            border-radius: 6px;
-            color: #8b949e;
-            font-weight: 500;
-        }
-
-        .stTabs [aria-selected="true"] {
-            background-color: #6366f1 !important;
-            color: #ffffff !important;
-        }
-
-        /* Plotly Background Matching */
-        .js-plotly-plot .plotly .main-svg {
-            background: transparent !important;
-        }
-
-        /* Hide Streamlit Default Header Footer */
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-    </style>
-    """, unsafe_allow_html=True)
-
-# Apply CSS
-inject_custom_css()
-
-# ==========================================
-# 3. MAIN DASHBOARD LANDING PAGE
-# ==========================================
-st.title("📊 Webull Financial Overview")
-st.caption("ระบบบริหารจัดการพอร์ตและวิเคราะห์ข้อมูลการลงทุนแบบเรียลไทม์")
-
-st.divider()
-
-# Top Ticker Banner (Mockup / Live Dynamic Bar Style)
 st.markdown("""
-<div style="background-color: #131722; border: 1px solid #222736; border-radius: 10px; padding: 12px 20px; margin-bottom: 25px; display: flex; justify-content: space-between; align-items: center;">
-    <span style="color: #10b981; font-weight: 600;">🟢 Market Open</span>
-    <span><b>AAPL</b> <span style="color: #10b981;">$182.50 (+1.2%)</span></span>
-    <span><b>TSLA</b> <span style="color: #ef4444;">$215.30 (-0.8%)</span></span>
-    <span><b>NVDA</b> <span style="color: #10b981;">$875.20 (+3.4%)</span></span>
-    <span><b>MSFT</b> <span style="color: #10b981;">$420.10 (+0.5%)</span></span>
-</div>
+    <style>
+    /* Import Font: Inter */
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600;700;800&display=swap');
+
+    /* Main Background & Clean Typography */
+    html, body, [class*="css"] {
+        font-family: 'Inter', -apple-system, BlinkMacSystemFont, sans-serif;
+        background-color: #0d0f12 !important;
+        color: #e2e8f0;
+    }
+    
+    .stApp {
+        background-color: #0d0f12;
+    }
+
+    /* Sidebar Styling */
+    [data-testid="stSidebar"] {
+        background-color: #131722 !important;
+        border-right: 1px solid #1e222d;
+    }
+
+    [data-testid="stSidebarNav"]::before {
+        content: "⚡ EXECUTIVE DESK";
+        margin-left: 20px;
+        margin-top: 20px;
+        font-size: 18px;
+        font-weight: 800;
+        color: #00b0ff;
+        letter-spacing: 1px;
+        display: block;
+        margin-bottom: 15px;
+    }
+    
+    /* Executive Metric Container */
+    .kpi-container {
+        background: linear-gradient(145deg, #1e222d 0%, #141722 100%);
+        border: 1px solid #2a2e39;
+        border-radius: 12px;
+        padding: 20px;
+        text-align: center;
+        box-shadow: 0 4px 15px rgba(0, 0, 0, 0.3);
+        transition: transform 0.2s ease, border-color 0.2s ease;
+    }
+    .kpi-container:hover {
+        border-color: #363c4e;
+        transform: translateY(-2px);
+    }
+    .kpi-title {
+        color: #848e9c;
+        font-size: 13px;
+        font-weight: 600;
+        text-transform: uppercase;
+        letter-spacing: 0.8px;
+        margin-bottom: 8px;
+    }
+    .kpi-number {
+        color: #ffffff;
+        font-size: 30px;
+        font-weight: 800;
+        letter-spacing: -0.5px;
+    }
+    .kpi-sub {
+        font-size: 13px;
+        font-weight: 600;
+        margin-top: 6px;
+    }
+    
+    /* PnL Indicator Colors */
+    .pnl-positive { color: #00c853 !important; }
+    .pnl-negative { color: #ff3d00 !important; }
+    
+    /* Section Headers */
+    .section-header {
+        font-size: 18px;
+        font-weight: 700;
+        color: #ffffff;
+        margin-top: 20px;
+        margin-bottom: 15px;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+    }
+    
+    /* Quick Action Card */
+    .action-card {
+        background-color: #1a1e29;
+        border: 1px solid #2a2e39;
+        border-radius: 10px;
+        padding: 16px;
+        margin-bottom: 12px;
+    }
+    .action-title {
+        color: #00b0ff;
+        font-size: 15px;
+        font-weight: 700;
+        margin-bottom: 6px;
+    }
+    .action-desc {
+        color: #848e9c;
+        font-size: 13px;
+        line-height: 1.4;
+    }
+
+    /* Hide Streamlit Menu / Footer */
+    #MainMenu {visibility: hidden;}
+    footer {visibility: hidden;}
+    </style>
 """, unsafe_allow_html=True)
 
-# KPI Overview Row
-col1, col2, col3, col4 = st.columns(4)
+# ==========================================
+# 3. HEADER SECTION
+# ==========================================
+st.title("⚡ Executive Command Center")
+st.caption("ระบบบริหารจัดการพอร์ตการลงทุนและศูนย์วิเคราะห์ข้อมูลสินทรัพย์ภาพรวม (Institutional Grade)")
+st.markdown("---")
 
-with col1:
-    st.markdown("""
-    <div class="metric-card">
-        <div class="metric-title">Total Portfolio Value</div>
-        <div class="metric-value">$325,980.65</div>
-        <div class="metric-delta-positive">▲ +$39,117.67 (12.0%)</div>
-    </div>
-    """, unsafe_allow_html=True)
+# ==========================================
+# 4. DATA CONNECTION & CACHE (YOUR GSHEET)
+# ==========================================
+@st.cache_resource
+def get_gspread_client():
+    try:
+        google_secrets = st.secrets.get("Google", {})
+        cred_base64 = google_secrets.get("credentials_base64", "")
+        if cred_base64:
+            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
+            return gspread.service_account_from_dict(cred_dict)
+        return None
+    except Exception:
+        return None
 
-with col2:
-    st.markdown("""
-    <div class="metric-card">
-        <div class="metric-title">Total Investments</div>
-        <div class="metric-value">$270,560.20</div>
-        <div class="metric-delta-positive">▲ +$54,112.04 (20.0%)</div>
-    </div>
-    """, unsafe_allow_html=True)
+def load_summary_data():
+    gc = get_gspread_client()
+    if not gc:
+        return pd.DataFrame(), pd.DataFrame()
+    
+    df_us, df_th = pd.DataFrame(), pd.DataFrame()
+    try:
+        sh = gc.open("หุ้นของเรา")
+        try:
+            df_us = pd.DataFrame(sh.worksheet("Dime_Portfolio").get_all_records())
+        except: pass
+        try:
+            df_th = pd.DataFrame(sh.worksheet("Dime_TH_Portfolio").get_all_records())
+        except: pass
+    except Exception:
+        pass
+        
+    return df_us, df_th
 
-with col3:
-    st.markdown("""
-    <div class="metric-card">
-        <div class="metric-title">Unrealized P/L</div>
-        <div class="metric-value">$55,420.45</div>
-        <div class="metric-delta-positive">▲ +$9,879.43 (7.2%)</div>
-    </div>
-    """, unsafe_allow_html=True)
+df_us_raw, df_th_raw = load_summary_data()
 
-with col4:
-    st.markdown("""
-    <div class="metric-card">
-        <div class="metric-title">Buying Power / Cash</div>
-        <div class="metric-value">$18,450.00</div>
-        <div style="color: #6b7280; font-size: 0.85rem; margin-top: 4px;">Ready to allocate</div>
-    </div>
-    """, unsafe_allow_html=True)
+# ==========================================
+# 5. CONTROL PANEL & CURRENCY TOGGLE
+# ==========================================
+c_ctrl1, c_ctrl2 = st.columns([3, 1])
+with c_ctrl1:
+    currency_selected = st.radio(
+        "💱 สกุลเงินหลักในการคำนวณหน้า Command Center:",
+        ("ดอลลาร์ ($ USD)", "เงินบาท (฿ THB)"),
+        horizontal=True,
+        index=0
+    )
 
-st.info("👈 กรุณาเลือกเมนูด้านซ้ายมือเพื่อเข้าสู่หน้าต่างวิเคราะห์ข้อมูลย่อย เช่น Portfolio, Winner Tilt, AI Fundamental หรือ Risk Desk")
+usd_fx_rate = 35.5  # อัตราแลกเปลี่ยนอ้างอิง
+is_usd = "USD" in currency_selected
+symbol = "$" if is_usd else "฿"
+
+# ข้อมูลการคำนวณเดิมของคุณ
+tot_invested_usd = 48180.96
+tot_market_usd = 43870.99
+tot_pnl_usd = tot_market_usd - tot_invested_usd
+tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
+
+display_invested = tot_invested_usd if is_usd else (tot_invested_usd * usd_fx_rate)
+display_market = tot_market_usd if is_usd else (tot_market_usd * usd_fx_rate)
+display_pnl = tot_pnl_usd if is_usd else (tot_pnl_usd * usd_fx_rate)
+
+pnl_style_class = "pnl-positive" if display_pnl >= 0 else "pnl-negative"
+pnl_sign = "+" if display_pnl >= 0 else ""
+
+# ==========================================
+# 6. KPI SUMMARY CARDS
+# ==========================================
+k1, k2, k3 = st.columns(3)
+
+with k1:
+    st.markdown(f'''
+        <div class="kpi-container">
+            <div class="kpi-title">💵 ต้นทุนเงินลงทุนรวม (Total Invested)</div>
+            <div class="kpi-number">{symbol}{display_invested:,.2f}</div>
+            <div class="kpi-sub" style="color: #848e9c;">ฐานทุนพอร์ตคงเหลือ</div>
+        </div>
+    ''', unsafe_allow_html=True)
+
+with k2:
+    st.markdown(f'''
+        <div class="kpi-container">
+            <div class="kpi-title">📈 มูลค่าพอร์ตปัจจุบัน (Current Value)</div>
+            <div class="kpi-number">{symbol}{display_market:,.2f}</div>
+            <div class="kpi-sub" style="color: #848e9c;">Market Value รวมทุกโบรกเกอร์</div>
+        </div>
+    ''', unsafe_allow_html=True)
+
+with k3:
+    st.markdown(f'''
+        <div class="kpi-container">
+            <div class="kpi-title">📊 กำไร/ขาดทุนรวมที่ยังไม่เกิดขึ้น (Unrealized PnL)</div>
+            <div class="kpi-number {pnl_style_class}">{pnl_sign}{symbol}{display_pnl:,.2f}</div>
+            <div class="kpi-sub {pnl_style_class}">{pnl_sign}{tot_pnl_pct:.2f}% Return</div>
+        </div>
+    ''', unsafe_allow_html=True)
+
+st.markdown("<br>", unsafe_allow_html=True)
+
+# ==========================================
+# 7. VISUAL ANALYTICS
+# ==========================================
+st.markdown('<div class="section-header">📊 โครงสร้างและสัดส่วนการลงทุน (Portfolio Allocation)</div>', unsafe_allow_html=True)
+
+v1, v2 = st.columns(2)
+
+with v1:
+    st.subheader("🎯 สัดส่วนตามกลุ่มอุตสาหกรรม (Sector Distribution)")
+    df_sector = pd.DataFrame({
+        "Sector": ["Technology", "Financial Services", "Consumer Defensive", "ETF / Index / Other"],
+        "Value": [31000, 1200, 500, 11170.99]
+    })
+    st.bar_chart(df_sector.set_index("Sector"), use_container_width=True)
+
+with v2:
+    st.subheader("🌐 สัดส่วนตามตลาด / โบรกเกอร์ (Broker Breakdown)")
+    df_broker = pd.DataFrame({
+        "Broker / Market": ["Dime US", "Webull US", "Dime TH"],
+        "Allocation ($)": [25000, 15000, 3870.99]
+    })
+    st.area_chart(df_broker.set_index("Broker / Market"), use_container_width=True)
+
+st.markdown("---")
+
+# ==========================================
+# 8. EXECUTIVE MODULE HUB
+# ==========================================
+st.markdown('<div class="section-header">🚀 ระบบงานย่อยตามหมวดหมู่ (System Modules)</div>', unsafe_allow_html=True)
+
+q1, q2 = st.columns(2)
+
+with q1:
+    st.markdown("### 📂 หมวดที่ 1: การจัดการพอร์ตโฟลิโอ (Portfolio Management)")
+    st.markdown('''
+        <div class="action-card">
+            <div class="action-title">1.1 Portfolio Holdings</div>
+            <div class="action-desc">ตรวจสอบตารางรายการหุ้นคงเหลือ แยกตามโบรกเกอร์ ต้นทุน ราคาตลาด และ Unrealized PnL รายตัว</div>
+        </div>
+        <div class="action-card">
+            <div class="action-title">1.2 Trade Execution</div>
+            <div class="action-desc">บันทึกคำสั่งซื้อ/ขาย ตัดสต็อกพอร์ตอัตโนมัติ และอัปเดตลง Google Sheets</div>
+        </div>
+        <div class="action-card">
+            <div class="action-title">1.3 Realized History</div>
+            <div class="action-desc">สรุปประวัติผลกำไร/ขาดทุนจากการขายจริง (Realized PnL) แยกแท็บ THB (฿) และ USD ($) ชัดเจน</div>
+        </div>
+    ''', unsafe_allow_html=True)
+
+with q2:
+    st.markdown("### 🧠 หมวดที่ 2: ระบบ AI วิเคราะห์และค้นหาโอกาส (AI Intelligence)")
+    st.markdown('''
+        <div class="action-card">
+            <div class="action-title">2.1 Lazy Investor AI</div>
+            <div class="action-desc">ระบบ AI คัดเลือกหุ้นน่าซื้อตามงบประมาณ ระดับความเสี่ยง และธีมการลงทุนที่สนใจ</div>
+        </div>
+        <div class="action-card">
+            <div class="action-title">2.2 AI Fundamental Analysis</div>
+            <div class="action-desc">เจาะลึกงบการเงิน งบกำไรขาดทุน และงบกระแสเงินสดด้วย Gemini 2.5 Flash</div>
+        </div>
+        <div class="action-card">
+            <div class="action-title">2.3 Portfolio Risk Desk</div>
+            <div class="action-desc">วิเคราะห์ความเสี่ยงพอร์ตการลงทุน ความสัมพันธ์ของหุ้น และคำแนะนำการรีบาลานซ์</div>
+        </div>
+    ''', unsafe_allow_html=True)
