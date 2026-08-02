@@ -53,13 +53,13 @@ def inject_ultra_modern_css():
             margin-bottom: 20px;
         }
 
-        /* Top Ticker Pills */
+        /* Top Ticker Scroll */
         .ticker-scroll {
             display: flex;
             gap: 12px;
             overflow-x: auto;
-            padding-bottom: 10px;
-            margin-bottom: 20px;
+            padding-bottom: 5px;
+            margin-bottom: 15px;
         }
 
         .ticker-pill {
@@ -81,7 +81,7 @@ def inject_ultra_modern_css():
             border: 1px solid #1a1d24;
             border-radius: 12px;
             padding: 20px;
-            height: 100%;
+            margin-bottom: 15px;
         }
 
         .card-header-title {
@@ -96,11 +96,11 @@ def inject_ultra_modern_css():
 
         .big-value {
             font-family: 'Plus Jakarta Sans', sans-serif;
-            font-size: 2.4rem;
+            font-size: 2.2rem;
             font-weight: 800;
             color: #ffffff;
             letter-spacing: -1px;
-            line-height: 1;
+            line-height: 1.1;
         }
 
         .badge-delta-neg {
@@ -129,7 +129,7 @@ def inject_ultra_modern_css():
             height: 10px;
             border-radius: 5px;
             overflow: hidden;
-            margin: 16px 0px;
+            margin: 14px 0px;
             background-color: #1a1d24;
         }
 
@@ -188,12 +188,7 @@ def inject_ultra_modern_css():
             margin-top: 6px;
         }
 
-        /* Radio Button Styling */
-        div[data-testid="stRadioButton"] > label {
-            color: #9ca3af !important;
-        }
-
-        /* Hide Streamlit Default UI */
+        /* Hide Streamlit Default Elements */
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
     </style>
@@ -202,7 +197,7 @@ def inject_ultra_modern_css():
 inject_ultra_modern_css()
 
 # ==========================================
-# 3. DATA CONNECTION & CACHE
+# 3. DATA CONNECTION & CACHE (GSHEET)
 # ==========================================
 @st.cache_resource
 def get_gspread_client():
@@ -238,7 +233,7 @@ def load_summary_data():
 df_us_raw, df_th_raw = load_summary_data()
 
 # ==========================================
-# 4. TOP CONTROL & TICKER STRIP
+# 4. TOP TICKER STRIP & CONTROL
 # ==========================================
 st.markdown("""
 <div class="ticker-scroll">
@@ -250,7 +245,7 @@ st.markdown("""
 </div>
 """, unsafe_allow_html=True)
 
-# Currency Switcher
+# Title & Currency Switcher Row
 c_title, c_curr = st.columns([3, 1])
 with c_title:
     st.title("Executive Dashboard")
@@ -287,8 +282,8 @@ st.markdown("<br>", unsafe_allow_html=True)
 col_left, col_right = st.columns([1.1, 1.9])
 
 with col_left:
-    # Portfolio Value Card
-    st.markdown(f"""
+    # Safe HTML Card Rendering without Line Breaks issue
+    card_html = f"""
     <div class="dash-card">
         <div class="card-header-title">
             <span>Portfolio value</span>
@@ -298,17 +293,13 @@ with col_left:
         <div style="color: #f87171; font-size: 0.82rem; margin-top: 6px; font-family: 'JetBrains Mono', monospace;">
             {pnl_sign}{symbol}{display_pnl:,.2f} total return
         </div>
-        
-        <div style="margin-top: 25px; font-size: 0.8rem; color: #6b7280; font-weight: 600;">Where your money is invested</div>
-        
-        <!-- Multi-segment progress bar -->
+        <div style="margin-top: 20px; font-size: 0.8rem; color: #6b7280; font-weight: 600;">Where your money is invested</div>
         <div class="allocation-bar-container">
             <div class="bar-segment" style="width: 65%; background-color: #3b82f6;"></div>
             <div class="bar-segment" style="width: 20%; background-color: #a855f7;"></div>
             <div class="bar-segment" style="width: 10%; background-color: #ec4899;"></div>
             <div class="bar-segment" style="width: 5%; background-color: #f59e0b;"></div>
         </div>
-        
         <div class="asset-row">
             <div class="asset-label"><div class="dot" style="background-color: #3b82f6;"></div> Tech Stocks</div>
             <div class="asset-val">{symbol}{display_market*0.65:,.2f}</div>
@@ -326,18 +317,20 @@ with col_left:
             <div class="asset-val">{symbol}{display_market*0.05:,.2f}</div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(card_html, unsafe_allow_html=True)
 
 with col_right:
-    # Value trend & impact Chart Card
-    st.markdown("""
-    <div class="dash-card">
+    # Value trend & impact Chart Card Header
+    chart_header = """
+    <div class="dash-card" style="padding-bottom: 5px;">
         <div class="card-header-title">
             <span>Value trend & impact</span>
             <span style="font-family: 'JetBrains Mono'; font-size: 0.75rem; color: #6b7280;">1D  7D  1M  <span style="color:#38bdf8; font-weight:700;">6M</span>  1Y</span>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(chart_header, unsafe_allow_html=True)
     
     # Custom Plotly Line Chart
     months = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul']
@@ -359,21 +352,19 @@ with col_right:
         font=dict(color='#6b7280', family='Plus Jakarta Sans'),
         xaxis=dict(showgrid=False, zeroline=False),
         yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False),
-        margin=dict(t=10, b=10, l=10, r=10),
-        height=265
+        margin=dict(t=5, b=10, l=10, r=10),
+        height=270
     )
     
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-st.markdown("<br>", unsafe_allow_html=True)
-
 # ==========================================
-# 6. LOWER SECTION: ASSETS & COMPARISON GRID
+# 6. LOWER SECTION: BROKER & TOP HOLDINGS
 # ==========================================
 c_btm_left, c_btm_right = st.columns([1.1, 1.9])
 
 with c_btm_left:
-    st.markdown("""
+    broker_html = """
     <div class="dash-card">
         <div class="card-header-title">Broker Allocation</div>
         <div class="asset-row">
@@ -389,7 +380,8 @@ with c_btm_left:
             <div class="asset-val">$3,870.99</div>
         </div>
     </div>
-    """, unsafe_allow_html=True)
+    """
+    st.markdown(broker_html, unsafe_allow_html=True)
 
 with c_btm_right:
     st.markdown('<div style="font-size: 0.85rem; font-weight: 600; color: #9ca3af; margin-bottom: 10px;">Top Holdings Performance</div>', unsafe_allow_html=True)
@@ -398,9 +390,9 @@ with c_btm_right:
     with g1:
         st.markdown("""
         <div class="stock-grid-card">
-            <div style="display:flex; justify-between; align-items:center;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
                 <span class="stock-symbol">🟢 NVDA</span>
-                <span class="badge-delta-pos" style="margin-left:auto;">+9.10%</span>
+                <span class="badge-delta-pos">+9.10%</span>
             </div>
             <div class="stock-price">$892,812.00</div>
         </div>
@@ -408,9 +400,9 @@ with c_btm_right:
     with g2:
         st.markdown("""
         <div class="stock-grid-card">
-            <div style="display:flex; justify-between; align-items:center;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
                 <span class="stock-symbol">🔴 ABNB</span>
-                <span class="badge-delta-neg" style="margin-left:auto;">-3.89%</span>
+                <span class="badge-delta-neg">-3.89%</span>
             </div>
             <div class="stock-price">$92,900.00</div>
         </div>
@@ -418,9 +410,9 @@ with c_btm_right:
     with g3:
         st.markdown("""
         <div class="stock-grid-card">
-            <div style="display:flex; justify-between; align-items:center;">
+            <div style="display:flex; justify-content:space-between; align-items:center;">
                 <span class="stock-symbol">🟢 AMZN</span>
-                <span class="badge-delta-pos" style="margin-left:auto;">+2.67%</span>
+                <span class="badge-delta-pos">+2.67%</span>
             </div>
             <div class="stock-price">$854,414.00</div>
         </div>
