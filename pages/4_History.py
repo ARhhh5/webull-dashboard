@@ -334,6 +334,22 @@ with tab_us_pnl:
         # กรองเฉพาะหุ้น US
         df_dc_us = df_dc[df_dc["ตลาด (US/TH)"].astype(str).str.strip().str.upper() == "US"] if "ตลาด (US/TH)" in df_dc.columns else df_dc
         
+        # สร้าง Map เช็กจำนวนหุ้นคงเหลือปัจจุบันใน Dime_Portfolio (US)
+        us_port_map = {}
+        if not df_dime_us.empty:
+            df_us_clean = df_dime_us.copy()
+            df_us_clean.columns = [str(c).strip() for c in df_us_clean.columns]
+            sym_col = next((c for c in df_us_clean.columns if 'หุ้น' in c or 'ticker' in c.lower() or 'sym' in c.lower()), None)
+            vol_col = next((c for c in df_us_clean.columns if 'จำนวน' in c or 'volume' in c.lower() or 'qty' in c.lower()), None)
+            if sym_col and vol_col:
+                for _, p_row in df_us_clean.iterrows():
+                    p_sym = str(p_row[sym_col]).strip().upper()
+                    try:
+                        p_qty = float(str(p_row[vol_col]).replace(",", "").replace("$", ""))
+                    except: p_qty = 0.0
+                    if p_sym:
+                        us_port_map[p_sym] = us_port_map.get(p_sym, 0.0) + p_qty
+
         for _, r in df_dc_us.iterrows():
             sym = str(r.get('หุ้น (Ticker)') or r.get('Ticker') or r.get('Symbol', '')).strip().upper()
             if not sym or sym in SPLIT_STOCKS: continue
@@ -347,6 +363,10 @@ with tab_us_pnl:
             if qty > 0 and buy_p > 0 and sell_p > 0:
                 pnl = qty * (sell_p - buy_p)
                 ret_pct = ((sell_p - buy_p) / buy_p * 100)
+                
+                rem_qty = us_port_map.get(sym, 0.0)
+                status_text = "ขายแล้วบางส่วน" if rem_qty > 0.0001 else "ปิดขายเกลี้ยงแล้ว"
+                
                 us_closed_summary.append({
                     "ชื่อหุ้น": sym,
                     "โบรกเกอร์": "Dime US",
@@ -355,7 +375,7 @@ with tab_us_pnl:
                     "ราคาขายเฉลี่ย ($)": sell_p,
                     "กำไร/ขาดทุนสุทธิ ($)": pnl,
                     "ผลตอบแทน (%)": ret_pct,
-                    "สถานะ": "ปิดขายเกลี้ยงแล้ว"
+                    "สถานะ": status_text
                 })
 
     if us_closed_summary:
@@ -395,6 +415,22 @@ with tab_th_pnl:
     
     th_closed_summary = []
     
+    # ดึง Map จำนวนหุ้นคงเหลือในพอร์ตปัจจุบันของหุ้นไทย (Dime_TH_Portfolio)
+    th_port_map = {}
+    if not df_dime_th.empty:
+        df_th_clean = df_dime_th.copy()
+        df_th_clean.columns = [str(c).strip() for c in df_th_clean.columns]
+        sym_col = next((c for c in df_th_clean.columns if 'หุ้น' in c or 'ticker' in c.lower() or 'sym' in c.lower()), None)
+        vol_col = next((c for c in df_th_clean.columns if 'จำนวน' in c or 'volume' in c.lower() or 'qty' in c.lower()), None)
+        if sym_col and vol_col:
+            for _, p_row in df_th_clean.iterrows():
+                p_sym = str(p_row[sym_col]).strip().upper()
+                try:
+                    p_qty = float(str(p_row[vol_col]).replace(",", "").replace("฿", ""))
+                except: p_qty = 0.0
+                if p_sym:
+                    th_port_map[p_sym] = th_port_map.get(p_sym, 0.0) + p_qty
+
     if not df_dime_closed.empty:
         df_dc = df_dime_closed.copy()
         df_dc.columns = [str(c).strip() for c in df_dc.columns]
@@ -416,6 +452,11 @@ with tab_th_pnl:
                 if qty > 0 and buy_p > 0 and sell_p > 0:
                     pnl = qty * (sell_p - buy_p)
                     ret_pct = ((sell_p - buy_p) / buy_p * 100)
+                    
+                    # ตรวจสอบจำนวนหุ้นคงเหลือจริงใน Dime_TH_Portfolio
+                    rem_qty = th_port_map.get(sym, 0.0)
+                    status_text = "ขายแล้วบางส่วน" if rem_qty > 0.0001 else "ปิดขายเกลี้ยงแล้ว"
+                    
                     th_closed_summary.append({
                         "ชื่อหุ้น": sym,
                         "โบรกเกอร์": "Dime TH",
@@ -424,7 +465,7 @@ with tab_th_pnl:
                         "ราคาขายเฉลี่ย (฿)": sell_p,
                         "กำไร/ขาดทุนสุทธิ (฿)": pnl,
                         "ผลตอบแทน (%)": ret_pct,
-                        "สถานะ": "ปิดขายเกลี้ยงแล้ว"
+                        "สถานะ": status_text
                     })
 
     if th_closed_summary:
