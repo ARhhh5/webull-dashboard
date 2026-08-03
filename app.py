@@ -6,7 +6,14 @@ from datetime import datetime
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import gspread
+
+# ตรวจสอบการ Import gspread สำหรับจัดการ Google Sheets
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    HAS_GSPREAD = True
+except ImportError:
+    HAS_GSPREAD = False
 
 # ==========================================
 # 1. PAGE CONFIGURATION & GLOBAL STYLE
@@ -218,7 +225,68 @@ def inject_custom_css():
 inject_custom_css()
 
 # ==========================================
-# 2. DASHBOARD MAIN RENDER FUNCTION
+# 2. GOOGLE SHEETS DATA PIPELINE
+# ==========================================
+def get_gspread_client():
+    """เชื่อมต่อ Google Sheets API จาก Secrets"""
+    if not HAS_GSPREAD:
+        return None
+    try:
+        scopes = [
+            "https://www.googleapis.com/auth/spreadsheets",
+            "https://www.googleapis.com/auth/drive"
+        ]
+        if "gcp_service_account" in st.secrets:
+            creds = Credentials.from_service_account_info(
+                st.secrets["gcp_service_account"],
+                scopes=scopes
+            )
+            return gspread.authorize(creds)
+    except Exception:
+        pass
+    return None
+
+def sync_portfolio_snapshot_to_gsheet(market_val, invested_val, pnl_val, pnl_pct):
+    """บันทึกแถวใหม่ลงใน Sheet Portfolio_History"""
+    client = get_gspread_client()
+    if not client:
+        return False, "ไม่พบการเชื่อมต่อ GCP Service Account ใน st.secrets"
+    
+    sheet_title = st.secrets.get("SPREADSHEET_NAME", "Webull_Portfolio")
+    try:
+        sh = client.open(sheet_title)
+        worksheet = sh.worksheet("Portfolio_History")
+        
+        # รูปแบบ Timestamp แบบในรูปของบอส: YYYY-MM-DD HH:MM:SS
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # แถวข้อมูล: Timestamp, Market Value, Invested, Return, Return %
+        new_row = [now_str, round(market_val, 2), round(invested_val, 2), round(pnl_val, 2), f"{pnl_pct:.2f}%"]
+        worksheet.append_row(new_row)
+        return True, "บันทึกประวัติลง Google Sheets สำเร็จ!"
+    except Exception as e:
+        return False, f"เกิดข้อผิดพลาดในการเขียน Google Sheets: {str(e)}"
+
+def load_history_from_gsheet():
+    """ดึงข้อมูลประวัติย้อนหลังเพื่อวาดกราฟ"""
+    client = get_gspread_client()
+    if not client:
+        return None
+    try:
+        sheet_title = st.secrets.get("SPREADSHEET_NAME", "Webull_Portfolio")
+        sh = client.open(sheet_title)
+        worksheet = sh.worksheet("Portfolio_History")
+        data = worksheet.get_all_values()
+        if len(data) > 1:
+            df = pd.DataFrame(data[1:], columns=["Timestamp", "MarketValue", "Invested", "PnL", "PnLPct"])
+            df["MarketValue"] = pd.to_numeric(df["MarketValue"], errors='coerce')
+            return df
+    except Exception:
+        pass
+    return None
+
+# ==========================================
+# 3. DASHBOARD MAIN RENDER FUNCTION
 # ==========================================
 def render_dashboard():
     sample_stocks = [
@@ -303,21 +371,36 @@ def render_dashboard():
             selected_tf = st.select_slider("Timeframe Range", options=["1D", "7D", "1M", "3M", "6M", "1Y", "3Y", "5Y", "MAX"], value="6M")
         with tf_col2:
             st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
-            if st.button("🔄 Sync Snapshot", use_container_width=True):
-                st.toast("✅ บันทึกประวัติ Snapshot สำเร็จ!", icon="🎉")
+            if st.button("🔄 Sync Snapshot", use_container_width=True, type="primary"):
+                with st.spinner("⏳ กำลังบันทึกประวัติลง Portfolio_History..."):
+                    success, msg = sync_portfolio_snapshot_to_gsheet(
+                        tot_market_usd, tot_invested_usd, tot_pnl_usd, tot_pnl_pct
+                    )
+                    if success:
+                        st.toast(f"✅ {msg}", icon="🎉")
+                        st.rerun()
+                    else:
+                        st.error(f"❌ {msg}")
 
-        tf_points_map = {
-            "1D": (['9:30', '11:00', '13:00', '15:00', '16:00'], [43500, 43700, 43600, 43800, tot_market_usd]),
-            "7D": (['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], [42800, 43000, 42900, 43200, 43500, 43700, tot_market_usd]),
-            "1M": (['W1', 'W2', 'W3', 'W4'], [41500, 42200, 43100, tot_market_usd]),
-            "3M": (['May', 'Jun', 'Jul'], [40000, 42000, tot_market_usd]),
-            "6M": (['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'], [42000, 45000, 41000, 46000, 44500, 47800, tot_market_usd]),
-            "1Y": (['Q1', 'Q2', 'Q3', 'Q4'], [38000, 41000, 44000, tot_market_usd]),
-            "3Y": (['2024', '2025', '2026'], [30000, 39000, tot_market_usd]),
-            "5Y": (['2022', '2023', '2024', '2025', '2026'], [20000, 26000, 32000, 39000, tot_market_usd]),
-            "MAX": (['Start', '2023', '2024', '2025', '2026'], [15000, 25000, 32000, 39000, tot_market_usd])
-        }
-        x_axis, y_axis = tf_points_map.get(selected_tf, tf_points_map["6M"])
+        # ดึงข้อมูลจริงจาก Google Sheets
+        df_history = load_history_from_gsheet()
+        
+        if df_history is not None and not df_history.empty:
+            x_axis = df_history["Timestamp"].tolist()
+            y_axis = (df_history["MarketValue"] if is_usd else (df_history["MarketValue"] * usd_fx_rate)).tolist()
+        else:
+            tf_points_map = {
+                "1D": (['9:30', '11:00', '13:00', '15:00', '16:00'], [43500, 43700, 43600, 43800, display_market]),
+                "7D": (['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], [42800, 43000, 42900, 43200, 43500, 43700, display_market]),
+                "1M": (['W1', 'W2', 'W3', 'W4'], [41500, 42200, 43100, display_market]),
+                "3M": (['May', 'Jun', 'Jul'], [40000, 42000, display_market]),
+                "6M": (['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'], [42000, 45000, 41000, 46000, 44500, 47800, display_market]),
+                "1Y": (['Q1', 'Q2', 'Q3', 'Q4'], [38000, 41000, 44000, display_market]),
+                "3Y": (['2024', '2025', '2026'], [30000, 39000, display_market]),
+                "5Y": (['2022', '2023', '2024', '2025', '2026'], [20000, 26000, 32000, 39000, display_market]),
+                "MAX": (['Start', '2023', '2024', '2025', '2026'], [15000, 25000, 32000, 39000, display_market])
+            }
+            x_axis, y_axis = tf_points_map.get(selected_tf, tf_points_map["6M"])
         
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=x_axis, y=y_axis, mode='lines+markers', line=dict(color='#38bdf8', width=3, shape='spline'), fill='tozeroy', fillcolor='rgba(56, 189, 248, 0.05)'))
@@ -355,7 +438,7 @@ def load_page_module(file_name):
         st.warning(f"⚠️ ไม่พบไฟล์ระบบย่อยที่ตำแหน่ง: `pages/{file_name}.py`")
 
 # ==========================================
-# 3. SIDEBAR NAVIGATION
+# 4. SIDEBAR NAVIGATION
 # ==========================================
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "Dashboard"
@@ -416,7 +499,7 @@ with st.sidebar:
             st.rerun()
 
 # ==========================================
-# 4. PAGE SWITCHER ROUTER
+# 5. PAGE SWITCHER ROUTER
 # ==========================================
 selected_page = st.session_state["current_page"]
 
