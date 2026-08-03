@@ -371,45 +371,48 @@ with st.sidebar:
     st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
 
     # --- SECTION 1.0 PORTFOLIO ---
-    with st.expander("📁 1.0 Portfolio", expanded=True):
-        if st.button("📊 1.1 Portfolio Holdings", use_container_width=True):
+    with st.expander("📁 Portfolio", expanded=True):
+        if st.button("📊 Portfolio Holdings", use_container_width=True):
             st.session_state["current_page"] = "1.1_Portfolio"
             st.rerun()
-        if st.button("⚡ 1.2 Trade Execution", use_container_width=True):
+        if st.button("⚡ Trade Execution", use_container_width=True):
             st.session_state["current_page"] = "1.2_Trade_Execution"
             st.rerun()
-        if st.button("📜 1.3 Trade History", use_container_width=True):
+        if st.button("📜 Trade History", use_container_width=True):
             st.session_state["current_page"] = "1.3_History"
             st.rerun()
-        if st.button("💰 1.4 Dividends", use_container_width=True):
+        if st.button("💰 Dividends", use_container_width=True):
             st.session_state["current_page"] = "1.4_Dividends"
             st.rerun()
 
     # --- SECTION 2.0 PORTFOLIO MANAGEMENT TOOLS ---
-    with st.expander("🛠️ 2.0 Portfolio Management Tools", expanded=True):
-        if st.button("🎯 2.1 Winner Tilt", use_container_width=True):
+    with st.expander("🛠️ Portfolio Management Tools", expanded=True):
+        if st.button("🎯 Winner Tilt", use_container_width=True):
             st.session_state["current_page"] = "2.1_Winner_Tilt"
             st.rerun()
-        if st.button("🛡️ 2.2 Portfolio Risk Desk", use_container_width=True):
+        if st.button("🛡️ Portfolio Risk Desk", use_container_width=True):
             st.session_state["current_page"] = "2.2_Portfolio_Risk_Desk"
             st.rerun()
-        if st.button("📐 2.3 MM Calculator", use_container_width=True):
+        if st.button("📐 MM Calculator", use_container_width=True):
             st.session_state["current_page"] = "2.3_MM_Calculator"
             st.rerun()
-        if st.button("📰 2.4 News", use_container_width=True):
+        if st.button("📰 Market News", use_container_width=True):
             st.session_state["current_page"] = "2.4_News"
             st.rerun()
 
     # --- SECTION 3.0 AI STOCK SELECTION & BUYING DECISIONS ---
-    with st.expander("🧠 3.0 AI Stock Selection", expanded=True):
-        if st.button("🎯 3.1 AI Fundamental (GOD MODE)", use_container_width=True):
+    with st.expander("🧠 AI Stock Selection", expanded=True):
+        if st.button("🎯 AI Fundamental (GOD MODE)", use_container_width=True):
             st.session_state["current_page"] = "3.1_AI_Fundamental"
             st.rerun()
-        if st.button("💎 3.2 Diamond Hunter OS (v3.0)", use_container_width=True):
+        if st.button("💎 Diamond Hunter OS (v3.0)", use_container_width=True):
             st.session_state["current_page"] = "3.2_Diamond_Hunter"
             st.rerun()
-        if st.button("🔍 3.3 Peer Comparison", use_container_width=True):
+        if st.button("🔍 Peer Comparison", use_container_width=True):
             st.session_state["current_page"] = "3.3_Peer_Comparison"
+            st.rerun()
+        if st.button("🧠 Multi-Brain Guru AI", use_container_width=True):
+            st.session_state["current_page"] = "3.4_Multi_Brain_AI"
             st.rerun()
 
 # ==========================================
