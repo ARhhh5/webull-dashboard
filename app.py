@@ -1,5 +1,6 @@
 import os
 import json
+import re
 import base64
 import importlib.util
 from datetime import datetime
@@ -228,7 +229,7 @@ inject_custom_css()
 # 2. GOOGLE SHEETS DATA PIPELINE
 # ==========================================
 def get_gspread_client():
-    """เชื่อมต่อ Google Sheets API จาก Secrets"""
+    """เชื่อมต่อ Google Sheets API โดยสแกนหา Credentials จาก Secrets ทุกตำแหน่งที่เป็นไปได้"""
     if not HAS_GSPREAD:
         return None
     try:
@@ -236,11 +237,20 @@ def get_gspread_client():
             "https://www.googleapis.com/auth/spreadsheets",
             "https://www.googleapis.com/auth/drive"
         ]
+        
+        creds_dict = None
+        # 1. เช็กคีย์ gcp_service_account
         if "gcp_service_account" in st.secrets:
-            creds = Credentials.from_service_account_info(
-                st.secrets["gcp_service_account"],
-                scopes=scopes
-            )
+            creds_dict = dict(st.secrets["gcp_service_account"])
+        # 2. เช็กคีย์ connections.gsheets
+        elif "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            creds_dict = dict(st.secrets["connections"]["gsheets"])
+        # 3. เช็กว่าวางคีย์ไว้ที่ Root Secrets หรือไม่
+        elif "type" in st.secrets and st.secrets["type"] == "service_account":
+            creds_dict = dict(st.secrets)
+
+        if creds_dict:
+            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
             return gspread.authorize(creds)
     except Exception:
         pass
@@ -250,22 +260,33 @@ def sync_portfolio_snapshot_to_gsheet(market_val, invested_val, pnl_val, pnl_pct
     """บันทึกแถวใหม่ลงใน Sheet Portfolio_History"""
     client = get_gspread_client()
     if not client:
-        return False, "ไม่พบการเชื่อมต่อ GCP Service Account ใน st.secrets"
+        return False, "ไม่พบการตั้งค่า Service Account ใน st.secrets"
     
-    sheet_title = st.secrets.get("SPREADSHEET_NAME", "Webull_Portfolio")
+    # ดึงชื่อ Spreadsheet
+    sheet_title = st.secrets.get("SPREADSHEET_NAME", "")
+    if not sheet_title and "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+        sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", "")
+    if not sheet_title:
+        sheet_title = "Webull_Portfolio" # Fallback Default Name
+
     try:
-        sh = client.open(sheet_title)
+        # พยายามเปิดด้วยชื่อ ถ้าไม่ได้ให้พยายามเปิดด้วย URL/ID
+        try:
+            sh = client.open(sheet_title)
+        except Exception:
+            sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
+
         worksheet = sh.worksheet("Portfolio_History")
         
-        # รูปแบบ Timestamp แบบในรูปของบอส: YYYY-MM-DD HH:MM:SS
+        # รูปแบบ Timestamp YYYY-MM-DD HH:MM:SS
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # แถวข้อมูล: Timestamp, Market Value, Invested, Return, Return %
+        # เพิ่มแถวข้อมูลใหม่
         new_row = [now_str, round(market_val, 2), round(invested_val, 2), round(pnl_val, 2), f"{pnl_pct:.2f}%"]
         worksheet.append_row(new_row)
         return True, "บันทึกประวัติลง Google Sheets สำเร็จ!"
     except Exception as e:
-        return False, f"เกิดข้อผิดพลาดในการเขียน Google Sheets: {str(e)}"
+        return False, f"เชื่อมต่อ Google Sheets ไม่สำเร็จ: {str(e)}"
 
 def load_history_from_gsheet():
     """ดึงข้อมูลประวัติย้อนหลังเพื่อวาดกราฟ"""
@@ -274,12 +295,34 @@ def load_history_from_gsheet():
         return None
     try:
         sheet_title = st.secrets.get("SPREADSHEET_NAME", "Webull_Portfolio")
-        sh = client.open(sheet_title)
+        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
+            
+        try:
+            sh = client.open(sheet_title)
+        except Exception:
+            sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
+
         worksheet = sh.worksheet("Portfolio_History")
         data = worksheet.get_all_values()
-        if len(data) > 1:
-            df = pd.DataFrame(data[1:], columns=["Timestamp", "MarketValue", "Invested", "PnL", "PnLPct"])
-            df["MarketValue"] = pd.to_numeric(df["MarketValue"], errors='coerce')
+        
+        if len(data) > 0:
+            df = pd.DataFrame(data)
+            # เช็กว่าแถวแรกเป็น Header หรือข้อมูลจริง
+            first_val = str(df.iloc[0, 0]).strip()
+            if not first_val.replace("-", "").replace(":", "").replace(" ", "").isdigit():
+                df = df.iloc[1:].reset_index(drop=True)
+                
+            df.columns = ["Timestamp", "MarketValue", "Invested", "PnL", "PnLPct"][:len(df.columns)]
+            
+            # Clean ตัวเลข ลบลูกน้ำ , และ %
+            def clean_num(val):
+                if pd.isna(val): return 0.0
+                val_str = str(val).replace(",", "").replace("%", "").strip()
+                try: return float(val_str)
+                except: return 0.0
+
+            df["MarketValue"] = df["MarketValue"].apply(clean_num)
             return df
     except Exception:
         pass
@@ -382,7 +425,7 @@ def render_dashboard():
                     else:
                         st.error(f"❌ {msg}")
 
-        # ดึงข้อมูลจริงจาก Google Sheets
+        # ดึงข้อมูลประวัติจาก Google Sheets มาวาดกราฟจริง
         df_history = load_history_from_gsheet()
         
         if df_history is not None and not df_history.empty:
