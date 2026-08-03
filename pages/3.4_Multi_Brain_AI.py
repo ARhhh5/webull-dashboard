@@ -1,5 +1,6 @@
-import base64
+import os
 import json
+import base64
 import streamlit as st
 
 # ตรวจสอบการ Import google.generativeai
@@ -41,28 +42,18 @@ st.markdown("""
         margin-bottom: 15px;
     }
 
-    .chat-bubble-user {
-        background-color: #1e293b;
-        color: #f8fafc;
-        padding: 12px 16px;
-        border-radius: 12px 12px 2px 12px;
-        margin-bottom: 10px;
-        max-width: 80%;
-        margin-left: auto;
-    }
-
-    .chat-bubble-ai {
-        background-color: #0f172a;
-        border: 1px solid #1e293b;
-        color: #e2e8f0;
-        padding: 14px 18px;
-        border-radius: 12px 12px 12px 2px;
-        margin-bottom: 15px;
-        max-width: 90%;
+    .status-badge {
+        background-color: rgba(56, 189, 248, 0.1);
+        color: #38bdf8;
+        padding: 4px 10px;
+        border-radius: 6px;
+        font-size: 0.78rem;
+        font-weight: 600;
+        border: 1px solid rgba(56, 189, 248, 0.2);
     }
 
     /* Custom Input Controls */
-    div[data-baseweb="input"] > div, div[data-baseweb="select"] > div {
+    div[data-baseweb="input"] > div, div[data-baseweb="select"] > div, div[data-baseweb="textarea"] > div {
         background-color: #141822 !important;
         border-color: #1a1d24 !important;
         color: #ffffff !important;
@@ -73,10 +64,40 @@ st.markdown("""
 
 # Minimal Header
 st.markdown('<div class="page-title-minimal">🧠 3.4 Multi-Brain Guru AI Council</div>', unsafe_allow_html=True)
-st.markdown('<div class="page-subtitle-minimal">ระบบโคลนสมองกูรูระดับโลก ประเมินและเปรียบเทียบมุมมองการลงทุนต่างแนวคิด</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-subtitle-minimal">ระบบโคลนสมองกูรูระดับโลก พร้อมระบบโหลด Knowledge Base จากไฟล์ Local Auto-Sync</div>', unsafe_allow_html=True)
 
 # ==========================================
-# 2. GURU BRAIN PROMPTS & KNOWLEDGE BASE
+# 2. KNOWLEDGE BASE LOADER FUNCTION
+# ==========================================
+KNOWLEDGE_DIR = "knowledge"
+
+def load_local_knowledge(guru_key):
+    """ฟังก์ชันโหลดข้อความจากไฟล์ .txt หรือ .json ในโฟลเดอร์ knowledge/"""
+    file_map = {
+        "CK Cheong (Fastwork)": ["ck_cheong.txt", "ck_cheong.json", "ck.txt"],
+        "Warren Buffett (Value Investor)": ["buffett.txt", "warren_buffett.txt"],
+        "Cathie Wood (ARK Invest)": ["cathie.txt", "cathie_wood.txt"]
+    }
+    
+    if not os.path.exists(KNOWLEDGE_DIR):
+        os.makedirs(KNOWLEDGE_DIR, exist_ok=True)
+        
+    possible_files = file_map.get(guru_key, [])
+    for file_name in possible_files:
+        file_path = os.path.join(KNOWLEDGE_DIR, file_name)
+        if os.path.exists(file_path):
+            try:
+                with open(file_path, "r", encoding="utf-8") as f:
+                    if file_name.endswith(".json"):
+                        data = json.load(f)
+                        return json.dumps(data, ensure_ascii=False)
+                    return f.read()
+            except Exception as e:
+                st.error(f"❌ อ่านไฟล์ {file_name} ไม่สำเร็จ: {str(e)}")
+    return ""
+
+# ==========================================
+# 3. GURU BRAIN PROMPTS (DEFAULT SYSTEM)
 # ==========================================
 GURU_PROMPTS = {
     "CK Cheong (Fastwork)": """คุณคือ CK Cheong (CEO ของ Fastwork)
@@ -97,7 +118,7 @@ GURU_PROMPTS = {
 }
 
 # ==========================================
-# 3. SECRETS & SETUP
+# 4. SECRETS & SETUP
 # ==========================================
 gemini_api_key = st.secrets.get("GEMINI_API_KEY", "")
 if not gemini_api_key:
@@ -107,7 +128,7 @@ if not gemini_api_key:
             break
 
 # ==========================================
-# 4. UI LAYOUT & BRAIN SELECTION
+# 5. UI LAYOUT & BRAIN SELECTION
 # ==========================================
 col_setup, col_chat = st.columns([1.2, 2.8])
 
@@ -126,9 +147,20 @@ with col_setup:
     )
     
     st.markdown("---")
+    st.markdown("📁 **สถานะ Knowledge Base (ไฟล์ Local):**")
+    
+    local_kb_text = load_local_knowledge(selected_guru)
+    if local_kb_text:
+        st.markdown(f'<span class="status-badge">🟢 โหลดข้อมูลไฟล์ Local สำเร็จ ({len(local_kb_text):,} ตัวอักษร)</span>', unsafe_allow_html=True)
+        st.caption(f"ระบบกำลังใช้คลังข้อมูลเฉพาะของ {selected_guru} จากโฟลเดอร์ `knowledge/`")
+    else:
+        st.markdown('<span class="status-badge" style="color:#f59e0b; border-color:rgba(245,158,11,0.2); background:rgba(245,158,11,0.1);">🟠 ใช้สมองตั้งต้น (ไม่พบไฟล์ .txt ใน knowledge/)</span>', unsafe_allow_html=True)
+        st.caption("วางไฟล์ `ck_cheong.txt` ในโฟลเดอร์ `knowledge/` เพื่อยกระดับความแม่นยำได้ทันที")
+
+    st.markdown("---")
     st.markdown("🔗 **เสริมข้อมูลสดจาก YouTube (Optional):**")
     yt_url = st.text_input("วางลิงก์ YouTube เพิ่มเติม (ถ้ามี):", placeholder="https://www.youtube.com/watch?v=...")
-    st.caption("ระบบจะดึงเนื้อหาในลิงก์มาประมวลผลร่วมกับสมองของกูรูทันที")
+    st.caption("ระบบจะนำเนื้อหาในลิงก์มาประมวลผลร่วมกับสมองของกูรูทันที")
     st.markdown('</div>', unsafe_allow_html=True)
 
 with col_chat:
@@ -144,7 +176,7 @@ with col_chat:
         elif not HAS_GENAI or not gemini_api_key:
             st.error("🚨 กรุณาตรวจสอบการตั้งค่า GEMINI_API_KEY หรือ Library google-generativeai")
         else:
-            with st.spinner("🧠 AI กำลังใช้ประมวลผลทางความคิด..."):
+            with st.spinner("🧠 AI กำลังประมวลผลและตกผลึกความคิด..."):
                 try:
                     genai.configure(api_key=gemini_api_key)
                     try:
@@ -152,11 +184,13 @@ with col_chat:
                     except Exception:
                         model = genai.GenerativeModel('gemini-1.5-flash')
 
-                    context_addon = f"\n[ลิงก์อ้างอิงเพิ่มเติม: {yt_url}]" if yt_url else ""
+                    context_addon = f"\n[ข้อมูลอ้างอิงสดจาก YouTube: {yt_url}]" if yt_url else ""
 
                     if mode == "💬 สนทนาเดี่ยว (Single Guru)":
                         system_prompt = GURU_PROMPTS[selected_guru]
-                        full_prompt = f"{system_prompt}\n\nโจทย์จากผู้ใช้: {user_query}{context_addon}"
+                        kb_content = f"\n\n[คลังข้อมูลความรู้เฉพาะตัวของ {selected_guru}]:\n{local_kb_text}" if local_kb_text else ""
+                        full_prompt = f"{system_prompt}{kb_content}\n\nโจทย์จากผู้ใช้: {user_query}{context_addon}"
+                        
                         response = model.generate_content(full_prompt)
                         
                         st.markdown(f"### 🤖 มุมมองจาก {selected_guru}")
@@ -168,13 +202,16 @@ with col_chat:
                         st.markdown("---")
                         
                         for guru_name, persona_prompt in GURU_PROMPTS.items():
-                            full_prompt = f"{persona_prompt}\n\nโจทย์จากผู้ใช้: {user_query}{context_addon}"
+                            guru_kb = load_local_knowledge(guru_name)
+                            kb_content = f"\n\n[คลังข้อมูลความรู้เฉพาะตัวของ {guru_name}]:\n{guru_kb}" if guru_kb else ""
+                            full_prompt = f"{persona_prompt}{kb_content}\n\nโจทย์จากผู้ใช้: {user_query}{context_addon}"
+                            
                             res = model.generate_content(full_prompt)
                             
                             with st.expander(f"🧠 มุมมองของ {guru_name}", expanded=True):
                                 st.markdown(res.text)
 
                 except Exception as e:
-                    st.error(f"❌ เกิดข้อผิดพลาด: {str(e)}")
+                    st.error(f"❌ เกิดข้อผิดพลาดในการประมวลผล: {str(e)}")
                     
     st.markdown('</div>', unsafe_allow_html=True)
