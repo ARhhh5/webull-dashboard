@@ -1,17 +1,6 @@
-import os
-import json
-import base64
-import urllib.parse
-import http.client
-import uuid
-import hmac
-import hashlib
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
-import yfinance as yf
-import gspread
-from datetime import datetime, timezone
 
 # ==========================================
 # 1. PAGE STYLE & MINIMAL CARD CSS
@@ -119,198 +108,9 @@ with c_curr:
         index=0
     )
 
-# Config & API Setup
-webull_config = st.secrets.get("Webull", {})
-APP_KEY = webull_config.get("AppKey", "").strip()
-APP_SECRET = webull_config.get("AppSecret", "").strip()
-ACCESS_TOKEN = webull_config.get("AccessToken", "").strip()
-ACCOUNT_ID = webull_config.get("AccountId", "").strip()
-HOST = "api.webull.co.th"
-
-@st.cache_data(ttl=60)
-def get_usd_thb_rate():
-    try:
-        ticker = yf.Ticker("USDTHB=X")
-        rate = ticker.fast_info.get('last_price') or ticker.info.get('regularMarketPrice') or 35.0
-        return float(rate)
-    except:
-        return 35.0
-
-fx_rate = get_usd_thb_rate()
-
-def get_webull_live_prices():
-    path = "/openapi/assets/positions"
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    nonce = uuid.uuid4().hex
-    signing_values = {"host": HOST, "x-app-key": APP_KEY, "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-signature-version": "1.0", "x-timestamp": timestamp, "account_id": ACCOUNT_ID}
-    string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
-    signature = base64.b64encode(hmac.new(f"{APP_SECRET}&".encode("utf-8"), urllib.parse.quote(f"{path}&{string_1}", safe="").encode("utf-8"), hashlib.sha1).digest()).decode("utf-8")
-    headers = {"Accept": "application/json", "x-app-key": APP_KEY, "x-timestamp": timestamp, "x-signature-version": "1.0", "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-version": "v2", "x-signature": signature, "x-access-token": ACCESS_TOKEN}
-    
-    prices = {}
-    try:
-        conn = http.client.HTTPSConnection(HOST)
-        conn.request("GET", f"{path}?account_id={ACCOUNT_ID}", "", headers)
-        res = conn.getresponse()
-        data = json.loads(res.read().decode("utf-8"))
-        if isinstance(data, list):
-            for p in data:
-                prices[str(p.get("symbol")).upper()] = float(p.get("last_price", 0))
-    except:
-        pass
-    return prices
-
-def get_webull_holdings():
-    path = "/openapi/assets/positions"
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    nonce = uuid.uuid4().hex
-    signing_values = {"host": HOST, "x-app-key": APP_KEY, "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-signature-version": "1.0", "x-timestamp": timestamp, "account_id": ACCOUNT_ID}
-    string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
-    signature = base64.b64encode(hmac.new(f"{APP_SECRET}&".encode("utf-8"), urllib.parse.quote(f"{path}&{string_1}", safe="").encode("utf-8"), hashlib.sha1).digest()).decode("utf-8")
-    headers = {"Accept": "application/json", "x-app-key": APP_KEY, "x-timestamp": timestamp, "x-signature-version": "1.0", "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-version": "v2", "x-signature": signature, "x-access-token": ACCESS_TOKEN}
-    
-    holdings = []
-    try:
-        conn = http.client.HTTPSConnection(HOST)
-        conn.request("GET", f"{path}?account_id={ACCOUNT_ID}", "", headers)
-        res = conn.getresponse()
-        data = json.loads(res.read().decode("utf-8"))
-        if isinstance(data, list):
-            for p in data:
-                if p.get("instrument_type") == "EQUITY":
-                    holdings.append({
-                        "Symbol": str(p.get("symbol", "")).strip().upper(),
-                        "Qty": float(p.get("quantity", 0)),
-                        "Cost": float(p.get("cost_price", 0)),
-                        "Broker": "Webull"
-                    })
-    except:
-        pass
-    return holdings
-
-def get_dime_us_holdings():
-    holdings = []
-    try:
-        google_secrets = st.secrets.get("Google", {})
-        cred_base64 = google_secrets.get("credentials_base64", "")
-        if cred_base64:
-            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
-            gc = gspread.service_account_from_dict(cred_dict)
-            sh = gc.open("หุ้นของเรา")
-            worksheet = sh.worksheet("Dime_Portfolio")
-            records = worksheet.get_all_records()
-            for r in records:
-                sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
-                if sym:
-                    holdings.append({
-                        "Symbol": sym,
-                        "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
-                        "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
-                        "Broker": "Dime US",
-                        "Manual_Price": r.get("ราคาปัจจุบันล็อก (Manual Price)", "")
-                    })
-    except:
-        pass
-    return holdings
-
-def get_dime_th_holdings():
-    holdings = []
-    try:
-        google_secrets = st.secrets.get("Google", {})
-        cred_base64 = google_secrets.get("credentials_base64", "")
-        if cred_base64:
-            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
-            gc = gspread.service_account_from_dict(cred_dict)
-            sh = gc.open("หุ้นของเรา")
-            worksheet = sh.worksheet("Dime_TH_Portfolio")
-            records = worksheet.get_all_records()
-            for r in records:
-                sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
-                if sym:
-                    holdings.append({
-                        "Symbol": sym,
-                        "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
-                        "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
-                        "Broker": "Dime TH"
-                    })
-    except:
-        pass
-    return holdings
-
-# Load All Portfolio Data
-with st.spinner("⏳ Loading portfolio data..."):
-    webull_prices = get_webull_live_prices()
-    w_holdings = get_webull_holdings()
-    d_us_holdings = get_dime_us_holdings()
-    d_th_holdings = get_dime_th_holdings()
-    
-    all_holdings = w_holdings + d_us_holdings + d_th_holdings
-    
-    if all_holdings:
-        df_raw = pd.DataFrame(all_holdings)
-        live_prices = {}
-        
-        for index, row in df_raw.iterrows():
-            sym = row['Symbol']
-            broker = row['Broker']
-            
-            if broker == "Webull" and sym in webull_prices and webull_prices[sym] > 0:
-                live_prices[sym] = webull_prices[sym]
-            elif broker == "Dime US" and row.get("Manual_Price") != "" and row.get("Manual_Price") is not None:
-                try:
-                    live_prices[sym] = float(row["Manual_Price"])
-                except:
-                    live_prices[sym] = 0.0
-            
-            if sym not in live_prices or live_prices[sym] == 0.0:
-                yf_sym = f"{sym}.BK" if broker == "Dime TH" and not sym.endswith(".BK") else sym
-                try:
-                    t_data = yf.Ticker(yf_sym)
-                    p = t_data.info.get('currentPrice') or t_data.info.get('regularMarketPrice') or t_data.fast_info.get('last_price')
-                    if not p:
-                        h = t_data.history(period="1d")
-                        if not h.empty: p = h['Close'].iloc[-1]
-                    live_prices[sym] = float(p) if p else 0.0
-                except:
-                    live_prices[sym] = 0.0
-
-        portfolio_rows = []
-        for index, row in df_raw.iterrows():
-            sym = row['Symbol']
-            qty = row['Qty']
-            cost_in = row['Cost']
-            broker = row['Broker']
-            
-            price_raw = live_prices.get(sym, 0)
-            if price_raw == 0: price_raw = cost_in
-            
-            if broker == "Dime TH":
-                invested_usd = (qty * cost_in) / fx_rate
-                market_val_usd = (qty * price_raw) / fx_rate
-            else:
-                invested_usd = qty * cost_in
-                market_val_usd = qty * price_raw
-                
-            pnl_usd = market_val_usd - invested_usd
-            pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd > 0 else 0.0
-            
-            portfolio_rows.append({
-                "Symbol": sym,
-                "Broker": broker,
-                "Qty": qty,
-                "Cost": cost_in,
-                "Price": price_raw,
-                "Invested_USD": invested_usd,
-                "Market_Value_USD": market_val_usd,
-                "PnL_USD": pnl_usd,
-                "PnL_Pct": pnl_pct
-            })
-            
-        df_port = pd.DataFrame(portfolio_rows)
-    else:
-        df_port = pd.DataFrame()
-
-st.session_state["all_holdings_df"] = df_port
+# Get Shared Master Data
+df_port = st.session_state.get("all_holdings_df", pd.DataFrame())
+fx_rate = st.session_state.get("usd_thb_rate", 35.0)
 
 def highlight_pnl(val):
     if val is None or pd.isna(val):
@@ -402,12 +202,8 @@ if active_tab == "all":
         st.caption(f"ℹ️ อัตราแลกเปลี่ยนอ้างอิง: 1 USD = {fx_rate:.2f} THB")
         st.markdown("---")
         
-        # ------------------------------------------------
-        # CLEAN & SLEEK CHARTS SECTION
-        # ------------------------------------------------
         col_g1, col_g2 = st.columns(2)
         
-        # Chart 1: Broker Allocation Donut Chart
         with col_g1:
             st.markdown('<div class="chart-card"><div class="chart-card-title">🏦 สัดส่วนพอร์ตแยกตามโบรกเกอร์</div>', unsafe_allow_html=True)
             df_broker = df_port.groupby("Broker")["Market_Value_USD"].sum().reset_index()
@@ -433,14 +229,12 @@ if active_tab == "all":
             st.plotly_chart(fig1, use_container_width=True, config={'displayModeBar': False})
             st.markdown('</div>', unsafe_allow_html=True)
 
-        # Chart 2: Top Holdings Allocation (Fixed Overlap Issue)
         with col_g2:
             st.markdown('<div class="chart-card"><div class="chart-card-title">📈 สัดส่วนการถือครองหุ้น (Top Holdings)</div>', unsafe_allow_html=True)
             df_sym = df_port.groupby("Symbol")["Market_Value_USD"].sum().reset_index()
             df_sym["Value"] = df_sym["Market_Value_USD"] * multiplier
             df_sym = df_sym.sort_values(by="Value", ascending=False)
             
-            # Group smaller holdings into 'Others' if more than 5 stocks
             if len(df_sym) > 5:
                 top_5 = df_sym.iloc[:5].copy()
                 others_val = df_sym.iloc[5:]["Value"].sum()
