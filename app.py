@@ -426,25 +426,6 @@ def load_master_portfolio_data():
     st.session_state["usd_thb_rate"] = fx_rate
     return df_port, fx_rate
 
-def sync_portfolio_snapshot_to_gsheet(market_val, invested_val, pnl_val, pnl_pct):
-    gc = get_gspread_client()
-    if not gc:
-        return False, "ไม่พบการเชื่อมต่อ Google Sheets Credentials"
-    try:
-        sh = gc.open("หุ้นของเรา")
-        try:
-            worksheet = sh.worksheet("Portfolio_History")
-        except:
-            worksheet = sh.add_worksheet(title="Portfolio_History", rows="1000", cols="5")
-            worksheet.append_row(["Timestamp", "Market Value", "Invested Value", "PnL Value", "PnL %"])
-            
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        new_row = [now_str, round(market_val, 2), round(invested_val, 2), round(pnl_val, 2), f"{pnl_pct:.2f}%"]
-        worksheet.append_row(new_row)
-        return True, "บันทึกประวัติลง Portfolio_History สำเร็จ!"
-    except Exception as e:
-        return False, f"เกิดข้อผิดพลาดในการเขียน Google Sheets: {str(e)}"
-
 def load_history_from_gsheet():
     gc = get_gspread_client()
     if not gc:
@@ -454,23 +435,26 @@ def load_history_from_gsheet():
         worksheet = sh.worksheet("Portfolio_History")
         data = worksheet.get_all_values()
         if len(data) > 1:
-            df = pd.DataFrame(data[1:], columns=["Timestamp", "MarketValue", "Invested", "PnL", "PnLPct"])
-            def clean_num(val):
-                if pd.isna(val): return 0.0
-                return float(str(val).replace(",", "").replace("%", "").strip() or 0)
-            df["MarketValue"] = df["MarketValue"].apply(clean_num)
-            return df
+            df = pd.DataFrame(data[1:])
+            # ตรวจสอบ Columns
+            if len(df.columns) >= 3:
+                df = df.iloc[:, :5]
+                df.columns = ["Timestamp", "Invested", "MarketValue", "PnL", "PnLPct"][:len(df.columns)]
+                def clean_num(val):
+                    if pd.isna(val): return 0.0
+                    return float(str(val).replace(",", "").replace("%", "").strip() or 0)
+                df["MarketValue"] = df["MarketValue"].apply(clean_num)
+                return df
     except Exception:
         pass
     return None
 
 # ==========================================
-# 3. DASHBOARD MAIN RENDER FUNCTION
+# 3. DASHBOARD MAIN RENDER FUNCTION (VIEW ONLY)
 # ==========================================
 def render_dashboard():
     df_port, fx_rate = load_master_portfolio_data()
 
-    # Calculate Real Portfolio Totals
     if not df_port.empty:
         tot_invested_usd = df_port['Invested_USD'].sum()
         tot_market_usd = df_port['Market_Value_USD'].sum()
@@ -512,7 +496,6 @@ def render_dashboard():
     col_left, col_right = st.columns([1.1, 1.9])
 
     with col_left:
-        # Broker Breakdown
         broker_vals = df_port.groupby("Broker")["Market_Value_USD"].sum().to_dict() if not df_port.empty else {}
         webull_mkt = broker_vals.get("Webull", 0.0) * multiplier
         dime_us_mkt = broker_vals.get("Dime US", 0.0) * multiplier
@@ -551,19 +534,7 @@ def render_dashboard():
         st.markdown(card_html, unsafe_allow_html=True)
 
     with col_right:
-        tf_col1, tf_col2 = st.columns([3, 1])
-        with tf_col1:
-            selected_tf = st.select_slider("Timeframe Range", options=["1D", "7D", "1M", "3M", "6M", "1Y", "3Y", "MAX"], value="6M")
-        with tf_col2:
-            st.markdown("<div style='height: 25px;'></div>", unsafe_allow_html=True)
-            if st.button("🔄 Sync Snapshot", use_container_width=True, type="primary"):
-                with st.spinner("⏳ บันทึกประวัติลง Google Sheets..."):
-                    success, msg = sync_portfolio_snapshot_to_gsheet(tot_market_usd, tot_invested_usd, tot_pnl_usd, tot_pnl_pct)
-                    if success:
-                        st.toast(f"✅ {msg}", icon="🎉")
-                        st.rerun()
-                    else:
-                        st.error(f"❌ {msg}")
+        selected_tf = st.select_slider("Timeframe Range", options=["1D", "7D", "1M", "3M", "6M", "1Y", "3Y", "MAX"], value="6M")
 
         df_history = load_history_from_gsheet()
         if df_history is not None and not df_history.empty:
@@ -575,7 +546,7 @@ def render_dashboard():
 
         fig = go.Figure()
         fig.add_trace(go.Scatter(x=x_axis, y=y_axis, mode='lines+markers', line=dict(color='#38bdf8', width=3, shape='spline'), fill='tozeroy', fillcolor='rgba(56, 189, 248, 0.05)'))
-        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#6b7280', family='Plus Jakarta Sans'), xaxis=dict(showgrid=False, zeroline=False), yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False), margin=dict(t=10, b=10, l=10, r=10), height=250)
+        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#6b7280', family='Plus Jakarta Sans'), xaxis=dict(showgrid=False, zeroline=False), yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False), margin=dict(t=10, b=10, l=10, r=10), height=280)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # Top Holdings Section
