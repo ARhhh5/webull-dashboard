@@ -1,6 +1,14 @@
+from datetime import datetime
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+
+try:
+    import gspread
+    from google.oauth2.service_account import Credentials
+    HAS_GSPREAD = True
+except ImportError:
+    HAS_GSPREAD = False
 
 # ==========================================
 # 1. PAGE STYLE & MINIMAL CARD CSS
@@ -94,6 +102,44 @@ st.markdown("""
     </style>
 """, unsafe_allow_html=True)
 
+# Helper Function for Google Sheets Connection
+def get_gspread_client():
+    if not HAS_GSPREAD:
+        return None
+    try:
+        import json, base64
+        google_secrets = st.secrets.get("Google", {})
+        cred_base64 = google_secrets.get("credentials_base64", "")
+        if cred_base64:
+            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
+            return gspread.service_account_from_dict(cred_dict)
+        elif "gcp_service_account" in st.secrets:
+            scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+            creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
+            return gspread.authorize(creds)
+    except Exception:
+        pass
+    return None
+
+def sync_portfolio_snapshot_to_gsheet(invested_val, market_val, pnl_val, pnl_pct):
+    gc = get_gspread_client()
+    if not gc:
+        return False, "ไม่พบการเชื่อมต่อ Google Sheets Credentials"
+    try:
+        sh = gc.open("หุ้นของเรา")
+        try:
+            worksheet = sh.worksheet("Portfolio_History")
+        except:
+            worksheet = sh.add_worksheet(title="Portfolio_History", rows="1000", cols="5")
+            worksheet.append_row(["วันที่", "มูลค่าตั้งต้น", "มูลค่าปัจจุบัน", "กำไรขาดทุน", "กำไรขาดทุน%"])
+            
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_row = [now_str, round(invested_val, 2), round(market_val, 2), round(pnl_val, 2), f"{pnl_pct:.2f}%"]
+        worksheet.append_row(new_row)
+        return True, "บันทึกประวัติลง Portfolio_History สำเร็จ!"
+    except Exception as e:
+        return False, f"เกิดข้อผิดพลาดในการเขียน Google Sheets: {str(e)}"
+
 # Minimal Header
 st.markdown('<div class="page-title-minimal">Portfolio Overview</div>', unsafe_allow_html=True)
 st.markdown('<div class="page-subtitle-minimal">วิเคราะห์สัดส่วนการถือครองและผลตอบแทนรายโบรกเกอร์</div>', unsafe_allow_html=True)
@@ -181,8 +227,26 @@ curr_symbol = "฿" if is_thb else "$"
 curr_text = "THB" if is_thb else "USD"
 
 if active_tab == "all":
-    st.subheader(f"🌐 สถิติรวมพอร์ตทุกโบรกเกอร์ ({curr_text})")
-    
+    col_hdr_title, col_hdr_sync = st.columns([3, 1])
+    with col_hdr_title:
+        st.subheader(f"🌐 สถิติรวมพอร์ตทุกโบรกเกอร์ ({curr_text})")
+    with col_hdr_sync:
+        if st.button("🔄 Sync Snapshot", key="btn_sync_portfolio", use_container_width=True, type="primary"):
+            if not df_port.empty:
+                g_inv = df_port['Invested_USD'].sum()
+                g_mkt = df_port['Market_Value_USD'].sum()
+                g_pnl = g_mkt - g_inv
+                g_pct = (g_pnl / g_inv * 100) if g_inv > 0 else 0
+                
+                with st.spinner("⏳ กำลังบันทึกประวัติลง Portfolio_History..."):
+                    success, msg = sync_portfolio_snapshot_to_gsheet(g_inv, g_mkt, g_pnl, g_pct)
+                    if success:
+                        st.toast(f"✅ {msg}", icon="🎉")
+                    else:
+                        st.error(f"❌ {msg}")
+            else:
+                st.warning("⚠️ ไม่มีข้อมูลพอร์ตที่จะซิงค์")
+
     if not df_port.empty:
         grand_invested = df_port['Invested_USD'].sum() * multiplier
         grand_market = df_port['Market_Value_USD'].sum() * multiplier
