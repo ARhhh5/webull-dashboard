@@ -445,7 +445,7 @@ def load_history_from_gsheet():
         data = worksheet.get_all_values()
         if len(data) > 1:
             df = pd.DataFrame(data[1:])
-            if len(df.columns) >= 3:
+            if len(df.columns) >= 4:
                 df = df.iloc[:, :5]
                 df.columns = ["Timestamp", "Invested", "MarketValue", "PnL", "PnLPct"][:len(df.columns)]
                 
@@ -456,6 +456,7 @@ def load_history_from_gsheet():
                     return float(str(val).replace(",", "").replace("%", "").strip() or 0)
                 
                 df["MarketValue"] = df["MarketValue"].apply(clean_num)
+                df["PnL"] = df["PnL"].apply(clean_num)
                 df = df.sort_values(by="Parsed_Date").reset_index(drop=True)
                 return df
     except Exception:
@@ -548,10 +549,16 @@ def render_dashboard():
 
     with col_right:
         if "selected_timeframe" not in st.session_state:
-            st.session_state["selected_timeframe"] = "6M"
+            st.session_state["selected_timeframe"] = "7D"
+        if "chart_mode" not in st.session_state:
+            st.session_state["chart_mode"] = "Total Return (PnL)"
 
-        # MODERN TIMEFRAME PILL BUTTONS (BUTTON GRID)
-        st.markdown('<div style="font-size:0.8rem; font-weight:700; color:#9ca3af; margin-bottom:6px;">TIMEFRAME RANGE</div>', unsafe_allow_html=True)
+        c_tf, c_mode = st.columns([2.5, 1.5])
+        with c_tf:
+            st.markdown('<div style="font-size:0.8rem; font-weight:700; color:#9ca3af; margin-bottom:6px;">TIMEFRAME RANGE</div>', unsafe_allow_html=True)
+        with c_mode:
+            st.session_state["chart_mode"] = st.selectbox("Chart Metric", ["Total Return (PnL)", "Portfolio Value"], label_visibility="collapsed")
+
         tf_list = ["1D", "7D", "1M", "3M", "6M", "1Y", "3Y", "5Y", "MAX"]
         tf_cols = st.columns(len(tf_list))
         
@@ -592,14 +599,42 @@ def render_dashboard():
                 filtered_df = df_history.copy()
 
             x_axis = filtered_df["Timestamp"].tolist()
-            y_axis = (filtered_df["MarketValue"] * multiplier).tolist()
+            
+            # Select column based on mode
+            if st.session_state["chart_mode"] == "Total Return (PnL)":
+                y_axis = (filtered_df["PnL"] * multiplier).tolist()
+                line_color = '#4ade80' if (len(y_axis) > 0 and y_axis[-1] >= y_axis[0]) else '#f87171'
+                fill_color = 'rgba(74, 222, 128, 0.08)' if line_color == '#4ade80' else 'rgba(248, 113, 113, 0.08)'
+            else:
+                y_axis = (filtered_df["MarketValue"] * multiplier).tolist()
+                line_color = '#38bdf8'
+                fill_color = 'rgba(56, 189, 248, 0.05)'
         else:
             x_axis = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul']
-            y_axis = [display_market*0.9, display_market*0.93, display_market*0.91, display_market*0.96, display_market*0.94, display_market*0.98, display_market]
+            y_axis = [-4300, -3269, -2268, -2223]
+            line_color = '#4ade80'
+            fill_color = 'rgba(74, 222, 128, 0.08)'
 
         fig = go.Figure()
-        fig.add_trace(go.Scatter(x=x_axis, y=y_axis, mode='lines+markers', line=dict(color='#38bdf8', width=3, shape='spline'), fill='tozeroy', fillcolor='rgba(56, 189, 248, 0.05)'))
-        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#6b7280', family='Plus Jakarta Sans'), xaxis=dict(showgrid=False, zeroline=False), yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False), margin=dict(t=10, b=10, l=10, r=10), height=280)
+        fig.add_trace(go.Scatter(
+            x=x_axis, 
+            y=y_axis, 
+            mode='lines+markers', 
+            line=dict(color=line_color, width=3, shape='spline'), 
+            fill='tozeroy', 
+            fillcolor=fill_color
+        ))
+        
+        # Enable Auto-Scale for Y-Axis (Zoom in dynamics)
+        fig.update_layout(
+            paper_bgcolor='rgba(0,0,0,0)', 
+            plot_bgcolor='rgba(0,0,0,0)', 
+            font=dict(color='#6b7280', family='Plus Jakarta Sans'), 
+            xaxis=dict(showgrid=False, zeroline=False), 
+            yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=True, zerolinecolor='#222734', autocorrange=True), 
+            margin=dict(t=10, b=10, l=10, r=10), 
+            height=280
+        )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
     # Top Holdings Section
