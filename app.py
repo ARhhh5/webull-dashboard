@@ -610,8 +610,8 @@ def render_dashboard():
                 line_color = '#38bdf8'
                 fill_color = 'rgba(56, 189, 248, 0.05)'
         else:
-            x_axis = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul']
-            y_axis = [-4300, -3269, -2268, -2223]
+            x_axis = ['Aug 2', 'Aug 4', 'Aug 5 (05:07)', 'Aug 5 (09:56)']
+            y_axis = [-4309.97 * multiplier, -3269.77 * multiplier, -2268.88 * multiplier, -2223.28 * multiplier]
             line_color = '#4ade80'
             fill_color = 'rgba(74, 222, 128, 0.08)'
 
@@ -625,13 +625,13 @@ def render_dashboard():
             fillcolor=fill_color
         ))
         
-        # Enable Auto-Scale for Y-Axis (Zoom in dynamics)
+        # FIX: Corrected autorange syntax for Plotly Layout
         fig.update_layout(
             paper_bgcolor='rgba(0,0,0,0)', 
             plot_bgcolor='rgba(0,0,0,0)', 
             font=dict(color='#6b7280', family='Plus Jakarta Sans'), 
             xaxis=dict(showgrid=False, zeroline=False), 
-            yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=True, zerolinecolor='#222734', autocorrange=True), 
+            yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=True, zerolinecolor='#222734', autorange=True), 
             margin=dict(t=10, b=10, l=10, r=10), 
             height=280
         )
