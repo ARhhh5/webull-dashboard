@@ -7,7 +7,7 @@ import uuid
 import hmac
 import hashlib
 import importlib.util
-from datetime import datetime, timezone
+from datetime import datetime, timezone, timedelta
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
@@ -221,6 +221,15 @@ def inject_custom_css():
         }
         .stock-symbol { font-weight: 700; color: #ffffff; font-size: 0.9rem; }
         .stock-price { font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-top: 6px; }
+
+        /* TIMEFRAME PILL BUTTONS */
+        div[data-testid="stHorizontalBlock"] div.stButton > button {
+            padding: 4px 8px !important;
+            font-size: 0.75rem !important;
+            font-weight: 700 !important;
+            min-height: 32px !important;
+            border-radius: 6px !important;
+        }
 
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
@@ -436,14 +445,18 @@ def load_history_from_gsheet():
         data = worksheet.get_all_values()
         if len(data) > 1:
             df = pd.DataFrame(data[1:])
-            # ตรวจสอบ Columns
             if len(df.columns) >= 3:
                 df = df.iloc[:, :5]
                 df.columns = ["Timestamp", "Invested", "MarketValue", "PnL", "PnLPct"][:len(df.columns)]
+                
+                df["Parsed_Date"] = pd.to_datetime(df["Timestamp"], errors='coerce')
+                
                 def clean_num(val):
                     if pd.isna(val): return 0.0
                     return float(str(val).replace(",", "").replace("%", "").strip() or 0)
+                
                 df["MarketValue"] = df["MarketValue"].apply(clean_num)
+                df = df.sort_values(by="Parsed_Date").reset_index(drop=True)
                 return df
     except Exception:
         pass
@@ -534,12 +547,52 @@ def render_dashboard():
         st.markdown(card_html, unsafe_allow_html=True)
 
     with col_right:
-        selected_tf = st.select_slider("Timeframe Range", options=["1D", "7D", "1M", "3M", "6M", "1Y", "3Y", "MAX"], value="6M")
+        if "selected_timeframe" not in st.session_state:
+            st.session_state["selected_timeframe"] = "6M"
 
+        # MODERN TIMEFRAME PILL BUTTONS (BUTTON GRID)
+        st.markdown('<div style="font-size:0.8rem; font-weight:700; color:#9ca3af; margin-bottom:6px;">TIMEFRAME RANGE</div>', unsafe_allow_html=True)
+        tf_list = ["1D", "7D", "1M", "3M", "6M", "1Y", "3Y", "5Y", "MAX"]
+        tf_cols = st.columns(len(tf_list))
+        
+        for idx, tf in enumerate(tf_list):
+            with tf_cols[idx]:
+                btn_kind = "primary" if st.session_state["selected_timeframe"] == tf else "secondary"
+                if st.button(tf, key=f"tf_btn_{tf}", type=btn_kind, use_container_width=True):
+                    st.session_state["selected_timeframe"] = tf
+                    st.rerun()
+
+        selected_tf = st.session_state["selected_timeframe"]
         df_history = load_history_from_gsheet()
-        if df_history is not None and not df_history.empty:
-            x_axis = df_history["Timestamp"].tolist()
-            y_axis = (df_history["MarketValue"] * multiplier).tolist()
+        
+        if df_history is not None and not df_history.empty and "Parsed_Date" in df_history.columns:
+            now_dt = datetime.now()
+            
+            # Filtering logic by Date Range
+            if selected_tf == "1D":
+                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=1))]
+            elif selected_tf == "7D":
+                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=7))]
+            elif selected_tf == "1M":
+                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=30))]
+            elif selected_tf == "3M":
+                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=90))]
+            elif selected_tf == "6M":
+                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=180))]
+            elif selected_tf == "1Y":
+                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=365))]
+            elif selected_tf == "3Y":
+                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=1095))]
+            elif selected_tf == "5Y":
+                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=1825))]
+            else:
+                filtered_df = df_history.copy()
+
+            if filtered_df.empty:
+                filtered_df = df_history.copy()
+
+            x_axis = filtered_df["Timestamp"].tolist()
+            y_axis = (filtered_df["MarketValue"] * multiplier).tolist()
         else:
             x_axis = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul']
             y_axis = [display_market*0.9, display_market*0.93, display_market*0.91, display_market*0.96, display_market*0.94, display_market*0.98, display_market]
