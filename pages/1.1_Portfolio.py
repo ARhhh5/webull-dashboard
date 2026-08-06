@@ -48,7 +48,7 @@ def get_gspread_client():
         pass
     return None
 
-def fetch_webull_openapi_positions():
+def fetch_webull_strict_openapi_positions():
     wb_secrets = st.secrets.get("Webull", {})
     app_key = wb_secrets.get("AppKey", "")
     app_secret = wb_secrets.get("AppSecret", "")
@@ -56,7 +56,7 @@ def fetch_webull_openapi_positions():
     account_id = wb_secrets.get("AccountId", "")
 
     if not (app_key and app_secret and access_token and account_id):
-        return None
+        return None, "Missing Webull Credentials in Secrets"
 
     try:
         host = "openapi.webull.com"
@@ -112,57 +112,11 @@ def fetch_webull_openapi_positions():
                         "Broker": "Webull",
                         "Source": "Webull API (Live)"
                     })
-            return holdings
-    except Exception:
-        pass
-    return None
-
-def load_webull_from_gsheet():
-    holdings = []
-    gc = get_gspread_client()
-    if gc:
-        try:
-            sh = gc.open("หุ้นของเรา")
-            worksheet = sh.worksheet("Webull_Order_History")
-            records = worksheet.get_all_records()
-            if records:
-                df_raw = pd.DataFrame(records)
-                c_sym = next((c for c in df_raw.columns if "Sym" in c or "Ticker" in c or "หุ้น" in c), df_raw.columns[2])
-                c_qty = next((c for c in df_raw.columns if "Qty" in c or "จำนวน" in c or "Volume" in c), df_raw.columns[4])
-                c_pr = next((c for c in df_raw.columns if "Pr" in c or "Price" in c or "ต้นทุน" in c), df_raw.columns[5])
-                c_side = next((c for c in df_raw.columns if "Side" in c or "ประเภท" in c), None)
-                c_time = next((c for c in df_raw.columns if "Time" in c or "Date" in c or "เวลา" in c), df_raw.columns[1])
-
-                df_raw["Clean_Sym"] = df_raw[c_sym].astype(str).str.strip().str.upper()
-                df_raw["Clean_Side"] = df_raw[c_side].astype(str).str.strip().str.upper() if c_side else ""
-                
-                if c_time in df_raw.columns:
-                    df_raw["Parsed_Time"] = pd.to_datetime(df_raw[c_time], errors='coerce')
-                    df_raw = df_raw.sort_values(by="Parsed_Time", ascending=False)
-
-                df_snapshots = df_raw[df_raw["Clean_Side"].isin(["", "NAN", "NONE"])].copy()
-
-                if not df_snapshots.empty:
-                    df_snapshots = df_snapshots.drop_duplicates(subset=["Clean_Sym"], keep="first")
-                    for _, r in df_snapshots.iterrows():
-                        sym = r["Clean_Sym"]
-                        if not sym: continue
-                        try: qty = float(str(r.get(c_qty, 0)).replace(",", ""))
-                        except: qty = 0.0
-                        try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
-                        except: pr = 0.0
-
-                        if qty > 0:
-                            holdings.append({
-                                "Symbol": sym, 
-                                "Qty": qty, 
-                                "Cost": pr, 
-                                "Broker": "Webull",
-                                "Source": "Google Sheet (Fallback)"
-                            })
-        except Exception:
-            pass
-    return holdings
+            return holdings, "OK"
+        else:
+            return None, f"HTTP Error {response.status}: {response.reason}"
+    except Exception as e:
+        return None, f"Connection Failed: {str(e)}"
 
 def load_dime_us_from_gsheet():
     holdings = []
@@ -211,12 +165,12 @@ def load_dime_th_from_gsheet():
 def fetch_full_portfolio_df():
     fx_rate = get_usd_thb_rate()
     
-    # Try Webull Live OpenAPI Primary first, fallback to Google Sheets
-    webull_source = "Webull API (Live)"
-    w_holdings = fetch_webull_openapi_positions()
+    # Strictly Webull Live OpenAPI (No GSheet Fallback)
+    w_holdings, api_status = fetch_webull_strict_openapi_positions()
+    webull_source = "Webull API (Live)" if api_status == "OK" else f"API Error: {api_status}"
+    
     if not w_holdings:
-        webull_source = "Google Sheet (Fallback)"
-        w_holdings = load_webull_from_gsheet()
+        w_holdings = []
 
     d_us_holdings = load_dime_us_from_gsheet()
     d_th_holdings = load_dime_th_from_gsheet()
@@ -297,7 +251,7 @@ def fetch_full_portfolio_df():
 # ==========================================
 df_port, fx_rate, webull_source, sync_time = fetch_full_portfolio_df()
 
-c_title, c_status, c_sync = st.columns([2.2, 1.3, 0.9])
+c_title, c_status, c_sync = st.columns([2.0, 1.5, 0.9])
 
 with c_title:
     st.title("Portfolio Overview")
@@ -305,7 +259,7 @@ with c_title:
 
 with c_status:
     st.markdown("<br>", unsafe_allow_html=True)
-    if webull_source == "Webull API (Live)":
+    if "Live" in webull_source:
         st.markdown(
             f'''<div style="text-align: right;">
                 <span class="source-badge-api">🟢 Webull API (Live)</span>
@@ -316,8 +270,8 @@ with c_status:
     else:
         st.markdown(
             f'''<div style="text-align: right;">
-                <span class="source-badge-sheet">🟡 Webull Sheet (Fallback)</span>
-                <div style="font-size:0.72rem; color:#6b7280; margin-top:4px;">Updated: {sync_time}</div>
+                <span class="source-badge-error">🔴 {webull_source}</span>
+                <div style="font-size:0.72rem; color:#f87171; margin-top:4px;">Updated: {sync_time}</div>
             </div>''', 
             unsafe_allow_html=True
         )
@@ -354,7 +308,7 @@ current_tab = st.session_state["port_tab"]
 st.markdown("<br>", unsafe_allow_html=True)
 
 if df_port.empty:
-    st.info("💡 ไม่พบข้อมูลพอร์ตโฟลิโอ กรุณาตรวจสอบ Google Sheets หรือบันทึกรายการใน Trade Execution")
+    st.warning("⚠️ ไม่พบข้อมูลพอร์ตโฟลิโอ หรือ Webull API เกิดข้อผิดพลาด กรุณาตรวจสอบสถานะมุมขวาบน")
 else:
     if current_tab == "Webull US":
         sub_df = df_port[df_port["Broker"] == "Webull"].copy()
