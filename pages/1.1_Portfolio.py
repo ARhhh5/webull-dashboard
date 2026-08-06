@@ -1,6 +1,11 @@
 import os
 import json
 import base64
+import urllib.parse
+import http.client
+import uuid
+import hmac
+import hashlib
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -27,8 +32,7 @@ def get_usd_thb_rate():
         return 35.0
 
 def get_gspread_client():
-    if not HAS_GSPREAD:
-        return None
+    if not HAS_GSPREAD: return None
     try:
         google_secrets = st.secrets.get("Google", {})
         cred_base64 = google_secrets.get("credentials_base64", "")
@@ -43,6 +47,69 @@ def get_gspread_client():
         pass
     return None
 
+def fetch_webull_openapi_positions():
+    wb_secrets = st.secrets.get("Webull", {})
+    app_key = wb_secrets.get("AppKey", "")
+    app_secret = wb_secrets.get("AppSecret", "")
+    access_token = wb_secrets.get("AccessToken", "")
+    account_id = wb_secrets.get("AccountId", "")
+
+    if not (app_key and app_secret and access_token and account_id):
+        return None
+
+    try:
+        host = "openapi.webull.com"
+        path = "/openapi/assets/positions"
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        nonce = str(uuid.uuid4())
+
+        sign_params = {
+            "app_key": app_key,
+            "signature_version": "1.0",
+            "signature_algorithm": "HMAC-SHA1",
+            "timestamp": timestamp,
+            "nonce": nonce,
+            "account_id": account_id
+        }
+        sorted_keys = sorted(sign_params.keys())
+        canonical_query = "&".join([f"{k}={sign_params[k]}" for k in sorted_keys])
+        string_to_sign = f"GET\n{path}\n{canonical_query}"
+
+        signature = hmac.new(app_secret.encode('utf-8'), string_to_sign.encode('utf-8'), hashlib.sha1).digest()
+        signature_b64 = base64.b64encode(signature).decode('utf-8')
+
+        headers = {
+            "x-app-key": app_key,
+            "x-timestamp": timestamp,
+            "x-signature-version": "1.0",
+            "x-signature-algorithm": "HMAC-SHA1",
+            "x-signature-nonce": nonce,
+            "x-version": "1.0",
+            "x-signature": signature_b64,
+            "x-access-token": access_token
+        }
+
+        conn = http.client.HTTPSConnection(host, timeout=10)
+        full_path = f"{path}?account_id={account_id}"
+        conn.request("GET", full_path, headers=headers)
+        response = conn.getresponse()
+        
+        if response.status == 200:
+            data = json.loads(response.read().decode('utf-8'))
+            positions = data.get("positions", []) or data.get("data", {}).get("positions", [])
+            
+            holdings = []
+            for p in positions:
+                sym = p.get("symbol", "").strip().upper()
+                qty = float(p.get("quantity", 0))
+                cost = float(p.get("costPrice", 0) or p.get("cost", 0))
+                if qty > 0 and sym:
+                    holdings.append({"Symbol": sym, "Qty": qty, "Cost": cost, "Broker": "Webull"})
+            return holdings
+    except Exception:
+        pass
+    return None
+
 def load_webull_from_gsheet():
     holdings = []
     gc = get_gspread_client()
@@ -53,7 +120,6 @@ def load_webull_from_gsheet():
             records = worksheet.get_all_records()
             if records:
                 df_raw = pd.DataFrame(records)
-                
                 c_sym = next((c for c in df_raw.columns if "Sym" in c or "Ticker" in c or "หุ้น" in c), df_raw.columns[2])
                 c_qty = next((c for c in df_raw.columns if "Qty" in c or "จำนวน" in c or "Volume" in c), df_raw.columns[4])
                 c_pr = next((c for c in df_raw.columns if "Pr" in c or "Price" in c or "ต้นทุน" in c), df_raw.columns[5])
@@ -63,16 +129,13 @@ def load_webull_from_gsheet():
                 df_raw["Clean_Sym"] = df_raw[c_sym].astype(str).str.strip().str.upper()
                 df_raw["Clean_Side"] = df_raw[c_side].astype(str).str.strip().str.upper() if c_side else ""
                 
-                # Sort by latest time to get the most recent snapshot per ticker
                 if c_time in df_raw.columns:
                     df_raw["Parsed_Time"] = pd.to_datetime(df_raw[c_time], errors='coerce')
                     df_raw = df_raw.sort_values(by="Parsed_Time", ascending=False)
 
-                # Filter ONLY Snapshot rows where Side is empty
                 df_snapshots = df_raw[df_raw["Clean_Side"].isin(["", "NAN", "NONE"])].copy()
 
                 if not df_snapshots.empty:
-                    # Deduplicate: Keep only the latest snapshot entry for each symbol
                     df_snapshots = df_snapshots.drop_duplicates(subset=["Clean_Sym"], keep="first")
                     for _, r in df_snapshots.iterrows():
                         sym = r["Clean_Sym"]
@@ -82,32 +145,8 @@ def load_webull_from_gsheet():
                         try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
                         except: pr = 0.0
 
-                        # Filter out sold or 0 Qty stocks (Pure Stock Holdings Only)
                         if qty > 0:
                             holdings.append({"Symbol": sym, "Qty": qty, "Cost": pr, "Broker": "Webull"})
-                else:
-                    grouped = {}
-                    for _, r in df_raw.iterrows():
-                        sym = r["Clean_Sym"]
-                        if not sym: continue
-                        try: qty = float(str(r.get(c_qty, 0)).replace(",", ""))
-                        except: qty = 0.0
-                        try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
-                        except: pr = 0.0
-                        side = r["Clean_Side"]
-                        if "SELL" in side or side == "S": qty = -abs(qty)
-
-                        if sym not in grouped: grouped[sym] = {"tot_qty": 0.0, "tot_cost_val": 0.0}
-                        if qty > 0:
-                            grouped[sym]["tot_qty"] += qty
-                            grouped[sym]["tot_cost_val"] += (qty * pr)
-                        elif qty < 0:
-                            grouped[sym]["tot_qty"] += qty
-
-                    for sym, data in grouped.items():
-                        if data["tot_qty"] > 0:
-                            avg_cost = data["tot_cost_val"] / data["tot_qty"] if data["tot_qty"] > 0 else 0.0
-                            holdings.append({"Symbol": sym, "Qty": data["tot_qty"], "Cost": avg_cost, "Broker": "Webull"})
         except Exception:
             pass
     return holdings
@@ -130,8 +169,7 @@ def load_dime_us_from_gsheet():
                         "Broker": "Dime US",
                         "Manual_Price": r.get("ราคาปัจจุบันล็อก (Manual Price)", "")
                     })
-        except:
-            pass
+        except: pass
     return holdings
 
 def load_dime_th_from_gsheet():
@@ -151,14 +189,18 @@ def load_dime_th_from_gsheet():
                         "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
                         "Broker": "Dime TH"
                     })
-        except:
-            pass
+        except: pass
     return holdings
 
 @st.cache_data(ttl=60)
 def fetch_full_portfolio_df():
     fx_rate = get_usd_thb_rate()
-    w_holdings = load_webull_from_gsheet()
+    
+    # Try Webull Live OpenAPI Primary first, fallback to Google Sheets
+    w_holdings = fetch_webull_openapi_positions()
+    if not w_holdings:
+        w_holdings = load_webull_from_gsheet()
+
     d_us_holdings = load_dime_us_from_gsheet()
     d_th_holdings = load_dime_th_from_gsheet()
     
@@ -269,7 +311,6 @@ st.markdown("<br>", unsafe_allow_html=True)
 if df_port.empty:
     st.info("💡 ไม่พบข้อมูลพอร์ตโฟลิโอ กรุณาตรวจสอบ Google Sheets หรือบันทึกรายการใน Trade Execution")
 else:
-    # Filter DF based on tab selection
     if current_tab == "Webull US":
         sub_df = df_port[df_port["Broker"] == "Webull"].copy()
     elif current_tab == "Dime US":
@@ -300,7 +341,6 @@ else:
         tot_pnl = tot_mkt - tot_inv
         tot_pnl_pct = (tot_pnl / tot_inv * 100) if tot_inv > 0 else 0.0
 
-        # High Level Metrics Row (Stocks Pure Asset)
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Invested Capital", f"{symbol}{tot_inv:,.2f}")
         m2.metric("Market Value", f"{symbol}{tot_mkt:,.2f}")
@@ -309,7 +349,6 @@ else:
 
         st.markdown("<hr style='border-color: #1f232d;'>", unsafe_allow_html=True)
 
-        # Prepare Table View
         disp_df = sub_df.copy()
         disp_df["Qty"] = disp_df["Qty"].map("{:,.4f}".format)
         disp_df["Cost"] = disp_df["Cost"].map(lambda x: f"{symbol}{x * multiplier:,.2f}")
