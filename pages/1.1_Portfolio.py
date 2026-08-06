@@ -6,6 +6,7 @@ import http.client
 import uuid
 import hmac
 import hashlib
+from datetime import datetime, timezone
 import streamlit as st
 import pandas as pd
 import plotly.express as px
@@ -104,7 +105,13 @@ def fetch_webull_openapi_positions():
                 qty = float(p.get("quantity", 0))
                 cost = float(p.get("costPrice", 0) or p.get("cost", 0))
                 if qty > 0 and sym:
-                    holdings.append({"Symbol": sym, "Qty": qty, "Cost": cost, "Broker": "Webull"})
+                    holdings.append({
+                        "Symbol": sym, 
+                        "Qty": qty, 
+                        "Cost": cost, 
+                        "Broker": "Webull",
+                        "Source": "Webull API (Live)"
+                    })
             return holdings
     except Exception:
         pass
@@ -146,7 +153,13 @@ def load_webull_from_gsheet():
                         except: pr = 0.0
 
                         if qty > 0:
-                            holdings.append({"Symbol": sym, "Qty": qty, "Cost": pr, "Broker": "Webull"})
+                            holdings.append({
+                                "Symbol": sym, 
+                                "Qty": qty, 
+                                "Cost": pr, 
+                                "Broker": "Webull",
+                                "Source": "Google Sheet (Fallback)"
+                            })
         except Exception:
             pass
     return holdings
@@ -167,6 +180,7 @@ def load_dime_us_from_gsheet():
                         "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
                         "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
                         "Broker": "Dime US",
+                        "Source": "Google Sheet",
                         "Manual_Price": r.get("ราคาปัจจุบันล็อก (Manual Price)", "")
                     })
         except: pass
@@ -187,7 +201,8 @@ def load_dime_th_from_gsheet():
                         "Symbol": sym,
                         "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
                         "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
-                        "Broker": "Dime TH"
+                        "Broker": "Dime TH",
+                        "Source": "Google Sheet"
                     })
         except: pass
     return holdings
@@ -197,8 +212,10 @@ def fetch_full_portfolio_df():
     fx_rate = get_usd_thb_rate()
     
     # Try Webull Live OpenAPI Primary first, fallback to Google Sheets
+    webull_source = "Webull API (Live)"
     w_holdings = fetch_webull_openapi_positions()
     if not w_holdings:
+        webull_source = "Google Sheet (Fallback)"
         w_holdings = load_webull_from_gsheet()
 
     d_us_holdings = load_dime_us_from_gsheet()
@@ -206,7 +223,7 @@ def fetch_full_portfolio_df():
     
     all_holdings = w_holdings + d_us_holdings + d_th_holdings
     if not all_holdings:
-        return pd.DataFrame(), fx_rate
+        return pd.DataFrame(), fx_rate, webull_source, datetime.now().strftime("%H:%M:%S")
 
     df_raw = pd.DataFrame(all_holdings)
     live_prices = {}
@@ -237,6 +254,7 @@ def fetch_full_portfolio_df():
         qty = row['Qty']
         cost_in = row['Cost']
         broker = row['Broker']
+        source = row.get('Source', 'Google Sheet')
         
         price_raw = live_prices.get(sym, 0)
         if price_raw == 0: price_raw = cost_in
@@ -260,29 +278,56 @@ def fetch_full_portfolio_df():
             "Invested_USD": invested_usd,
             "Market_Value_USD": market_val_usd,
             "PnL_USD": pnl_usd,
-            "PnL_Pct": pnl_pct
+            "PnL_Pct": pnl_pct,
+            "Source": source
         })
 
     df_port = pd.DataFrame(portfolio_rows)
+    sync_time = datetime.now().strftime("%H:%M:%S")
+
     st.session_state["all_holdings_df"] = df_port
     st.session_state["usd_thb_rate"] = fx_rate
-    return df_port, fx_rate
+    st.session_state["webull_source"] = webull_source
+    st.session_state["sync_time"] = sync_time
+
+    return df_port, fx_rate, webull_source, sync_time
 
 # ==========================================
 # 2. MAIN PAGE RENDER
 # ==========================================
-c_title, c_sync = st.columns([3, 1])
+df_port, fx_rate, webull_source, sync_time = fetch_full_portfolio_df()
+
+c_title, c_status, c_sync = st.columns([2.2, 1.3, 0.9])
+
 with c_title:
     st.title("Portfolio Overview")
     st.caption("วิเคราะห์สัดส่วนการถือครองและผลตอบแทนรายโบรกเกอร์ (หุ้นล้วน ไม่รวมเงินสด)")
+
+with c_status:
+    st.markdown("<br>", unsafe_allow_html=True)
+    if webull_source == "Webull API (Live)":
+        st.markdown(
+            f'''<div style="text-align: right;">
+                <span class="source-badge-api">🟢 Webull API (Live)</span>
+                <div style="font-size:0.72rem; color:#6b7280; margin-top:4px;">Updated: {sync_time}</div>
+            </div>''', 
+            unsafe_allow_html=True
+        )
+    else:
+        st.markdown(
+            f'''<div style="text-align: right;">
+                <span class="source-badge-sheet">🟡 Webull Sheet (Fallback)</span>
+                <div style="font-size:0.72rem; color:#6b7280; margin-top:4px;">Updated: {sync_time}</div>
+            </div>''', 
+            unsafe_allow_html=True
+        )
+
 with c_sync:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Sync Portfolio Data", use_container_width=True, type="primary"):
         st.cache_data.clear()
         st.success("อัปเดตข้อมูลพอร์ตหุ้นสดเรียบร้อยแล้ว!")
         st.rerun()
-
-df_port, fx_rate = fetch_full_portfolio_df()
 
 c_curr, _ = st.columns([1, 3])
 with c_curr:
@@ -328,7 +373,8 @@ else:
                 "Invested_USD": x["Invested_USD"].sum(),
                 "Market_Value_USD": x["Market_Value_USD"].sum(),
                 "PnL_USD": x["Market_Value_USD"].sum() - x["Invested_USD"].sum(),
-                "PnL_Pct": ((x["Market_Value_USD"].sum() - x["Invested_USD"].sum()) / x["Invested_USD"].sum() * 100) if x["Invested_USD"].sum() > 0 else 0
+                "PnL_Pct": ((x["Market_Value_USD"].sum() - x["Invested_USD"].sum()) / x["Invested_USD"].sum() * 100) if x["Invested_USD"].sum() > 0 else 0,
+                "Source": x["Source"].iloc[0]
             })).reset_index()
     else:
         sub_df = df_port.copy()
@@ -358,5 +404,5 @@ else:
         disp_df["PnL ($)"] = disp_df["PnL_USD"].map(lambda x: f"{symbol}{x * multiplier:,.2f}")
         disp_df["PnL (%)"] = disp_df["PnL_Pct"].map("{:,.2f}%".format)
 
-        show_cols = ["Symbol", "Broker", "Qty", "Cost", "Price", "Invested", "Market Value", "PnL ($)", "PnL (%)"]
+        show_cols = ["Symbol", "Broker", "Qty", "Cost", "Price", "Invested", "Market Value", "PnL ($)", "PnL (%)", "Source"]
         st.dataframe(disp_df[show_cols], use_container_width=True, hide_index=True)
