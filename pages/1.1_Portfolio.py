@@ -58,14 +58,21 @@ def load_webull_from_gsheet():
                 c_qty = next((c for c in df_raw.columns if "Qty" in c or "จำนวน" in c or "Volume" in c), df_raw.columns[4])
                 c_pr = next((c for c in df_raw.columns if "Pr" in c or "Price" in c or "ต้นทุน" in c), df_raw.columns[5])
                 c_side = next((c for c in df_raw.columns if "Side" in c or "ประเภท" in c), None)
+                c_time = next((c for c in df_raw.columns if "Time" in c or "Date" in c or "เวลา" in c), df_raw.columns[1])
 
                 df_raw["Clean_Sym"] = df_raw[c_sym].astype(str).str.strip().str.upper()
                 df_raw["Clean_Side"] = df_raw[c_side].astype(str).str.strip().str.upper() if c_side else ""
+                
+                # Sort by latest time to get the most recent snapshot per ticker
+                if c_time in df_raw.columns:
+                    df_raw["Parsed_Time"] = pd.to_datetime(df_raw[c_time], errors='coerce')
+                    df_raw = df_raw.sort_values(by="Parsed_Time", ascending=False)
 
                 # Filter ONLY Snapshot rows where Side is empty
                 df_snapshots = df_raw[df_raw["Clean_Side"].isin(["", "NAN", "NONE"])].copy()
 
                 if not df_snapshots.empty:
+                    # Deduplicate: Keep only the latest snapshot entry for each symbol
                     df_snapshots = df_snapshots.drop_duplicates(subset=["Clean_Sym"], keep="first")
                     for _, r in df_snapshots.iterrows():
                         sym = r["Clean_Sym"]
@@ -75,6 +82,7 @@ def load_webull_from_gsheet():
                         try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
                         except: pr = 0.0
 
+                        # Filter out sold or 0 Qty stocks (Pure Stock Holdings Only)
                         if qty > 0:
                             holdings.append({"Symbol": sym, "Qty": qty, "Cost": pr, "Broker": "Webull"})
                 else:
@@ -224,12 +232,12 @@ def fetch_full_portfolio_df():
 c_title, c_sync = st.columns([3, 1])
 with c_title:
     st.title("Portfolio Overview")
-    st.caption("วิเคราะห์สัดส่วนการถือครองและผลตอบแทนรายโบรกเกอร์")
+    st.caption("วิเคราะห์สัดส่วนการถือครองและผลตอบแทนรายโบรกเกอร์ (หุ้นล้วน ไม่รวมเงินสด)")
 with c_sync:
     st.markdown("<br>", unsafe_allow_html=True)
     if st.button("🔄 Sync Portfolio Data", use_container_width=True, type="primary"):
         st.cache_data.clear()
-        st.success("อัปเดตข้อมูลสดเรียบร้อยแล้ว!")
+        st.success("อัปเดตข้อมูลพอร์ตหุ้นสดเรียบร้อยแล้ว!")
         st.rerun()
 
 df_port, fx_rate = fetch_full_portfolio_df()
@@ -271,7 +279,6 @@ else:
     elif current_tab == "US Consolidated":
         sub_df = df_port[df_port["Broker"].isin(["Webull", "Dime US"])].copy()
         if not sub_df.empty:
-            # Consolidate US stocks across Webull & Dime
             sub_df = sub_df.groupby("Symbol").apply(lambda x: pd.Series({
                 "Broker": "US Consolidated",
                 "Qty": x["Qty"].sum(),
@@ -293,7 +300,7 @@ else:
         tot_pnl = tot_mkt - tot_inv
         tot_pnl_pct = (tot_pnl / tot_inv * 100) if tot_inv > 0 else 0.0
 
-        # High Level Metrics Row
+        # High Level Metrics Row (Stocks Pure Asset)
         m1, m2, m3, m4 = st.columns(4)
         m1.metric("Invested Capital", f"{symbol}{tot_inv:,.2f}")
         m2.metric("Market Value", f"{symbol}{tot_mkt:,.2f}")
