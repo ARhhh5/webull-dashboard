@@ -239,15 +239,8 @@ def inject_custom_css():
 inject_custom_css()
 
 # ==========================================
-# 2. SHARED PORTFOLIO DATA PIPELINE
+# 2. SHARED PORTFOLIO DATA PIPELINE (SINGLE SOURCE OF TRUTH)
 # ==========================================
-webull_config = st.secrets.get("Webull", {})
-APP_KEY = webull_config.get("AppKey", "").strip()
-APP_SECRET = webull_config.get("AppSecret", "").strip()
-ACCESS_TOKEN = webull_config.get("AccessToken", "").strip()
-ACCOUNT_ID = webull_config.get("AccountId", "").strip()
-HOST = "api.webull.co.th"
-
 @st.cache_data(ttl=60)
 def get_usd_thb_rate():
     try:
@@ -274,57 +267,68 @@ def get_gspread_client():
         pass
     return None
 
-def get_webull_live_prices():
-    path = "/openapi/assets/positions"
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    nonce = uuid.uuid4().hex
-    signing_values = {"host": HOST, "x-app-key": APP_KEY, "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-signature-version": "1.0", "x-timestamp": timestamp, "account_id": ACCOUNT_ID}
-    string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
-    signature = base64.b64encode(hmac.new(f"{APP_SECRET}&".encode("utf-8"), urllib.parse.quote(f"{path}&{string_1}", safe="").encode("utf-8"), hashlib.sha1).digest()).decode("utf-8")
-    headers = {"Accept": "application/json", "x-app-key": APP_KEY, "x-timestamp": timestamp, "x-signature-version": "1.0", "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-version": "v2", "x-signature": signature, "x-access-token": ACCESS_TOKEN}
-    
-    prices = {}
-    try:
-        conn = http.client.HTTPSConnection(HOST)
-        conn.request("GET", f"{path}?account_id={ACCOUNT_ID}", "", headers)
-        res = conn.getresponse()
-        data = json.loads(res.read().decode("utf-8"))
-        if isinstance(data, list):
-            for p in data:
-                prices[str(p.get("symbol")).upper()] = float(p.get("last_price", 0))
-    except:
-        pass
-    return prices
-
-def get_webull_holdings():
-    path = "/openapi/assets/positions"
-    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-    nonce = uuid.uuid4().hex
-    signing_values = {"host": HOST, "x-app-key": APP_KEY, "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-signature-version": "1.0", "x-timestamp": timestamp, "account_id": ACCOUNT_ID}
-    string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
-    signature = base64.b64encode(hmac.new(f"{APP_SECRET}&".encode("utf-8"), urllib.parse.quote(f"{path}&{string_1}", safe="").encode("utf-8"), hashlib.sha1).digest()).decode("utf-8")
-    headers = {"Accept": "application/json", "x-app-key": APP_KEY, "x-timestamp": timestamp, "x-signature-version": "1.0", "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-version": "v2", "x-signature": signature, "x-access-token": ACCESS_TOKEN}
-    
+def load_webull_from_gsheet():
     holdings = []
-    try:
-        conn = http.client.HTTPSConnection(HOST)
-        conn.request("GET", f"{path}?account_id={ACCOUNT_ID}", "", headers)
-        res = conn.getresponse()
-        data = json.loads(res.read().decode("utf-8"))
-        if isinstance(data, list):
-            for p in data:
-                if p.get("instrument_type") == "EQUITY":
-                    holdings.append({
-                        "Symbol": str(p.get("symbol", "")).strip().upper(),
-                        "Qty": float(p.get("quantity", 0)),
-                        "Cost": float(p.get("cost_price", 0)),
-                        "Broker": "Webull"
-                    })
-    except:
-        pass
+    gc = get_gspread_client()
+    if gc:
+        try:
+            sh = gc.open("หุ้นของเรา")
+            worksheet = sh.worksheet("Webull_Order_History")
+            records = worksheet.get_all_records()
+            if records:
+                df_raw = pd.DataFrame(records)
+                
+                c_sym = next((c for c in df_raw.columns if "Sym" in c or "Ticker" in c or "หุ้น" in c), df_raw.columns[2])
+                c_qty = next((c for c in df_raw.columns if "Qty" in c or "จำนวน" in c or "Volume" in c), df_raw.columns[4])
+                c_pr = next((c for c in df_raw.columns if "Pr" in c or "Price" in c or "ต้นทุน" in c), df_raw.columns[5])
+                c_side = next((c for c in df_raw.columns if "Side" in c or "ประเภท" in c), None)
+
+                df_raw["Clean_Sym"] = df_raw[c_sym].astype(str).str.strip().str.upper()
+                df_raw["Clean_Side"] = df_raw[c_side].astype(str).str.strip().str.upper() if c_side else ""
+
+                # Filter ONLY Snapshot rows where Side is empty
+                df_snapshots = df_raw[df_raw["Clean_Side"].isin(["", "NAN", "NONE"])].copy()
+
+                if not df_snapshots.empty:
+                    df_snapshots = df_snapshots.drop_duplicates(subset=["Clean_Sym"], keep="first")
+                    for _, r in df_snapshots.iterrows():
+                        sym = r["Clean_Sym"]
+                        if not sym: continue
+                        try: qty = float(str(r.get(c_qty, 0)).replace(",", ""))
+                        except: qty = 0.0
+                        try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
+                        except: pr = 0.0
+
+                        if qty > 0:
+                            holdings.append({"Symbol": sym, "Qty": qty, "Cost": pr, "Broker": "Webull"})
+                else:
+                    grouped = {}
+                    for _, r in df_raw.iterrows():
+                        sym = r["Clean_Sym"]
+                        if not sym: continue
+                        try: qty = float(str(r.get(c_qty, 0)).replace(",", ""))
+                        except: qty = 0.0
+                        try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
+                        except: pr = 0.0
+                        side = r["Clean_Side"]
+                        if "SELL" in side or side == "S": qty = -abs(qty)
+
+                        if sym not in grouped: grouped[sym] = {"tot_qty": 0.0, "tot_cost_val": 0.0}
+                        if qty > 0:
+                            grouped[sym]["tot_qty"] += qty
+                            grouped[sym]["tot_cost_val"] += (qty * pr)
+                        elif qty < 0:
+                            grouped[sym]["tot_qty"] += qty
+
+                    for sym, data in grouped.items():
+                        if data["tot_qty"] > 0:
+                            avg_cost = data["tot_cost_val"] / data["tot_qty"] if data["tot_qty"] > 0 else 0.0
+                            holdings.append({"Symbol": sym, "Qty": data["tot_qty"], "Cost": avg_cost, "Broker": "Webull"})
+        except Exception:
+            pass
     return holdings
 
-def get_dime_us_holdings():
+def load_dime_us_from_gsheet():
     holdings = []
     gc = get_gspread_client()
     if gc:
@@ -346,7 +350,7 @@ def get_dime_us_holdings():
             pass
     return holdings
 
-def get_dime_th_holdings():
+def load_dime_th_from_gsheet():
     holdings = []
     gc = get_gspread_client()
     if gc:
@@ -369,68 +373,70 @@ def get_dime_th_holdings():
 
 def load_master_portfolio_data():
     fx_rate = get_usd_thb_rate()
-    webull_prices = get_webull_live_prices()
-    w_holdings = get_webull_holdings()
-    d_us_holdings = get_dime_us_holdings()
-    d_th_holdings = get_dime_th_holdings()
+    w_holdings = load_webull_from_gsheet()
+    d_us_holdings = load_dime_us_from_gsheet()
+    d_th_holdings = load_dime_th_from_gsheet()
     
     all_holdings = w_holdings + d_us_holdings + d_th_holdings
-    
-    if all_holdings:
-        df_raw = pd.DataFrame(all_holdings)
-        live_prices = {}
-        
-        for index, row in df_raw.iterrows():
-            sym = row['Symbol']
-            broker = row['Broker']
-            
-            if broker == "Webull" and sym in webull_prices and webull_prices[sym] > 0:
-                live_prices[sym] = webull_prices[sym]
-            elif broker == "Dime US" and row.get("Manual_Price") != "" and row.get("Manual_Price") is not None:
-                try: live_prices[sym] = float(row["Manual_Price"])
-                except: live_prices[sym] = 0.0
-            
-            if sym not in live_prices or live_prices[sym] == 0.0:
-                yf_sym = f"{sym}.BK" if broker == "Dime TH" and not sym.endswith(".BK") else sym
-                try:
-                    t_data = yf.Ticker(yf_sym)
-                    p = t_data.info.get('currentPrice') or t_data.info.get('regularMarketPrice') or t_data.fast_info.get('last_price')
-                    if not p:
-                        h = t_data.history(period="1d")
-                        if not h.empty: p = h['Close'].iloc[-1]
-                    live_prices[sym] = float(p) if p else 0.0
-                except:
-                    live_prices[sym] = 0.0
+    if not all_holdings:
+        return pd.DataFrame(), fx_rate
 
-        portfolio_rows = []
-        for index, row in df_raw.iterrows():
-            sym = row['Symbol']
-            qty = row['Qty']
-            cost_in = row['Cost']
-            broker = row['Broker']
-            
-            price_raw = live_prices.get(sym, 0)
-            if price_raw == 0: price_raw = cost_in
-            
-            if broker == "Dime TH":
-                invested_usd = (qty * cost_in) / fx_rate
-                market_val_usd = (qty * price_raw) / fx_rate
-            else:
-                invested_usd = qty * cost_in
-                market_val_usd = qty * price_raw
-                
-            pnl_usd = market_val_usd - invested_usd
-            pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd > 0 else 0.0
-            
-            portfolio_rows.append({
-                "Symbol": sym, "Broker": broker, "Qty": qty, "Cost": cost_in, "Price": price_raw,
-                "Invested_USD": invested_usd, "Market_Value_USD": market_val_usd,
-                "PnL_USD": pnl_usd, "PnL_Pct": pnl_pct
-            })
-        df_port = pd.DataFrame(portfolio_rows)
-    else:
-        df_port = pd.DataFrame()
+    df_raw = pd.DataFrame(all_holdings)
+    live_prices = {}
+
+    for index, row in df_raw.iterrows():
+        sym = row['Symbol']
+        broker = row['Broker']
         
+        if broker == "Dime US" and row.get("Manual_Price") != "" and row.get("Manual_Price") is not None:
+            try: live_prices[sym] = float(row["Manual_Price"])
+            except: live_prices[sym] = 0.0
+
+        if sym not in live_prices or live_prices[sym] == 0.0:
+            yf_sym = f"{sym}.BK" if broker == "Dime TH" and not sym.endswith(".BK") else sym
+            try:
+                t_data = yf.Ticker(yf_sym)
+                p = t_data.info.get('currentPrice') or t_data.info.get('regularMarketPrice') or t_data.fast_info.get('last_price')
+                if not p:
+                    h = t_data.history(period="1d")
+                    if not h.empty: p = h['Close'].iloc[-1]
+                live_prices[sym] = float(p) if p else 0.0
+            except:
+                live_prices[sym] = 0.0
+
+    portfolio_rows = []
+    for index, row in df_raw.iterrows():
+        sym = row['Symbol']
+        qty = row['Qty']
+        cost_in = row['Cost']
+        broker = row['Broker']
+        
+        price_raw = live_prices.get(sym, 0)
+        if price_raw == 0: price_raw = cost_in
+
+        if broker == "Dime TH":
+            invested_usd = (qty * cost_in) / fx_rate
+            market_val_usd = (qty * price_raw) / fx_rate
+        else:
+            invested_usd = qty * cost_in
+            market_val_usd = qty * price_raw
+
+        pnl_usd = market_val_usd - invested_usd
+        pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd > 0 else 0.0
+
+        portfolio_rows.append({
+            "Symbol": sym,
+            "Broker": broker,
+            "Qty": qty,
+            "Cost": cost_in,
+            "Price": price_raw,
+            "Invested_USD": invested_usd,
+            "Market_Value_USD": market_val_usd,
+            "PnL_USD": pnl_usd,
+            "PnL_Pct": pnl_pct
+        })
+
+    df_port = pd.DataFrame(portfolio_rows)
     st.session_state["all_holdings_df"] = df_port
     st.session_state["usd_thb_rate"] = fx_rate
     return df_port, fx_rate
@@ -611,7 +617,7 @@ def render_dashboard():
                 fill_color = 'rgba(56, 189, 248, 0.05)'
         else:
             x_axis = ['Aug 2', 'Aug 4', 'Aug 5 (05:07)', 'Aug 5 (09:56)']
-            y_axis = [-4309.97 * multiplier, -3269.77 * multiplier, -2268.88 * multiplier, -2223.28 * multiplier]
+            y_axis = [-2530.32 * multiplier, -2530.32 * multiplier, -2530.32 * multiplier, -2530.32 * multiplier]
             line_color = '#4ade80'
             fill_color = 'rgba(74, 222, 128, 0.08)'
 
@@ -625,7 +631,6 @@ def render_dashboard():
             fillcolor=fill_color
         ))
         
-        # FIX: Corrected autorange syntax for Plotly Layout
         fig.update_layout(
             paper_bgcolor='rgba(0,0,0,0)', 
             plot_bgcolor='rgba(0,0,0,0)', 
