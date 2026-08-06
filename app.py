@@ -41,23 +41,12 @@ def inject_custom_css():
             color: #d1d5db;
         }
 
-        .stApp {
-            background-color: #08090b;
-        }
+        .stApp { background-color: #08090b; }
+        [data-testid="stSidebarNav"] { display: none !important; }
 
-        /* HIDE STREAMLIT DEFAULT NAVIGATION */
-        [data-testid="stSidebarNav"] {
-            display: none !important;
-        }
-
-        /* Custom Sidebar Styling */
         [data-testid="stSidebar"] {
             background-color: #0d0e12 !important;
             border-right: 1px solid #181a20 !important;
-        }
-
-        [data-testid="stSidebar"] > div:first-child {
-            padding-top: 1rem;
         }
 
         .sidebar-brand {
@@ -81,7 +70,6 @@ def inject_custom_css():
             border-radius: 8px;
             font-weight: 600;
             font-size: 0.85rem;
-            transition: all 0.2s ease;
             text-align: left;
             padding: 8px 12px;
             margin-bottom: 2px;
@@ -97,26 +85,8 @@ def inject_custom_css():
             background: linear-gradient(90deg, #0284c7 0%, #0369a1 100%) !important;
             color: #ffffff !important;
             border: 1px solid #38bdf8 !important;
-            box-shadow: 0 4px 12px rgba(56, 189, 248, 0.2);
         }
 
-        div[data-testid="stSidebar"] .streamlit-expanderHeader {
-            background-color: #111318 !important;
-            border: 1px solid #1f232d !important;
-            border-radius: 8px !important;
-            color: #e2e8f0 !important;
-            font-size: 0.88rem !important;
-            font-weight: 700 !important;
-            padding: 8px 12px !important;
-        }
-
-        div[data-testid="stSidebar"] .streamlit-expanderContent {
-            background-color: transparent !important;
-            border: none !important;
-            padding: 8px 0px 0px 8px !important;
-        }
-
-        /* TICKER MARQUEE STYLING */
         .ticker-container {
             width: 100%;
             overflow: hidden;
@@ -132,10 +102,6 @@ def inject_custom_css():
             display: inline-flex;
             gap: 12px;
             animation: marquee 30s linear infinite;
-        }
-
-        .ticker-container:hover .ticker-track {
-            animation-play-state: paused;
         }
 
         @keyframes marquee {
@@ -168,27 +134,16 @@ def inject_custom_css():
             margin-bottom: 15px;
         }
 
-        .card-header-title {
-            color: #9ca3af;
-            font-size: 0.85rem;
-            font-weight: 600;
-            margin-bottom: 12px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
         .big-value {
             font-family: 'Plus Jakarta Sans', sans-serif;
             font-size: 2.2rem;
             font-weight: 800;
             color: #ffffff;
             letter-spacing: -1px;
-            line-height: 1.1;
         }
 
-        .badge-delta-neg { background-color: rgba(239, 68, 68, 0.12); color: #f87171; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
-        .badge-delta-pos { background-color: rgba(34, 197, 94, 0.12); color: #4ade80; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+        .badge-delta-neg { background-color: rgba(239, 68, 68, 0.12); color: #f87171; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; }
+        .badge-delta-pos { background-color: rgba(34, 197, 94, 0.12); color: #4ade80; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; }
 
         .allocation-bar-container {
             display: flex;
@@ -222,15 +177,6 @@ def inject_custom_css():
         .stock-symbol { font-weight: 700; color: #ffffff; font-size: 0.9rem; }
         .stock-price { font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-top: 6px; }
 
-        /* TIMEFRAME PILL BUTTONS */
-        div[data-testid="stHorizontalBlock"] div.stButton > button {
-            padding: 4px 8px !important;
-            font-size: 0.75rem !important;
-            font-weight: 700 !important;
-            min-height: 32px !important;
-            border-radius: 6px !important;
-        }
-
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
     </style>
@@ -239,7 +185,7 @@ def inject_custom_css():
 inject_custom_css()
 
 # ==========================================
-# 2. SHARED PORTFOLIO DATA PIPELINE (SINGLE SOURCE OF TRUTH)
+# 2. WEBULL OPENAPI ENGINE & HYBRID PIPELINE
 # ==========================================
 @st.cache_data(ttl=60)
 def get_usd_thb_rate():
@@ -251,8 +197,7 @@ def get_usd_thb_rate():
         return 35.0
 
 def get_gspread_client():
-    if not HAS_GSPREAD:
-        return None
+    if not HAS_GSPREAD: return None
     try:
         google_secrets = st.secrets.get("Google", {})
         cred_base64 = google_secrets.get("credentials_base64", "")
@@ -267,6 +212,69 @@ def get_gspread_client():
         pass
     return None
 
+def fetch_webull_openapi_positions():
+    wb_secrets = st.secrets.get("Webull", {})
+    app_key = wb_secrets.get("AppKey", "")
+    app_secret = wb_secrets.get("AppSecret", "")
+    access_token = wb_secrets.get("AccessToken", "")
+    account_id = wb_secrets.get("AccountId", "")
+
+    if not (app_key and app_secret and access_token and account_id):
+        return None
+
+    try:
+        host = "openapi.webull.com"
+        path = "/openapi/assets/positions"
+        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        nonce = str(uuid.uuid4())
+
+        sign_params = {
+            "app_key": app_key,
+            "signature_version": "1.0",
+            "signature_algorithm": "HMAC-SHA1",
+            "timestamp": timestamp,
+            "nonce": nonce,
+            "account_id": account_id
+        }
+        sorted_keys = sorted(sign_params.keys())
+        canonical_query = "&".join([f"{k}={sign_params[k]}" for k in sorted_keys])
+        string_to_sign = f"GET\n{path}\n{canonical_query}"
+
+        signature = hmac.new(app_secret.encode('utf-8'), string_to_sign.encode('utf-8'), hashlib.sha1).digest()
+        signature_b64 = base64.b64encode(signature).decode('utf-8')
+
+        headers = {
+            "x-app-key": app_key,
+            "x-timestamp": timestamp,
+            "x-signature-version": "1.0",
+            "x-signature-algorithm": "HMAC-SHA1",
+            "x-signature-nonce": nonce,
+            "x-version": "1.0",
+            "x-signature": signature_b64,
+            "x-access-token": access_token
+        }
+
+        conn = http.client.HTTPSConnection(host, timeout=10)
+        full_path = f"{path}?account_id={account_id}"
+        conn.request("GET", full_path, headers=headers)
+        response = conn.getresponse()
+        
+        if response.status == 200:
+            data = json.loads(response.read().decode('utf-8'))
+            positions = data.get("positions", []) or data.get("data", {}).get("positions", [])
+            
+            holdings = []
+            for p in positions:
+                sym = p.get("symbol", "").strip().upper()
+                qty = float(p.get("quantity", 0))
+                cost = float(p.get("costPrice", 0) or p.get("cost", 0))
+                if qty > 0 and sym:
+                    holdings.append({"Symbol": sym, "Qty": qty, "Cost": cost, "Broker": "Webull"})
+            return holdings
+    except Exception:
+        pass
+    return None
+
 def load_webull_from_gsheet():
     holdings = []
     gc = get_gspread_client()
@@ -277,16 +285,19 @@ def load_webull_from_gsheet():
             records = worksheet.get_all_records()
             if records:
                 df_raw = pd.DataFrame(records)
-                
                 c_sym = next((c for c in df_raw.columns if "Sym" in c or "Ticker" in c or "หุ้น" in c), df_raw.columns[2])
                 c_qty = next((c for c in df_raw.columns if "Qty" in c or "จำนวน" in c or "Volume" in c), df_raw.columns[4])
                 c_pr = next((c for c in df_raw.columns if "Pr" in c or "Price" in c or "ต้นทุน" in c), df_raw.columns[5])
                 c_side = next((c for c in df_raw.columns if "Side" in c or "ประเภท" in c), None)
+                c_time = next((c for c in df_raw.columns if "Time" in c or "Date" in c or "เวลา" in c), df_raw.columns[1])
 
                 df_raw["Clean_Sym"] = df_raw[c_sym].astype(str).str.strip().str.upper()
                 df_raw["Clean_Side"] = df_raw[c_side].astype(str).str.strip().str.upper() if c_side else ""
+                
+                if c_time in df_raw.columns:
+                    df_raw["Parsed_Time"] = pd.to_datetime(df_raw[c_time], errors='coerce')
+                    df_raw = df_raw.sort_values(by="Parsed_Time", ascending=False)
 
-                # Filter ONLY Snapshot rows where Side is empty
                 df_snapshots = df_raw[df_raw["Clean_Side"].isin(["", "NAN", "NONE"])].copy()
 
                 if not df_snapshots.empty:
@@ -301,29 +312,6 @@ def load_webull_from_gsheet():
 
                         if qty > 0:
                             holdings.append({"Symbol": sym, "Qty": qty, "Cost": pr, "Broker": "Webull"})
-                else:
-                    grouped = {}
-                    for _, r in df_raw.iterrows():
-                        sym = r["Clean_Sym"]
-                        if not sym: continue
-                        try: qty = float(str(r.get(c_qty, 0)).replace(",", ""))
-                        except: qty = 0.0
-                        try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
-                        except: pr = 0.0
-                        side = r["Clean_Side"]
-                        if "SELL" in side or side == "S": qty = -abs(qty)
-
-                        if sym not in grouped: grouped[sym] = {"tot_qty": 0.0, "tot_cost_val": 0.0}
-                        if qty > 0:
-                            grouped[sym]["tot_qty"] += qty
-                            grouped[sym]["tot_cost_val"] += (qty * pr)
-                        elif qty < 0:
-                            grouped[sym]["tot_qty"] += qty
-
-                    for sym, data in grouped.items():
-                        if data["tot_qty"] > 0:
-                            avg_cost = data["tot_cost_val"] / data["tot_qty"] if data["tot_qty"] > 0 else 0.0
-                            holdings.append({"Symbol": sym, "Qty": data["tot_qty"], "Cost": avg_cost, "Broker": "Webull"})
         except Exception:
             pass
     return holdings
@@ -346,8 +334,7 @@ def load_dime_us_from_gsheet():
                         "Broker": "Dime US",
                         "Manual_Price": r.get("ราคาปัจจุบันล็อก (Manual Price)", "")
                     })
-        except:
-            pass
+        except: pass
     return holdings
 
 def load_dime_th_from_gsheet():
@@ -367,13 +354,17 @@ def load_dime_th_from_gsheet():
                         "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
                         "Broker": "Dime TH"
                     })
-        except:
-            pass
+        except: pass
     return holdings
 
 def load_master_portfolio_data():
     fx_rate = get_usd_thb_rate()
-    w_holdings = load_webull_from_gsheet()
+    
+    # Try Webull Live OpenAPI Primary first, fallback to Google Sheets
+    w_holdings = fetch_webull_openapi_positions()
+    if not w_holdings:
+        w_holdings = load_webull_from_gsheet()
+
     d_us_holdings = load_dime_us_from_gsheet()
     d_th_holdings = load_dime_th_from_gsheet()
     
@@ -443,8 +434,7 @@ def load_master_portfolio_data():
 
 def load_history_from_gsheet():
     gc = get_gspread_client()
-    if not gc:
-        return None
+    if not gc: return None
     try:
         sh = gc.open("หุ้นของเรา")
         worksheet = sh.worksheet("Portfolio_History")
@@ -454,7 +444,6 @@ def load_history_from_gsheet():
             if len(df.columns) >= 4:
                 df = df.iloc[:, :5]
                 df.columns = ["Timestamp", "Invested", "MarketValue", "PnL", "PnLPct"][:len(df.columns)]
-                
                 df["Parsed_Date"] = pd.to_datetime(df["Timestamp"], errors='coerce')
                 
                 def clean_num(val):
@@ -465,12 +454,11 @@ def load_history_from_gsheet():
                 df["PnL"] = df["PnL"].apply(clean_num)
                 df = df.sort_values(by="Parsed_Date").reset_index(drop=True)
                 return df
-    except Exception:
-        pass
+    except Exception: pass
     return None
 
 # ==========================================
-# 3. DASHBOARD MAIN RENDER FUNCTION (VIEW ONLY)
+# 3. DASHBOARD MAIN RENDER FUNCTION
 # ==========================================
 def render_dashboard():
     df_port, fx_rate = load_master_portfolio_data()
@@ -483,7 +471,6 @@ def render_dashboard():
     else:
         tot_invested_usd, tot_market_usd, tot_pnl_usd, tot_pnl_pct = 0.0, 0.0, 0.0, 0.0
 
-    # Top Ticker Marquee
     ticker_cards_html = ""
     if not df_port.empty:
         top_stocks = df_port.sort_values(by="Market_Value_USD", ascending=False).head(6)
@@ -524,7 +511,7 @@ def render_dashboard():
         card_html = f"""
         <div class="dash-card">
             <div class="card-header-title">
-                <span>Portfolio value</span>
+                <span>Portfolio value (Stock Assets)</span>
                 <span class="{pnl_badge}">{pnl_sign}{tot_pnl_pct:.2f}%</span>
             </div>
             <div class="big-value">{symbol}{display_market:,.2f}</div>
@@ -580,33 +567,17 @@ def render_dashboard():
         
         if df_history is not None and not df_history.empty and "Parsed_Date" in df_history.columns:
             now_dt = datetime.now()
-            
-            # Filtering logic by Date Range
-            if selected_tf == "1D":
-                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=1))]
-            elif selected_tf == "7D":
-                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=7))]
-            elif selected_tf == "1M":
-                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=30))]
-            elif selected_tf == "3M":
-                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=90))]
-            elif selected_tf == "6M":
-                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=180))]
-            elif selected_tf == "1Y":
-                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=365))]
-            elif selected_tf == "3Y":
-                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=1095))]
-            elif selected_tf == "5Y":
-                filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=1825))]
-            else:
-                filtered_df = df_history.copy()
+            if selected_tf == "1D": filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=1))]
+            elif selected_tf == "7D": filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=7))]
+            elif selected_tf == "1M": filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=30))]
+            elif selected_tf == "3M": filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=90))]
+            elif selected_tf == "6M": filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=180))]
+            elif selected_tf == "1Y": filtered_df = df_history[df_history["Parsed_Date"] >= (now_dt - timedelta(days=365))]
+            else: filtered_df = df_history.copy()
 
-            if filtered_df.empty:
-                filtered_df = df_history.copy()
-
+            if filtered_df.empty: filtered_df = df_history.copy()
             x_axis = filtered_df["Timestamp"].tolist()
             
-            # Select column based on mode
             if st.session_state["chart_mode"] == "Total Return (PnL)":
                 y_axis = (filtered_df["PnL"] * multiplier).tolist()
                 line_color = '#4ade80' if (len(y_axis) > 0 and y_axis[-1] >= y_axis[0]) else '#f87171'
@@ -616,33 +587,16 @@ def render_dashboard():
                 line_color = '#38bdf8'
                 fill_color = 'rgba(56, 189, 248, 0.05)'
         else:
-            x_axis = ['Aug 2', 'Aug 4', 'Aug 5 (05:07)', 'Aug 5 (09:56)']
-            y_axis = [-2530.32 * multiplier, -2530.32 * multiplier, -2530.32 * multiplier, -2530.32 * multiplier]
-            line_color = '#4ade80'
-            fill_color = 'rgba(74, 222, 128, 0.08)'
+            x_axis = ['Aug 2', 'Aug 4', 'Aug 5', 'Aug 6']
+            y_axis = [-5027.36 * multiplier] * 4
+            line_color = '#f87171'
+            fill_color = 'rgba(248, 113, 113, 0.08)'
 
         fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=x_axis, 
-            y=y_axis, 
-            mode='lines+markers', 
-            line=dict(color=line_color, width=3, shape='spline'), 
-            fill='tozeroy', 
-            fillcolor=fill_color
-        ))
-        
-        fig.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)', 
-            plot_bgcolor='rgba(0,0,0,0)', 
-            font=dict(color='#6b7280', family='Plus Jakarta Sans'), 
-            xaxis=dict(showgrid=False, zeroline=False), 
-            yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=True, zerolinecolor='#222734', autorange=True), 
-            margin=dict(t=10, b=10, l=10, r=10), 
-            height=280
-        )
+        fig.add_trace(go.Scatter(x=x_axis, y=y_axis, mode='lines+markers', line=dict(color=line_color, width=3, shape='spline'), fill='tozeroy', fillcolor=fill_color))
+        fig.update_layout(paper_bgcolor='rgba(0,0,0,0)', plot_bgcolor='rgba(0,0,0,0)', font=dict(color='#6b7280', family='Plus Jakarta Sans'), xaxis=dict(showgrid=False, zeroline=False), yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=True, zerolinecolor='#222734', autorange=True), margin=dict(t=10, b=10, l=10, r=10), height=280)
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-    # Top Holdings Section
     if not df_port.empty:
         st.markdown('<div style="font-size: 0.85rem; font-weight: 600; color: #9ca3af; margin-bottom: 10px;">Top Holdings Performance</div>', unsafe_allow_html=True)
         top_3 = df_port.sort_values(by="Market_Value_USD", ascending=False).head(3)
