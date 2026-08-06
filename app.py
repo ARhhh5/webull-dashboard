@@ -145,6 +145,32 @@ def inject_custom_css():
         .badge-delta-neg { background-color: rgba(239, 68, 68, 0.12); color: #f87171; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; }
         .badge-delta-pos { background-color: rgba(34, 197, 94, 0.12); color: #4ade80; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; }
 
+        .source-badge-api {
+            background-color: rgba(34, 197, 94, 0.15);
+            color: #4ade80;
+            border: 1px solid rgba(34, 197, 94, 0.3);
+            padding: 5px 10px;
+            border-radius: 8px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
+        .source-badge-sheet {
+            background-color: rgba(234, 179, 8, 0.15);
+            color: #facc15;
+            border: 1px solid rgba(234, 179, 8, 0.3);
+            padding: 5px 10px;
+            border-radius: 8px;
+            font-size: 0.78rem;
+            font-weight: 700;
+            display: inline-flex;
+            align-items: center;
+            gap: 6px;
+        }
+
         .allocation-bar-container {
             display: flex;
             height: 10px;
@@ -269,7 +295,13 @@ def fetch_webull_openapi_positions():
                 qty = float(p.get("quantity", 0))
                 cost = float(p.get("costPrice", 0) or p.get("cost", 0))
                 if qty > 0 and sym:
-                    holdings.append({"Symbol": sym, "Qty": qty, "Cost": cost, "Broker": "Webull"})
+                    holdings.append({
+                        "Symbol": sym, 
+                        "Qty": qty, 
+                        "Cost": cost, 
+                        "Broker": "Webull",
+                        "Source": "Webull API (Live)"
+                    })
             return holdings
     except Exception:
         pass
@@ -311,7 +343,13 @@ def load_webull_from_gsheet():
                         except: pr = 0.0
 
                         if qty > 0:
-                            holdings.append({"Symbol": sym, "Qty": qty, "Cost": pr, "Broker": "Webull"})
+                            holdings.append({
+                                "Symbol": sym, 
+                                "Qty": qty, 
+                                "Cost": pr, 
+                                "Broker": "Webull",
+                                "Source": "Google Sheet (Fallback)"
+                            })
         except Exception:
             pass
     return holdings
@@ -332,6 +370,7 @@ def load_dime_us_from_gsheet():
                         "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
                         "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
                         "Broker": "Dime US",
+                        "Source": "Google Sheet",
                         "Manual_Price": r.get("ราคาปัจจุบันล็อก (Manual Price)", "")
                     })
         except: pass
@@ -352,7 +391,8 @@ def load_dime_th_from_gsheet():
                         "Symbol": sym,
                         "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
                         "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
-                        "Broker": "Dime TH"
+                        "Broker": "Dime TH",
+                        "Source": "Google Sheet"
                     })
         except: pass
     return holdings
@@ -361,8 +401,10 @@ def load_master_portfolio_data():
     fx_rate = get_usd_thb_rate()
     
     # Try Webull Live OpenAPI Primary first, fallback to Google Sheets
+    webull_source = "Webull API (Live)"
     w_holdings = fetch_webull_openapi_positions()
     if not w_holdings:
+        webull_source = "Google Sheet (Fallback)"
         w_holdings = load_webull_from_gsheet()
 
     d_us_holdings = load_dime_us_from_gsheet()
@@ -370,7 +412,7 @@ def load_master_portfolio_data():
     
     all_holdings = w_holdings + d_us_holdings + d_th_holdings
     if not all_holdings:
-        return pd.DataFrame(), fx_rate
+        return pd.DataFrame(), fx_rate, webull_source, datetime.now().strftime("%H:%M:%S")
 
     df_raw = pd.DataFrame(all_holdings)
     live_prices = {}
@@ -401,6 +443,7 @@ def load_master_portfolio_data():
         qty = row['Qty']
         cost_in = row['Cost']
         broker = row['Broker']
+        source = row.get('Source', 'Google Sheet')
         
         price_raw = live_prices.get(sym, 0)
         if price_raw == 0: price_raw = cost_in
@@ -424,13 +467,19 @@ def load_master_portfolio_data():
             "Invested_USD": invested_usd,
             "Market_Value_USD": market_val_usd,
             "PnL_USD": pnl_usd,
-            "PnL_Pct": pnl_pct
+            "PnL_Pct": pnl_pct,
+            "Source": source
         })
 
     df_port = pd.DataFrame(portfolio_rows)
+    sync_time = datetime.now().strftime("%H:%M:%S")
+    
     st.session_state["all_holdings_df"] = df_port
     st.session_state["usd_thb_rate"] = fx_rate
-    return df_port, fx_rate
+    st.session_state["webull_source"] = webull_source
+    st.session_state["sync_time"] = sync_time
+
+    return df_port, fx_rate, webull_source, sync_time
 
 def load_history_from_gsheet():
     gc = get_gspread_client()
@@ -461,7 +510,7 @@ def load_history_from_gsheet():
 # 3. DASHBOARD MAIN RENDER FUNCTION
 # ==========================================
 def render_dashboard():
-    df_port, fx_rate = load_master_portfolio_data()
+    df_port, fx_rate, webull_source, sync_time = load_master_portfolio_data()
 
     if not df_port.empty:
         tot_invested_usd = df_port['Invested_USD'].sum()
