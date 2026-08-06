@@ -53,51 +53,80 @@ def load_webull_from_gsheet():
             records = worksheet.get_all_records()
             if records:
                 df_raw = pd.DataFrame(records)
-                # Map column names from sheet: Order ID, Time, Sym, Side, (Qty), Pr
-                sym_col = [c for c in df_raw.columns if "Sym" in c or "Ticker" in c or "หุ้น" in c]
-                qty_col = [c for c in df_raw.columns if "Qty" in c or "จำนวน" in c or "Volume" in c]
-                pr_col = [c for c in df_raw.columns if "Pr" in c or "Price" in c or "ต้นทุน" in c]
-                side_col = [c for c in df_raw.columns if "Side" in c or "ประเภท" in c]
+                
+                # Dynamic Column Identification
+                c_sym = next((c for c in df_raw.columns if "Sym" in c or "Ticker" in c or "หุ้น" in c), df_raw.columns[2])
+                c_qty = next((c for c in df_raw.columns if "Qty" in c or "จำนวน" in c or "Volume" in c), df_raw.columns[4])
+                c_pr = next((c for c in df_raw.columns if "Pr" in c or "Price" in c or "ต้นทุน" in c), df_raw.columns[5])
+                c_side = next((c for c in df_raw.columns if "Side" in c or "ประเภท" in c), None)
+                c_time = next((c for c in df_raw.columns if "Time" in c or "Date" in c or "เวลา" in c), df_raw.columns[1])
 
-                c_sym = sym_col[0] if sym_col else df_raw.columns[2]
-                c_qty = qty_col[0] if qty_col else df_raw.columns[4]
-                c_pr = pr_col[0] if pr_col else df_raw.columns[5]
-                c_side = side_col[0] if side_col else None
+                # Clean strings & handle empty Side (Snapshot records)
+                df_raw["Clean_Sym"] = df_raw[c_sym].astype(str).str.strip().str.upper()
+                if c_side:
+                    df_raw["Clean_Side"] = df_raw[c_side].astype(str).str.strip().str.upper()
+                else:
+                    df_raw["Clean_Side"] = ""
 
-                grouped = {}
-                for _, r in df_raw.iterrows():
-                    sym = str(r.get(c_sym, "")).strip().upper()
-                    if not sym: continue
+                # Filter ONLY Snapshot rows where Side is empty (or blank)
+                df_snapshots = df_raw[df_raw["Clean_Side"].isin(["", "NAN", "NONE"])].copy()
+
+                if not df_snapshots.empty:
+                    # Get the latest Snapshot row per Symbol by sorting Time/Index
+                    df_snapshots = df_snapshots.drop_duplicates(subset=["Clean_Sym"], keep="first")
                     
-                    try: qty = float(str(r.get(c_qty, 0)).replace(",", ""))
-                    except: qty = 0.0
-                    
-                    try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
-                    except: pr = 0.0
+                    for _, r in df_snapshots.iterrows():
+                        sym = r["Clean_Sym"]
+                        if not sym: continue
+                        
+                        try: qty = float(str(r.get(c_qty, 0)).replace(",", ""))
+                        except: qty = 0.0
+                        
+                        try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
+                        except: pr = 0.0
 
-                    side = str(r.get(c_side, "")).strip().upper() if c_side else "BUY"
-                    
-                    if "SELL" in side or side == "S":
-                        qty = -abs(qty)
+                        if qty > 0:
+                            holdings.append({
+                                "Symbol": sym,
+                                "Qty": qty,
+                                "Cost": pr,
+                                "Broker": "Webull"
+                            })
+                else:
+                    # Fallback: If no Snapshot rows found, aggregate BUY/SELL transactions
+                    grouped = {}
+                    for _, r in df_raw.iterrows():
+                        sym = r["Clean_Sym"]
+                        if not sym: continue
+                        
+                        try: qty = float(str(r.get(c_qty, 0)).replace(",", ""))
+                        except: qty = 0.0
+                        
+                        try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
+                        except: pr = 0.0
 
-                    if sym not in grouped:
-                        grouped[sym] = {"tot_qty": 0.0, "tot_cost_val": 0.0}
-                    
-                    if qty > 0:
-                        grouped[sym]["tot_qty"] += qty
-                        grouped[sym]["tot_cost_val"] += (qty * pr)
-                    elif qty < 0:
-                        grouped[sym]["tot_qty"] += qty
+                        side = r["Clean_Side"]
+                        if "SELL" in side or side == "S":
+                            qty = -abs(qty)
 
-                for sym, data in grouped.items():
-                    if data["tot_qty"] > 0:
-                        avg_cost = data["tot_cost_val"] / data["tot_qty"] if data["tot_qty"] > 0 else 0.0
-                        holdings.append({
-                            "Symbol": sym,
-                            "Qty": data["tot_qty"],
-                            "Cost": avg_cost,
-                            "Broker": "Webull"
-                        })
+                        if sym not in grouped:
+                            grouped[sym] = {"tot_qty": 0.0, "tot_cost_val": 0.0}
+                        
+                        if qty > 0:
+                            grouped[sym]["tot_qty"] += qty
+                            grouped[sym]["tot_cost_val"] += (qty * pr)
+                        elif qty < 0:
+                            grouped[sym]["tot_qty"] += qty
+
+                    for sym, data in grouped.items():
+                        if data["tot_qty"] > 0:
+                            avg_cost = data["tot_cost_val"] / data["tot_qty"] if data["tot_qty"] > 0 else 0.0
+                            holdings.append({
+                                "Symbol": sym,
+                                "Qty": data["tot_qty"],
+                                "Cost": avg_cost,
+                                "Broker": "Webull"
+                            })
         except Exception as e:
             pass
     return holdings
