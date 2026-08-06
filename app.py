@@ -158,10 +158,10 @@ def inject_custom_css():
             gap: 6px;
         }
 
-        .source-badge-sheet {
-            background-color: rgba(234, 179, 8, 0.15);
-            color: #facc15;
-            border: 1px solid rgba(234, 179, 8, 0.3);
+        .source-badge-error {
+            background-color: rgba(239, 68, 68, 0.15);
+            color: #f87171;
+            border: 1px solid rgba(239, 68, 68, 0.3);
             padding: 5px 10px;
             border-radius: 8px;
             font-size: 0.78rem;
@@ -211,7 +211,7 @@ def inject_custom_css():
 inject_custom_css()
 
 # ==========================================
-# 2. WEBULL OPENAPI ENGINE & HYBRID PIPELINE
+# 2. WEBULL STRICT OPENAPI ENGINE (NO FALLBACK)
 # ==========================================
 @st.cache_data(ttl=60)
 def get_usd_thb_rate():
@@ -238,7 +238,7 @@ def get_gspread_client():
         pass
     return None
 
-def fetch_webull_openapi_positions():
+def fetch_webull_strict_openapi_positions():
     wb_secrets = st.secrets.get("Webull", {})
     app_key = wb_secrets.get("AppKey", "")
     app_secret = wb_secrets.get("AppSecret", "")
@@ -246,7 +246,7 @@ def fetch_webull_openapi_positions():
     account_id = wb_secrets.get("AccountId", "")
 
     if not (app_key and app_secret and access_token and account_id):
-        return None
+        return None, "Missing Webull Credentials in Secrets"
 
     try:
         host = "openapi.webull.com"
@@ -302,57 +302,11 @@ def fetch_webull_openapi_positions():
                         "Broker": "Webull",
                         "Source": "Webull API (Live)"
                     })
-            return holdings
-    except Exception:
-        pass
-    return None
-
-def load_webull_from_gsheet():
-    holdings = []
-    gc = get_gspread_client()
-    if gc:
-        try:
-            sh = gc.open("หุ้นของเรา")
-            worksheet = sh.worksheet("Webull_Order_History")
-            records = worksheet.get_all_records()
-            if records:
-                df_raw = pd.DataFrame(records)
-                c_sym = next((c for c in df_raw.columns if "Sym" in c or "Ticker" in c or "หุ้น" in c), df_raw.columns[2])
-                c_qty = next((c for c in df_raw.columns if "Qty" in c or "จำนวน" in c or "Volume" in c), df_raw.columns[4])
-                c_pr = next((c for c in df_raw.columns if "Pr" in c or "Price" in c or "ต้นทุน" in c), df_raw.columns[5])
-                c_side = next((c for c in df_raw.columns if "Side" in c or "ประเภท" in c), None)
-                c_time = next((c for c in df_raw.columns if "Time" in c or "Date" in c or "เวลา" in c), df_raw.columns[1])
-
-                df_raw["Clean_Sym"] = df_raw[c_sym].astype(str).str.strip().str.upper()
-                df_raw["Clean_Side"] = df_raw[c_side].astype(str).str.strip().str.upper() if c_side else ""
-                
-                if c_time in df_raw.columns:
-                    df_raw["Parsed_Time"] = pd.to_datetime(df_raw[c_time], errors='coerce')
-                    df_raw = df_raw.sort_values(by="Parsed_Time", ascending=False)
-
-                df_snapshots = df_raw[df_raw["Clean_Side"].isin(["", "NAN", "NONE"])].copy()
-
-                if not df_snapshots.empty:
-                    df_snapshots = df_snapshots.drop_duplicates(subset=["Clean_Sym"], keep="first")
-                    for _, r in df_snapshots.iterrows():
-                        sym = r["Clean_Sym"]
-                        if not sym: continue
-                        try: qty = float(str(r.get(c_qty, 0)).replace(",", ""))
-                        except: qty = 0.0
-                        try: pr = float(str(r.get(c_pr, 0)).replace(",", ""))
-                        except: pr = 0.0
-
-                        if qty > 0:
-                            holdings.append({
-                                "Symbol": sym, 
-                                "Qty": qty, 
-                                "Cost": pr, 
-                                "Broker": "Webull",
-                                "Source": "Google Sheet (Fallback)"
-                            })
-        except Exception:
-            pass
-    return holdings
+            return holdings, "OK"
+        else:
+            return None, f"HTTP Error {response.status}: {response.reason}"
+    except Exception as e:
+        return None, f"Connection Failed: {str(e)}"
 
 def load_dime_us_from_gsheet():
     holdings = []
@@ -400,12 +354,12 @@ def load_dime_th_from_gsheet():
 def load_master_portfolio_data():
     fx_rate = get_usd_thb_rate()
     
-    # Try Webull Live OpenAPI Primary first, fallback to Google Sheets
-    webull_source = "Webull API (Live)"
-    w_holdings = fetch_webull_openapi_positions()
+    # Strictly pull Webull via OpenAPI (No GSheet Fallback)
+    w_holdings, api_status = fetch_webull_strict_openapi_positions()
+    webull_source = "Webull API (Live)" if api_status == "OK" else f"API Error: {api_status}"
+    
     if not w_holdings:
-        webull_source = "Google Sheet (Fallback)"
-        w_holdings = load_webull_from_gsheet()
+        w_holdings = []
 
     d_us_holdings = load_dime_us_from_gsheet()
     d_th_holdings = load_dime_th_from_gsheet()
@@ -473,7 +427,7 @@ def load_master_portfolio_data():
 
     df_port = pd.DataFrame(portfolio_rows)
     sync_time = datetime.now().strftime("%H:%M:%S")
-    
+
     st.session_state["all_holdings_df"] = df_port
     st.session_state["usd_thb_rate"] = fx_rate
     st.session_state["webull_source"] = webull_source
