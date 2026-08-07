@@ -128,7 +128,7 @@ def get_gspread_client():
     return None
 
 def fetch_live_prices(symbols):
-    """ดึงราคาตลาดสด Real-time จาก yfinance"""
+    """ดึงราคาตลาดสด Real-time จาก yfinance รองรับทั้งหุ้น US และ TH (.BK)"""
     price_map = {}
     if not symbols:
         return price_map
@@ -138,7 +138,6 @@ def fetch_live_prices(symbols):
         tickers = yf.Tickers(" ".join(clean_symbols))
         for sym in clean_symbols:
             try:
-                # พยายามดึงราคาล่าสุดจาก fast_info หรือ history
                 fast_info = tickers.tickers[sym].fast_info
                 price = fast_info.last_price
                 if price is None or pd.isna(price):
@@ -179,8 +178,17 @@ def sync_portfolio_snapshot_to_gsheet(invested_val, market_val, pnl_val, pnl_pct
     except Exception as e:
         return False, f"เกิดข้อผิดพลาดในการเขียน Google Sheets: {str(e)}"
 
+def clean_val(val):
+    if pd.isna(val) or val == "":
+        return 0.0
+    val_str = str(val).replace(",", "").replace("%", "").replace("$", "").replace("฿", "").strip()
+    try:
+        return float(val_str)
+    except:
+        return 0.0
+
 def load_master_holdings_from_sheets():
-    """ดึงและคำนวณข้อมูลพอร์ตจาก Google Sheets พร้อมอัปเดตราคาตลาดสดจาก yfinance"""
+    """ดึงข้อมูลจาก Google Sheets และยิง Live Price ผ่าน yfinance"""
     gc = get_gspread_client()
     if not gc:
         return pd.DataFrame()
@@ -196,74 +204,60 @@ def load_master_holdings_from_sheets():
 
         raw_records = []
 
-        # 1. ดึงข้อมูลพอร์ต Webull จาก Webull_Order_History (เอาเฉพาะบรรทัดล่าสุดของแต่ละหุ้น)
+        # 1. ดึงพอร์ต Webull จาก Webull_Order_History (เอาเฉพาะบรรทัดล่างสุดของแต่ละ Symbol)
         try:
             ws_w = sh.worksheet("Webull_Order_History")
-            data_w = ws_w.get_all_records()
-            if data_w:
-                df_w = pd.DataFrame(data_w)
-                if not df_w.empty and "Sym" in df_w.columns:
-                    # คลีนข้อมูลคอลัมน์
-                    sym_col = "Sym" if "Sym" in df_w.columns else "Symbol"
-                    qty_col = "Qty" if "Qty" in df_w.columns else "Quantity"
-                    price_col = "Pr" if "Pr" in df_w.columns else "Price"
+            data_w = ws_w.get_all_values()
+            if len(data_w) > 1:
+                df_w = pd.DataFrame(data_w[1:], columns=data_w[0])
+                sym_col = next((c for c in df_w.columns if "Sym" in c or "Ticker" in c or "หุ้น" in c), df_w.columns[0])
+                qty_col = next((c for c in df_w.columns if "Qty" in c or "Volume" in c or "จำนวน" in c), df_w.columns[1])
+                cost_col = next((c for c in df_w.columns if "Pr" in c or "Cost" in c or "ต้นทุน" in c or "Avg" in c), df_w.columns[2])
 
-                    # วนลูปตาม Symbol แล้วดึงเฉพาะบรรทัดล่างสุด (Latest Record)
-                    for sym, grp in df_w.groupby(sym_col):
-                        latest_row = grp.iloc[-1]
-                        qty = pd.to_numeric(latest_row.get(qty_col, 0), errors='coerce')
-                        
-                        if qty > 0:
-                            # ถ้ามีคอลัมน์ Avg_Cost ในแถวล่าสุดให้ใช้เลย ถ้าไม่มีให้ใช้ Pr
-                            cost = pd.to_numeric(latest_row.get("Avg_Cost", latest_row.get(price_col, 0)), errors='coerce')
-                            raw_records.append({
-                                "Broker": "Webull",
-                                "Symbol": str(sym).strip().upper(),
-                                "Qty": float(qty),
-                                "Cost": float(cost)
-                            })
+                for sym, grp in df_w.groupby(sym_col):
+                    latest_row = grp.iloc[-1]
+                    qty = clean_val(latest_row.get(qty_col, 0))
+                    if qty > 0:
+                        cost = clean_val(latest_row.get(cost_col, 0))
+                        raw_records.append({"Broker": "Webull", "Symbol": str(sym).strip().upper(), "Qty": qty, "Cost": cost})
         except Exception:
             pass
 
-        # 2. ดึงข้อมูล Dime US (ดึงเฉพาะแถวล่าสุดราย Symbol)
+        # 2. ดึงพอร์ต Dime US จาก Dime_Portfolio
         try:
             ws_dus = sh.worksheet("Dime_Portfolio")
-            data_dus = ws_dus.get_all_records()
-            if data_dus:
-                df_dus = pd.DataFrame(data_dus)
-                if not df_dus.empty and "Symbol" in df_dus.columns:
-                    for sym, grp in df_dus.groupby("Symbol"):
-                        latest_row = grp.iloc[-1]
-                        qty = pd.to_numeric(latest_row.get("Qty", 0), errors='coerce')
-                        if qty > 0:
-                            cost = pd.to_numeric(latest_row.get("Cost", 0), errors='coerce')
-                            raw_records.append({
-                                "Broker": "Dime US",
-                                "Symbol": str(sym).strip().upper(),
-                                "Qty": float(qty),
-                                "Cost": float(cost)
-                            })
+            data_dus = ws_dus.get_all_values()
+            if len(data_dus) > 1:
+                df_dus = pd.DataFrame(data_dus[1:], columns=data_dus[0])
+                sym_col = next((c for c in df_dus.columns if "หุ้น" in c or "Ticker" in c or "Sym" in c), df_dus.columns[0])
+                qty_col = next((c for c in df_dus.columns if "จำนวน" in c or "Volume" in c or "Qty" in c), df_dus.columns[1])
+                cost_col = next((c for c in df_dus.columns if "ต้นทุน" in c or "Avg" in c or "Cost" in c), df_dus.columns[2])
+
+                for _, row in df_dus.iterrows():
+                    sym = str(row.get(sym_col, "")).strip().upper()
+                    qty = clean_val(row.get(qty_col, 0))
+                    cost = clean_val(row.get(cost_col, 0))
+                    if sym and qty > 0:
+                        raw_records.append({"Broker": "Dime US", "Symbol": sym, "Qty": qty, "Cost": cost})
         except Exception:
             pass
 
-        # 3. ดึงข้อมูล Dime TH (หุ้นไทย)
+        # 3. ดึงพอร์ต Dime TH จาก Dime_TH_Portfolio
         try:
             ws_dth = sh.worksheet("Dime_TH_Portfolio")
-            data_dth = ws_dth.get_all_records()
-            if data_dth:
-                df_dth = pd.DataFrame(data_dth)
-                if not df_dth.empty and "Symbol" in df_dth.columns:
-                    for sym, grp in df_dth.groupby("Symbol"):
-                        latest_row = grp.iloc[-1]
-                        qty = pd.to_numeric(latest_row.get("Qty", 0), errors='coerce')
-                        if qty > 0:
-                            cost = pd.to_numeric(latest_row.get("Cost", 0), errors='coerce')
-                            raw_records.append({
-                                "Broker": "Dime TH",
-                                "Symbol": str(sym).strip().upper(),
-                                "Qty": float(qty),
-                                "Cost": float(cost)
-                            })
+            data_dth = ws_dth.get_all_values()
+            if len(data_dth) > 1:
+                df_dth = pd.DataFrame(data_dth[1:], columns=data_dth[0])
+                sym_col = next((c for c in df_dth.columns if "หุ้น" in c or "Ticker" in c or "Sym" in c), df_dth.columns[0])
+                qty_col = next((c for c in df_dth.columns if "จำนวน" in c or "Volume" in c or "Qty" in c), df_dth.columns[1])
+                cost_col = next((c for c in df_dth.columns if "ต้นทุน" in c or "Avg" in c or "Cost" in c), df_dth.columns[2])
+
+                for _, row in df_dth.iterrows():
+                    sym = str(row.get(sym_col, "")).strip().upper()
+                    qty = clean_val(row.get(qty_col, 0))
+                    cost = clean_val(row.get(cost_col, 0))
+                    if sym and qty > 0:
+                        raw_records.append({"Broker": "Dime TH", "Symbol": sym, "Qty": qty, "Cost": cost})
         except Exception:
             pass
 
@@ -272,13 +266,16 @@ def load_master_holdings_from_sheets():
 
         df_holdings = pd.DataFrame(raw_records)
 
-        # 4. ยิงดึงราคาตลาดสดผ่าน yfinance สำหรับหุ้นสหรัฐฯ
+        # 4. รวมรายการสัญลักษณ์หุ้นเพื่อยิง yfinance
         us_symbols = df_holdings[df_holdings["Broker"].isin(["Webull", "Dime US"])]["Symbol"].unique().tolist()
-        live_prices = fetch_live_prices(us_symbols)
+        th_symbols = [f"{s}.BK" for s in df_holdings[df_holdings["Broker"] == "Dime TH"]["Symbol"].unique().tolist()]
+        
+        all_symbols = us_symbols + th_symbols
+        live_prices = fetch_live_prices(all_symbols)
 
         fx_rate = st.session_state.get("usd_thb_rate", 35.0)
 
-        # 5. คำนวณ Value / PnL Real-time
+        # 5. คำนวณ Value / PnL สด
         holdings_calculated = []
         for _, row in df_holdings.iterrows():
             broker = row["Broker"]
@@ -287,7 +284,6 @@ def load_master_holdings_from_sheets():
             cost = row["Cost"]
 
             if broker in ["Webull", "Dime US"]:
-                # ดึงราคาจาก yfinance ถ้าดึงไม่ได้ ให้ Fallback เป็น Cost
                 price = live_prices.get(sym)
                 if price is None or price <= 0:
                     price = cost
@@ -301,15 +297,21 @@ def load_master_holdings_from_sheets():
                     "Price": price, "Invested_USD": inv_usd, "Market_Value_USD": mkt_usd,
                     "PnL_USD": pnl_usd, "PnL_Pct": pct
                 })
-            else: # Dime TH (หุ้นไทย)
-                # สำหรับหุ้นไทย ใช้ราคาจาก Sheet เดิมก่อน แล้วแปลงเป็น USD
-                price = cost
+            else: # Dime TH
+                th_sym = f"{sym}.BK"
+                price = live_prices.get(th_sym)
+                if price is None or price <= 0:
+                    price = cost
+                
                 inv_thb = qty * cost
                 mkt_thb = qty * price
+                pnl_thb = mkt_thb - inv_thb
+                pct = (pnl_thb / inv_thb * 100) if inv_thb > 0 else 0.0
+
                 holdings_calculated.append({
                     "Broker": broker, "Symbol": sym, "Qty": qty, "Cost": cost,
                     "Price": price, "Invested_USD": inv_thb / fx_rate, "Market_Value_USD": mkt_thb / fx_rate,
-                    "PnL_USD": (mkt_thb - inv_thb) / fx_rate, "PnL_Pct": 0.0
+                    "PnL_USD": pnl_thb / fx_rate, "PnL_Pct": pct
                 })
 
         return pd.DataFrame(holdings_calculated)
@@ -537,10 +539,11 @@ elif active_tab == "dime_us":
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime US")
 
 elif active_tab == "dime_th":
-    st.subheader("🇹🇭 พอร์ตการลงทุน Dime TH (หุ้นไทย)")
+    st.subheader("🇹🇭 พอร์ตการลงทุน Dime TH (หุ้นไทย - Live Price via yfinance)")
     df_dth = df_port[df_port["Broker"] == "Dime TH"] if not df_port.empty else pd.DataFrame()
     if not df_dth.empty:
         df_dth_disp = df_dth.copy()
+        fx = st.session_state.get("usd_thb_rate", 35.0)
         df_dth_disp["Total_Cost_THB"] = df_dth_disp["Qty"] * df_dth_disp["Cost"]
         df_dth_disp["Market_Value_THB"] = df_dth_disp["Qty"] * df_dth_disp["Price"]
         df_dth_disp["PnL_THB"] = df_dth_disp["Market_Value_THB"] - df_dth_disp["Total_Cost_THB"]
