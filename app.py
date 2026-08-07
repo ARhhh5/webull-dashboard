@@ -239,13 +239,10 @@ def get_gspread_client():
         ]
         
         creds_dict = None
-        # 1. เช็กคีย์ gcp_service_account
         if "gcp_service_account" in st.secrets:
             creds_dict = dict(st.secrets["gcp_service_account"])
-        # 2. เช็กคีย์ connections.gsheets
         elif "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
             creds_dict = dict(st.secrets["connections"]["gsheets"])
-        # 3. เช็กว่าวางคีย์ไว้ที่ Root Secrets หรือไม่
         elif "type" in st.secrets and st.secrets["type"] == "service_account":
             creds_dict = dict(st.secrets)
 
@@ -277,29 +274,21 @@ def load_history_from_gsheet():
         if len(data) > 0:
             df = pd.DataFrame(data)
             
-            # ตรวจสอบและตัด Header ออกถ้าพบข้อความหัวคอลัมน์
+            # ลบแถวที่เป็น Header
             first_val = str(df.iloc[0, 0]).strip()
             if "วัน" in first_val or "Date" in first_val or "Timestamp" in first_val:
                 df = df.iloc[1:].reset_index(drop=True)
                 
-            # กำหนดคอลัมน์ตามโครงสร้าง Google Sheets จริง:
-            # Column A: วันที่ (Timestamp)
-            # Column B: มูลค่าตั้งต้น (Invested)
-            # Column C: มูลค่าปัจจุบัน (MarketValue)
-            # Column D: กำไรขาดทุน (PnL)
-            # Column E: กำไรขาดทุน% (PnLPct)
+            # แมปคอลัมน์ตามโครงสร้าง Google Sheets จริง:
+            # Col A: วันที่ | Col B: มูลค่าตั้งต้น | Col C: มูลค่าปัจจุบัน | Col D: กำไรขาดทุน | Col E: กำไรขาดทุน%
             cols = ["Timestamp", "Invested", "MarketValue", "PnL", "PnLPct"]
             df = df.iloc[:, :len(cols)]
             df.columns = cols[:len(df.columns)]
             
-            # แปลงวันที่เป็น Datetime
-            df["Parsed_Date"] = pd.to_datetime(df["Timestamp"], errors='coerce')
-            df = df.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
-
-            # Clean ตัวเลข ลบลูกน้ำ , และ %
+            # ฟังก์ชันคลีนตัวเลข
             def clean_num(val):
-                if pd.isna(val): return 0.0
-                val_str = str(val).replace(",", "").replace("%", "").strip()
+                if pd.isna(val) or val == "": return 0.0
+                val_str = str(val).replace(",", "").replace("%", "").replace("$", "").replace("฿", "").strip()
                 try: return float(val_str)
                 except: return 0.0
 
@@ -307,6 +296,14 @@ def load_history_from_gsheet():
             df["Invested"] = df["Invested"].apply(clean_num)
             df["PnL"] = df["PnL"].apply(clean_num)
             df["PnLPct"] = df["PnLPct"].apply(clean_num)
+            
+            # กรองเฉพาะแถวที่มีข้อมูลมูลค่าปัจจุบัน > 0
+            df = df[df["MarketValue"] > 0].reset_index(drop=True)
+            
+            # Parse วันที่รองรับหลาย Format
+            df["Parsed_Date"] = pd.to_datetime(df["Timestamp"], errors='coerce')
+            df = df.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
+
             return df
     except Exception:
         pass
@@ -340,18 +337,21 @@ def render_dashboard():
     is_usd = "USD" in currency_selected
     symbol = "$" if is_usd else "฿"
 
-    # โหลดข้อมูลประวัติจริงจาก Google Sheets (Portfolio_History)
+    # โหลดข้อมูลประวัติจริงจาก Google Sheets
     df_history = load_history_from_gsheet()
 
     if df_history is not None and not df_history.empty:
+        # ดึงข้อมูลแถวล่าสุด (Latest Record) เสมอ
         latest_row = df_history.iloc[-1]
         tot_invested_usd = latest_row["Invested"]
         tot_market_usd = latest_row["MarketValue"]
-        tot_pnl_usd = latest_row["PnL"]
-        tot_pnl_pct = latest_row["PnLPct"]
+        
+        # ถ้ากำไรขาดทุนไม่ได้คำนวณมา ให้คำนวณสดจาก MarketValue - Invested
+        tot_pnl_usd = latest_row["PnL"] if latest_row["PnL"] != 0 else (tot_market_usd - tot_invested_usd)
+        tot_pnl_pct = latest_row["PnLPct"] if latest_row["PnLPct"] != 0 else ((tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0)
     else:
-        tot_invested_usd = 48180.96
-        tot_market_usd = 43870.99
+        tot_invested_usd = 48210.38
+        tot_market_usd = 45941.50
         tot_pnl_usd = tot_market_usd - tot_invested_usd
         tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
 
@@ -403,11 +403,10 @@ def render_dashboard():
         st.markdown(card_html, unsafe_allow_html=True)
 
     with col_right:
-        # กำหนด Session State สำหรับปุ่ม Timeframe
         if "selected_tf" not in st.session_state:
-            st.session_state["selected_tf"] = "6M"
+            st.session_state["selected_tf"] = "MAX"
 
-        # แสดงปุ่มกดเลือกช่วงเวลา (Pills/Buttons) แทนสไลเดอร์
+        # แสดงปุ่มกดเลือกช่วงเวลา (Pills/Buttons)
         tf_options = ["1D", "7D", "1M", "6M", "1Y", "MAX"]
         tf_cols = st.columns(len(tf_options))
         
@@ -419,7 +418,7 @@ def render_dashboard():
 
         selected_tf = st.session_state["selected_tf"]
 
-        # จัดการกรองข้อมูลย้อนหลังตาม Timeframe จาก DataFrame จริง
+        # จัดการกรองข้อมูลและเตรียมแกน X/Y สำหรับกราฟ Plotly
         if df_history is not None and not df_history.empty:
             filtered_df = df_history.copy()
             max_date = filtered_df["Parsed_Date"].max()
@@ -439,20 +438,14 @@ def render_dashboard():
 
             filtered_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
             if filtered_df.empty:
-                filtered_df = df_history.tail(1)
+                filtered_df = df_history.copy()
 
-            x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d %H:%M").tolist()
+            # แปลงแกน X ให้แสดงผลเป็นวันที่สวยงาม
+            x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d").tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            tf_points_map = {
-                "1D": (['9:30', '11:00', '13:00', '15:00', '16:00'], [43500, 43700, 43600, 43800, display_market]),
-                "7D": (['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'], [42800, 43000, 42900, 43200, 43500, 43700, display_market]),
-                "1M": (['W1', 'W2', 'W3', 'W4'], [41500, 42200, 43100, display_market]),
-                "6M": (['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul'], [42000, 45000, 41000, 46000, 44500, 47800, display_market]),
-                "1Y": (['Q1', 'Q2', 'Q3', 'Q4'], [38000, 41000, 44000, display_market]),
-                "MAX": (['Start', '2024', '2025', '2026'], [15000, 25000, 32000, display_market])
-            }
-            x_axis, y_axis = tf_points_map.get(selected_tf, tf_points_map["6M"])
+            x_axis = ['2026-08-01', '2026-08-02', '2026-08-04', '2026-08-05']
+            y_axis = [15000.00, 48180.96, 44909.65, display_market]
         
         # วาดกราฟ Plotly
         fig = go.Figure()
@@ -461,14 +454,16 @@ def render_dashboard():
             y=y_axis, 
             mode='lines+markers', 
             line=dict(color='#38bdf8', width=3, shape='spline'), 
+            marker=dict(size=6, color='#38bdf8'),
             fill='tozeroy', 
-            fillcolor='rgba(56, 189, 248, 0.05)'
+            fillcolor='rgba(56, 189, 248, 0.05)',
+            hovertemplate="<b>วันที่: %{x}</b><br>มูลค่าพอร์ต: %{y:$,.2f}<extra></extra>"
         ))
         fig.update_layout(
             paper_bgcolor='rgba(0,0,0,0)', 
             plot_bgcolor='rgba(0,0,0,0)', 
             font=dict(color='#6b7280', family='Plus Jakarta Sans'), 
-            xaxis=dict(showgrid=False, zeroline=False), 
+            xaxis=dict(showgrid=False, zeroline=False, type='category'), 
             yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False), 
             margin=dict(t=15, b=10, l=10, r=10), 
             height=260
