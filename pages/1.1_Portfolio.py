@@ -1,17 +1,6 @@
-import os
-import json
-import base64
-import urllib.parse
-import http.client
-import uuid
-import hmac
-import hashlib
-from datetime import datetime, timezone
 import streamlit as st
 import pandas as pd
-import plotly.express as px
 import plotly.graph_objects as go
-import yfinance as yf
 
 try:
     import gspread
@@ -21,20 +10,103 @@ except ImportError:
     HAS_GSPREAD = False
 
 # ==========================================
-# 1. SHARED DATA PIPELINE & HELPERS
+# 1. PAGE STYLE & MINIMAL CARD CSS
 # ==========================================
-@st.cache_data(ttl=60)
-def get_usd_thb_rate():
-    try:
-        ticker = yf.Ticker("USDTHB=X")
-        rate = ticker.fast_info.get('last_price') or ticker.info.get('regularMarketPrice') or 35.0
-        return float(rate)
-    except:
-        return 35.0
+st.markdown("""
+    <style>
+    /* Minimal Header Style */
+    .page-title-minimal {
+        font-size: 1.5rem;
+        font-weight: 800;
+        color: #ffffff;
+        letter-spacing: -0.5px;
+        margin-bottom: 2px;
+    }
+    .page-subtitle-minimal {
+        color: #6b7280;
+        font-size: 0.85rem;
+        margin-bottom: 20px;
+    }
 
+    /* Metric Cards */
+    .metric-card {
+        background-color: #0f1115;
+        padding: 18px;
+        border-radius: 12px;
+        border: 1px solid #1a1d24;
+        text-align: center;
+        margin-bottom: 15px;
+    }
+    .metric-label {
+        color: #9ca3af;
+        font-size: 13px;
+        font-weight: 600;
+        margin-bottom: 6px;
+    }
+    .metric-value {
+        font-size: 22px;
+        font-weight: 800;
+        color: #ffffff;
+        font-family: 'Plus Jakarta Sans', sans-serif;
+    }
+    .text-green { color: #4ade80 !important; }
+    .text-red { color: #f87171 !important; }
+
+    /* Chart Container Card */
+    .chart-card {
+        background-color: #0f1115;
+        border: 1px solid #1a1d24;
+        border-radius: 14px;
+        padding: 20px;
+        margin-top: 10px;
+    }
+    .chart-card-title {
+        font-size: 0.9rem;
+        font-weight: 700;
+        color: #e2e8f0;
+        margin-bottom: 10px;
+        display: flex;
+        align-items: center;
+        gap: 8px;
+    }
+
+    /* Modern Large Navigation Cards Override */
+    div[data-testid="stColumn"] div.stButton > button {
+        background-color: #0f1115 !important;
+        border: 1px solid #1a1d24 !important;
+        border-radius: 14px !important;
+        padding: 16px 20px !important;
+        height: auto !important;
+        min-height: 100px !important;
+        text-align: left !important;
+        transition: all 0.25s ease !important;
+        display: flex !important;
+        flex-direction: column !important;
+        justify-content: center !important;
+    }
+
+    div[data-testid="stColumn"] div.stButton > button:hover {
+        border-color: #38bdf8 !important;
+        background-color: #141822 !important;
+        transform: translateY(-2px);
+        box-shadow: 0 8px 20px rgba(56, 189, 248, 0.15);
+    }
+
+    /* Active Big Card Highlight */
+    div[data-testid="stColumn"] div.stButton > button[kind="primary"] {
+        background: linear-gradient(135deg, #111e2e 0%, #0d1724 100%) !important;
+        border: 1px solid #38bdf8 !important;
+        box-shadow: 0 8px 20px rgba(56, 189, 248, 0.2) !important;
+    }
+    </style>
+""", unsafe_allow_html=True)
+
+# Helper Function for Google Sheets Connection
 def get_gspread_client():
-    if not HAS_GSPREAD: return None
+    if not HAS_GSPREAD:
+        return None
     try:
+        import json, base64
         google_secrets = st.secrets.get("Google", {})
         cred_base64 = google_secrets.get("credentials_base64", "")
         if cred_base64:
@@ -48,315 +120,310 @@ def get_gspread_client():
         pass
     return None
 
-def fetch_webull_strict_openapi_positions():
-    wb_secrets = st.secrets.get("Webull", {})
-    app_key = wb_secrets.get("AppKey", "")
-    app_secret = wb_secrets.get("AppSecret", "")
-    access_token = wb_secrets.get("AccessToken", "")
-    account_id = wb_secrets.get("AccountId", "")
-
-    if not (app_key and app_secret and access_token and account_id):
-        return None, "Missing Webull Credentials in Secrets"
-
+def sync_portfolio_snapshot_to_gsheet(invested_val, market_val, pnl_val, pnl_pct):
+    gc = get_gspread_client()
+    if not gc:
+        return False, "ไม่พบการเชื่อมต่อ Google Sheets Credentials"
     try:
-        host = "openapi.webull.com"
-        path = "/openapi/assets/positions"
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        nonce = str(uuid.uuid4())
-
-        sign_params = {
-            "app_key": app_key,
-            "signature_version": "1.0",
-            "signature_algorithm": "HMAC-SHA1",
-            "timestamp": timestamp,
-            "nonce": nonce,
-            "account_id": account_id
-        }
-        sorted_keys = sorted(sign_params.keys())
-        canonical_query = "&".join([f"{k}={sign_params[k]}" for k in sorted_keys])
-        string_to_sign = f"GET\n{path}\n{canonical_query}"
-
-        signature = hmac.new(app_secret.encode('utf-8'), string_to_sign.encode('utf-8'), hashlib.sha1).digest()
-        signature_b64 = base64.b64encode(signature).decode('utf-8')
-
-        headers = {
-            "x-app-key": app_key,
-            "x-timestamp": timestamp,
-            "x-signature-version": "1.0",
-            "x-signature-algorithm": "HMAC-SHA1",
-            "x-signature-nonce": nonce,
-            "x-version": "1.0",
-            "x-signature": signature_b64,
-            "x-access-token": access_token
-        }
-
-        conn = http.client.HTTPSConnection(host, timeout=10)
-        full_path = f"{path}?account_id={account_id}"
-        conn.request("GET", full_path, headers=headers)
-        response = conn.getresponse()
-        
-        if response.status == 200:
-            data = json.loads(response.read().decode('utf-8'))
-            positions = data.get("positions", []) or data.get("data", {}).get("positions", [])
+        sh = gc.open("หุ้นของเรา")
+        try:
+            worksheet = sh.worksheet("Portfolio_History")
+        except:
+            worksheet = sh.add_worksheet(title="Portfolio_History", rows="1000", cols="5")
+            worksheet.append_row(["วันที่", "มูลค่าตั้งต้น", "มูลค่าปัจจุบัน", "กำไรขาดทุน", "กำไรขาดทุน%"])
             
-            holdings = []
-            for p in positions:
-                sym = p.get("symbol", "").strip().upper()
-                qty = float(p.get("quantity", 0))
-                cost = float(p.get("costPrice", 0) or p.get("cost", 0))
-                if qty > 0 and sym:
-                    holdings.append({
-                        "Symbol": sym, 
-                        "Qty": qty, 
-                        "Cost": cost, 
-                        "Broker": "Webull",
-                        "Source": "Webull API (Live)"
-                    })
-            return holdings, "OK"
-        else:
-            return None, f"HTTP Error {response.status}: {response.reason}"
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        new_row = [now_str, round(invested_val, 2), round(market_val, 2), round(pnl_val, 2), f"{pnl_pct:.2f}%"]
+        worksheet.append_row(new_row)
+        return True, "บันทึกประวัติลง Portfolio_History สำเร็จ!"
     except Exception as e:
-        return None, f"Connection Failed: {str(e)}"
+        return False, f"เกิดข้อผิดพลาดในการเขียน Google Sheets: {str(e)}"
 
-def load_dime_us_from_gsheet():
-    holdings = []
-    gc = get_gspread_client()
-    if gc:
+# Minimal Header
+st.markdown('<div class="page-title-minimal">Portfolio Overview</div>', unsafe_allow_html=True)
+st.markdown('<div class="page-subtitle-minimal">วิเคราะห์สัดส่วนการถือครองและผลตอบแทนรายโบรกเกอร์</div>', unsafe_allow_html=True)
+
+# Currency Switcher
+c_curr, c_space = st.columns([1.5, 2.5])
+with c_curr:
+    currency_mode = st.radio(
+        "Display Currency",
+        ("USD ($)", "THB (฿)"),
+        horizontal=True,
+        index=0
+    )
+
+# Get Shared Master Data
+df_port = st.session_state.get("all_holdings_df", pd.DataFrame())
+fx_rate = st.session_state.get("usd_thb_rate", 35.0)
+
+def highlight_pnl(val):
+    if val is None or pd.isna(val):
+        return ''
+    s = str(val).strip()
+    if s.startswith("+") or (not s.startswith("-") and not s.startswith("0") and any(char.isdigit() for char in s)):
         try:
-            sh = gc.open("หุ้นของเรา")
-            worksheet = sh.worksheet("Dime_Portfolio")
-            records = worksheet.get_all_records()
-            for r in records:
-                sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
-                if sym:
-                    holdings.append({
-                        "Symbol": sym,
-                        "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
-                        "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
-                        "Broker": "Dime US",
-                        "Source": "Google Sheet",
-                        "Manual_Price": r.get("ราคาปัจจุบันล็อก (Manual Price)", "")
-                    })
-        except: pass
-    return holdings
-
-def load_dime_th_from_gsheet():
-    holdings = []
-    gc = get_gspread_client()
-    if gc:
-        try:
-            sh = gc.open("หุ้นของเรา")
-            worksheet = sh.worksheet("Dime_TH_Portfolio")
-            records = worksheet.get_all_records()
-            for r in records:
-                sym = str(r.get("หุ้น (Ticker)", "")).strip().upper()
-                if sym:
-                    holdings.append({
-                        "Symbol": sym,
-                        "Qty": float(r.get("จำนวนหุ้น (Volume)", 0)),
-                        "Cost": float(r.get("ต้นทุนเฉลี่ย (Avg Cost)", 0)),
-                        "Broker": "Dime TH",
-                        "Source": "Google Sheet"
-                    })
-        except: pass
-    return holdings
-
-@st.cache_data(ttl=60)
-def fetch_full_portfolio_df():
-    fx_rate = get_usd_thb_rate()
-    
-    # Strictly Webull Live OpenAPI (No GSheet Fallback)
-    w_holdings, api_status = fetch_webull_strict_openapi_positions()
-    webull_source = "Webull API (Live)" if api_status == "OK" else f"API Error: {api_status}"
-    
-    if not w_holdings:
-        w_holdings = []
-
-    d_us_holdings = load_dime_us_from_gsheet()
-    d_th_holdings = load_dime_th_from_gsheet()
-    
-    all_holdings = w_holdings + d_us_holdings + d_th_holdings
-    if not all_holdings:
-        return pd.DataFrame(), fx_rate, webull_source, datetime.now().strftime("%H:%M:%S")
-
-    df_raw = pd.DataFrame(all_holdings)
-    live_prices = {}
-
-    for index, row in df_raw.iterrows():
-        sym = row['Symbol']
-        broker = row['Broker']
-        
-        if broker == "Dime US" and row.get("Manual_Price") != "" and row.get("Manual_Price") is not None:
-            try: live_prices[sym] = float(row["Manual_Price"])
-            except: live_prices[sym] = 0.0
-
-        if sym not in live_prices or live_prices[sym] == 0.0:
-            yf_sym = f"{sym}.BK" if broker == "Dime TH" and not sym.endswith(".BK") else sym
-            try:
-                t_data = yf.Ticker(yf_sym)
-                p = t_data.info.get('currentPrice') or t_data.info.get('regularMarketPrice') or t_data.fast_info.get('last_price')
-                if not p:
-                    h = t_data.history(period="1d")
-                    if not h.empty: p = h['Close'].iloc[-1]
-                live_prices[sym] = float(p) if p else 0.0
-            except:
-                live_prices[sym] = 0.0
-
-    portfolio_rows = []
-    for index, row in df_raw.iterrows():
-        sym = row['Symbol']
-        qty = row['Qty']
-        cost_in = row['Cost']
-        broker = row['Broker']
-        source = row.get('Source', 'Google Sheet')
-        
-        price_raw = live_prices.get(sym, 0)
-        if price_raw == 0: price_raw = cost_in
-
-        if broker == "Dime TH":
-            invested_usd = (qty * cost_in) / fx_rate
-            market_val_usd = (qty * price_raw) / fx_rate
-        else:
-            invested_usd = qty * cost_in
-            market_val_usd = qty * price_raw
-
-        pnl_usd = market_val_usd - invested_usd
-        pnl_pct = (pnl_usd / invested_usd * 100) if invested_usd > 0 else 0.0
-
-        portfolio_rows.append({
-            "Symbol": sym,
-            "Broker": broker,
-            "Qty": qty,
-            "Cost": cost_in,
-            "Price": price_raw,
-            "Invested_USD": invested_usd,
-            "Market_Value_USD": market_val_usd,
-            "PnL_USD": pnl_usd,
-            "PnL_Pct": pnl_pct,
-            "Source": source
-        })
-
-    df_port = pd.DataFrame(portfolio_rows)
-    sync_time = datetime.now().strftime("%H:%M:%S")
-
-    st.session_state["all_holdings_df"] = df_port
-    st.session_state["usd_thb_rate"] = fx_rate
-    st.session_state["webull_source"] = webull_source
-    st.session_state["sync_time"] = sync_time
-
-    return df_port, fx_rate, webull_source, sync_time
+            val_num = float(s.replace('$', '').replace('฿', '').replace(',', '').replace('%', '').replace('+', ''))
+            if val_num > 0:
+                return 'background-color: rgba(34, 197, 94, 0.15); color: #4ade80; font-weight: bold;'
+            elif val_num < 0:
+                return 'background-color: rgba(239, 68, 68, 0.15); color: #f87171; font-weight: bold;'
+        except:
+            if s.startswith("+"):
+                return 'background-color: rgba(34, 197, 94, 0.15); color: #4ade80; font-weight: bold;'
+    elif s.startswith("-"):
+        return 'background-color: rgba(239, 68, 68, 0.15); color: #f87171; font-weight: bold;'
+    return 'color: #9ca3af;'
 
 # ==========================================
-# 2. MAIN PAGE RENDER
+# 2. LARGE MODERN NAVIGATION CARDS (GRID UI)
 # ==========================================
-df_port, fx_rate, webull_source, sync_time = fetch_full_portfolio_df()
+if "active_portfolio_tab" not in st.session_state:
+    st.session_state["active_portfolio_tab"] = "all"
 
-c_title, c_status, c_sync = st.columns([2.0, 1.5, 0.9])
+active_tab = st.session_state["active_portfolio_tab"]
 
-with c_title:
-    st.title("Portfolio Overview")
-    st.caption("วิเคราะห์สัดส่วนการถือครองและผลตอบแทนรายโบรกเกอร์ (หุ้นล้วน ไม่รวมเงินสด)")
+col_c1, col_c2, col_c3, col_c4, col_c5 = st.columns(5)
 
-with c_status:
-    st.markdown("<br>", unsafe_allow_html=True)
-    if "Live" in webull_source:
-        st.markdown(
-            f'''<div style="text-align: right;">
-                <span class="source-badge-api">🟢 Webull API (Live)</span>
-                <div style="font-size:0.72rem; color:#6b7280; margin-top:4px;">Updated: {sync_time}</div>
-            </div>''', 
-            unsafe_allow_html=True
-        )
-    else:
-        st.markdown(
-            f'''<div style="text-align: right;">
-                <span class="source-badge-error">🔴 {webull_source}</span>
-                <div style="font-size:0.72rem; color:#f87171; margin-top:4px;">Updated: {sync_time}</div>
-            </div>''', 
-            unsafe_allow_html=True
-        )
-
-with c_sync:
-    st.markdown("<br>", unsafe_allow_html=True)
-    if st.button("🔄 Sync Portfolio Data", use_container_width=True, type="primary"):
-        st.cache_data.clear()
-        st.success("อัปเดตข้อมูลพอร์ตหุ้นสดเรียบร้อยแล้ว!")
+with col_c1:
+    btn_type = "primary" if active_tab == "all" else "secondary"
+    if st.button("📊 All In One\n\nสรุปภาพรวมพอร์ตรวมทุกโบรกเกอร์", key="btn_tab_all", use_container_width=True, type=btn_type):
+        st.session_state["active_portfolio_tab"] = "all"
         st.rerun()
 
-c_curr, _ = st.columns([1, 3])
-with c_curr:
-    currency_selected = st.radio("Display Currency", ("USD ($)", "THB (฿)"), horizontal=True, index=0)
+with col_c2:
+    btn_type = "primary" if active_tab == "webull" else "secondary"
+    if st.button("🦅 Webull US\n\nข้อมูลตำแหน่งหุ้นสดจาก Webull API", key="btn_tab_webull", use_container_width=True, type=btn_type):
+        st.session_state["active_portfolio_tab"] = "webull"
+        st.rerun()
 
-is_usd = "USD" in currency_selected
-multiplier = 1.0 if is_usd else fx_rate
-symbol = "$" if is_usd else "฿"
+with col_c3:
+    btn_type = "primary" if active_tab == "dime_us" else "secondary"
+    if st.button("💵 Dime US\n\nรายการหุ้นสหรัฐฯ ใน Dime", key="btn_tab_dime_us", use_container_width=True, type=btn_type):
+        st.session_state["active_portfolio_tab"] = "dime_us"
+        st.rerun()
 
-if "port_tab" not in st.session_state:
-    st.session_state["port_tab"] = "All In One"
+with col_c4:
+    btn_type = "primary" if active_tab == "dime_th" else "secondary"
+    if st.button("🇹🇭 Dime TH\n\nรายการหุ้นไทยใน Dime", key="btn_tab_dime_th", use_container_width=True, type=btn_type):
+        st.session_state["active_portfolio_tab"] = "dime_th"
+        st.rerun()
 
-tabs_list = ["All In One", "Webull US", "Dime US", "Dime TH", "US Consolidated"]
-t_cols = st.columns(len(tabs_list))
+with col_c5:
+    btn_type = "primary" if active_tab == "consolidated" else "secondary"
+    if st.button("🧩 US Consolidated\n\nรวมหุ้น US จากทุกโบรกถัวเฉลี่ยต้นทุน", key="btn_tab_consolidated", use_container_width=True, type=btn_type):
+        st.session_state["active_portfolio_tab"] = "consolidated"
+        st.rerun()
 
-for idx, t_name in enumerate(tabs_list):
-    with t_cols[idx]:
-        btn_kind = "primary" if st.session_state["port_tab"] == t_name else "secondary"
-        if st.button(t_name, key=f"port_tab_btn_{t_name}", type=btn_kind, use_container_width=True):
-            st.session_state["port_tab"] = t_name
-            st.rerun()
-
-current_tab = st.session_state["port_tab"]
 st.markdown("<br>", unsafe_allow_html=True)
 
-if df_port.empty:
-    st.warning("⚠️ ไม่พบข้อมูลพอร์ตโฟลิโอ หรือ Webull API เกิดข้อผิดพลาด กรุณาตรวจสอบสถานะมุมขวาบน")
-else:
-    if current_tab == "Webull US":
-        sub_df = df_port[df_port["Broker"] == "Webull"].copy()
-    elif current_tab == "Dime US":
-        sub_df = df_port[df_port["Broker"] == "Dime US"].copy()
-    elif current_tab == "Dime TH":
-        sub_df = df_port[df_port["Broker"] == "Dime TH"].copy()
-    elif current_tab == "US Consolidated":
-        sub_df = df_port[df_port["Broker"].isin(["Webull", "Dime US"])].copy()
-        if not sub_df.empty:
-            sub_df = sub_df.groupby("Symbol").apply(lambda x: pd.Series({
-                "Broker": "US Consolidated",
-                "Qty": x["Qty"].sum(),
-                "Cost": (x["Invested_USD"].sum() / x["Qty"].sum()) if x["Qty"].sum() > 0 else 0,
-                "Price": x["Price"].iloc[0],
-                "Invested_USD": x["Invested_USD"].sum(),
-                "Market_Value_USD": x["Market_Value_USD"].sum(),
-                "PnL_USD": x["Market_Value_USD"].sum() - x["Invested_USD"].sum(),
-                "PnL_Pct": ((x["Market_Value_USD"].sum() - x["Invested_USD"].sum()) / x["Invested_USD"].sum() * 100) if x["Invested_USD"].sum() > 0 else 0,
-                "Source": x["Source"].iloc[0]
-            })).reset_index()
+# ==========================================
+# 3. TAB CONTENT RENDERER
+# ==========================================
+is_thb = "THB" in currency_mode
+multiplier = fx_rate if is_thb else 1.0
+curr_symbol = "฿" if is_thb else "$"
+curr_text = "THB" if is_thb else "USD"
+
+if active_tab == "all":
+    col_hdr_title, col_hdr_sync = st.columns([3, 1])
+    with col_hdr_title:
+        st.subheader(f"🌐 สถิติรวมพอร์ตทุกโบรกเกอร์ ({curr_text})")
+    with col_hdr_sync:
+        if st.button("🔄 Sync Snapshot", key="btn_sync_portfolio", use_container_width=True, type="primary"):
+            if not df_port.empty:
+                g_inv = df_port['Invested_USD'].sum()
+                g_mkt = df_port['Market_Value_USD'].sum()
+                g_pnl = g_mkt - g_inv
+                g_pct = (g_pnl / g_inv * 100) if g_inv > 0 else 0
+                
+                with st.spinner("⏳ กำลังบันทึกประวัติลง Portfolio_History..."):
+                    success, msg = sync_portfolio_snapshot_to_gsheet(g_inv, g_mkt, g_pnl, g_pct)
+                    if success:
+                        st.toast(f"✅ {msg}", icon="🎉")
+                    else:
+                        st.error(f"❌ {msg}")
+            else:
+                st.warning("⚠️ ไม่มีข้อมูลพอร์ตที่จะซิงค์")
+
+    if not df_port.empty:
+        grand_invested = df_port['Invested_USD'].sum() * multiplier
+        grand_market = df_port['Market_Value_USD'].sum() * multiplier
+        grand_pnl = grand_market - grand_invested
+        grand_pnl_pct = (grand_pnl / grand_invested * 100) if grand_invested > 0 else 0
+        
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">เงินลงทุนรวมทั้งสิ้น</div><div class="metric-value">{curr_symbol}{grand_invested:,.2f}</div></div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">มูลค่าตลาดรวมพอร์ตทั้งหมด</div><div class="metric-value">{curr_symbol}{grand_market:,.2f}</div></div>', unsafe_allow_html=True)
+        with c3:
+            pnl_class = "text-green" if grand_pnl >= 0 else "text-red"
+            pnl_prefix = "+" if grand_pnl >= 0 else ""
+            st.markdown(f'<div class="metric-card"><div class="metric-label">กำไร / ขาดทุนสุทธิรวม</div><div class="metric-value {pnl_class}">{pnl_prefix}{curr_symbol}{grand_pnl:,.2f} ({grand_pnl_pct:+.2f}%)</div></div>', unsafe_allow_html=True)
+
+        st.caption(f"ℹ️ อัตราแลกเปลี่ยนอ้างอิง: 1 USD = {fx_rate:.2f} THB")
+        st.markdown("---")
+        
+        col_g1, col_g2 = st.columns(2)
+        
+        with col_g1:
+            st.markdown('<div class="chart-card"><div class="chart-card-title">🏦 สัดส่วนพอร์ตแยกตามโบรกเกอร์</div>', unsafe_allow_html=True)
+            df_broker = df_port.groupby("Broker")["Market_Value_USD"].sum().reset_index()
+            df_broker["Value"] = df_broker["Market_Value_USD"] * multiplier
+            
+            fig1 = go.Figure(data=[go.Pie(
+                labels=df_broker["Broker"],
+                values=df_broker["Value"],
+                hole=0.6,
+                textinfo='percent',
+                hovertemplate="<b>%{label}</b><br>มูลค่า: " + curr_symbol + "%{value:,.2f}<br>สัดส่วน: %{percent}<extra></extra>",
+                marker=dict(colors=['#38bdf8', '#a855f7', '#34d399', '#f59e0b'])
+            )])
+            fig1.update_layout(
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='#9ca3af', family='Plus Jakarta Sans'),
+                margin=dict(t=10, b=10, l=10, r=10),
+                height=280,
+                showlegend=True,
+                legend=dict(orientation="h", yanchor="bottom", y=-0.2, xanchor="center", x=0.5)
+            )
+            st.plotly_chart(fig1, use_container_width=True, config={'displayModeBar': False})
+            st.markdown('</div>', unsafe_allow_html=True)
+
+        with col_g2:
+            st.markdown('<div class="chart-card"><div class="chart-card-title">📈 สัดส่วนการถือครองหุ้น (Top Holdings)</div>', unsafe_allow_html=True)
+            df_sym = df_port.groupby("Symbol")["Market_Value_USD"].sum().reset_index()
+            df_sym["Value"] = df_sym["Market_Value_USD"] * multiplier
+            df_sym = df_sym.sort_values(by="Value", ascending=False)
+            
+            if len(df_sym) > 5:
+                top_5 = df_sym.iloc[:5].copy()
+                others_val = df_sym.iloc[5:]["Value"].sum()
+                others_row = pd.DataFrame([{"Symbol": "Others", "Market_Value_USD": 0, "Value": others_val}])
+                df_chart_sym = pd.concat([top_5, others_row], ignore_index=True)
+            else:
+                df_chart_sym = df_sym.copy()
+
+            fig2 = go.Figure(data=[go.Pie(
+                labels=df_chart_sym["Symbol"],
+                values=df_chart_sym["Value"],
+                hole=0.6,
+                textinfo='label+percent',
+                hovertemplate="<b>%{label}</b><br>มูลค่า: " + curr_symbol + "%{value:,.2f}<br>สัดส่วน: %{percent}<extra></extra>",
+                marker=dict(colors=['#0284c7', '#38bdf8', '#818cf8', '#c084fc', '#f472b6', '#64748b'])
+            )])
+            fig2.update_layout(
+                paper_bgcolor='rgba(0,0,0,0)',
+                plot_bgcolor='rgba(0,0,0,0)',
+                font=dict(color='#9ca3af', family='Plus Jakarta Sans'),
+                margin=dict(t=10, b=10, l=10, r=10),
+                height=280,
+                showlegend=False
+            )
+            st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False})
+            st.markdown('</div>', unsafe_allow_html=True)
+            
     else:
-        sub_df = df_port.copy()
+        st.info("ยังไม่มีข้อมูลหุ้นในพอร์ตโฟลิโอ")
 
-    if sub_df.empty:
-        st.warning(f"ไม่พบรายการถือครองในหมวด {current_tab}")
+elif active_tab == "webull":
+    st.subheader("🦅 พอร์ตการลงทุน Webull (Live API Data)")
+    df_w = df_port[df_port["Broker"] == "Webull"] if not df_port.empty else pd.DataFrame()
+    if not df_w.empty:
+        df_w_disp = df_w[["Symbol", "Qty", "Cost", "Price", "Invested_USD", "Market_Value_USD", "PnL_USD", "PnL_Pct"]].copy()
+        df_w_disp.columns = ["Symbol", "Qty", "Avg Cost ($)", "Market Price ($)", "Total Cost ($)", "Market Value ($)", "Unrealized P/L ($)", "P/L (%)"]
+        
+        formatted_df = df_w_disp.style.format({
+            "Qty": "{:,.4f}", "Avg Cost ($)": "${:,.2f}", "Market Price ($)": "${:,.2f}",
+            "Total Cost ($)": "${:,.2f}", "Market Value ($)": "${:,.2f}",
+            "Unrealized P/L ($)": "${:+,.2f}", "P/L (%)": "{:+.2f}%"
+        }).map(highlight_pnl, subset=["Unrealized P/L ($)", "P/L (%)"])
+        
+        st.dataframe(formatted_df, use_container_width=True)
     else:
-        tot_inv = sub_df["Invested_USD"].sum() * multiplier
-        tot_mkt = sub_df["Market_Value_USD"].sum() * multiplier
-        tot_pnl = tot_mkt - tot_inv
-        tot_pnl_pct = (tot_pnl / tot_inv * 100) if tot_inv > 0 else 0.0
+        st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Webull")
 
-        m1, m2, m3, m4 = st.columns(4)
-        m1.metric("Invested Capital", f"{symbol}{tot_inv:,.2f}")
-        m2.metric("Market Value", f"{symbol}{tot_mkt:,.2f}")
-        m3.metric("Total Return ($)", f"{symbol}{tot_pnl:,.2f}", delta=f"{tot_pnl:,.2f}")
-        m4.metric("Total Return (%)", f"{tot_pnl_pct:.2f}%", delta=f"{tot_pnl_pct:.2f}%")
+elif active_tab == "dime_us":
+    st.subheader("💵 พอร์ตการลงทุน Dime US")
+    df_dus = df_port[df_port["Broker"] == "Dime US"] if not df_port.empty else pd.DataFrame()
+    if not df_dus.empty:
+        df_dus_disp = df_dus[["Symbol", "Qty", "Cost", "Price", "Invested_USD", "Market_Value_USD", "PnL_USD", "PnL_Pct"]].copy()
+        df_dus_disp.columns = ["Symbol", "Qty", "Avg Cost ($)", "Market Price ($)", "Total Cost ($)", "Market Value ($)", "Unrealized P/L ($)", "P/L (%)"]
+        
+        formatted_df = df_dus_disp.style.format({
+            "Qty": "{:,.4f}", "Avg Cost ($)": "${:,.2f}", "Market Price ($)": "${:,.2f}",
+            "Total Cost ($)": "${:,.2f}", "Market Value ($)": "${:,.2f}",
+            "Unrealized P/L ($)": "${:+,.2f}", "P/L (%)": "{:+.2f}%"
+        }).map(highlight_pnl, subset=["Unrealized P/L ($)", "P/L (%)"])
+        
+        st.dataframe(formatted_df, use_container_width=True)
+    else:
+        st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime US")
 
-        st.markdown("<hr style='border-color: #1f232d;'>", unsafe_allow_html=True)
+elif active_tab == "dime_th":
+    st.subheader("🇹🇭 พอร์ตการลงทุน Dime TH (หุ้นไทย)")
+    df_dth = df_port[df_port["Broker"] == "Dime TH"] if not df_port.empty else pd.DataFrame()
+    if not df_dth.empty:
+        df_dth_disp = df_dth.copy()
+        df_dth_disp["Total_Cost_THB"] = df_dth_disp["Qty"] * df_dth_disp["Cost"]
+        df_dth_disp["Market_Value_THB"] = df_dth_disp["Qty"] * df_dth_disp["Price"]
+        df_dth_disp["PnL_THB"] = df_dth_disp["Market_Value_THB"] - df_dth_disp["Total_Cost_THB"]
+        
+        df_dth_disp = df_dth_disp[["Symbol", "Qty", "Cost", "Price", "Total_Cost_THB", "Market_Value_THB", "PnL_THB", "PnL_Pct"]]
+        df_dth_disp.columns = ["Symbol", "Qty", "Avg Cost (฿)", "Market Price (฿)", "Total Cost (฿)", "Market Value (฿)", "Unrealized P/L (฿)", "P/L (%)"]
+        
+        formatted_df = df_dth_disp.style.format({
+            "Qty": "{:,.0f}", "Avg Cost (฿)": "฿{:,.2f}", "Market Price (฿)": "฿{:,.2f}",
+            "Total Cost (฿)": "฿{:,.2f}", "Market Value (฿)": "฿{:,.2f}",
+            "Unrealized P/L (฿)": "฿{:+,.2f}", "P/L (%)": "{:+.2f}%"
+        }).map(highlight_pnl, subset=["Unrealized P/L (฿)", "P/L (%)"])
+        
+        st.dataframe(formatted_df, use_container_width=True)
+    else:
+        st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime TH")
 
-        disp_df = sub_df.copy()
-        disp_df["Qty"] = disp_df["Qty"].map("{:,.4f}".format)
-        disp_df["Cost"] = disp_df["Cost"].map(lambda x: f"{symbol}{x * multiplier:,.2f}")
-        disp_df["Price"] = disp_df["Price"].map(lambda x: f"{symbol}{x * multiplier:,.2f}")
-        disp_df["Invested"] = disp_df["Invested_USD"].map(lambda x: f"{symbol}{x * multiplier:,.2f}")
-        disp_df["Market Value"] = disp_df["Market_Value_USD"].map(lambda x: f"{symbol}{x * multiplier:,.2f}")
-        disp_df["PnL ($)"] = disp_df["PnL_USD"].map(lambda x: f"{symbol}{x * multiplier:,.2f}")
-        disp_df["PnL (%)"] = disp_df["PnL_Pct"].map("{:,.2f}%".format)
-
-        show_cols = ["Symbol", "Broker", "Qty", "Cost", "Price", "Invested", "Market Value", "PnL ($)", "PnL (%)", "Source"]
-        st.dataframe(disp_df[show_cols], use_container_width=True, hide_index=True)
+elif active_tab == "consolidated":
+    st.subheader("🧩 รวมหุ้นทุกตัวเฉพาะหุ้นสหรัฐฯ (US Consolidated Holdings)")
+    df_us_only = df_port[df_port["Broker"].isin(["Webull", "Dime US"])] if not df_port.empty else pd.DataFrame()
+    
+    if not df_us_only.empty:
+        grouped_rows = []
+        for sym, group in df_us_only.groupby("Symbol"):
+            tot_qty = group["Qty"].sum()
+            tot_cost = group["Invested_USD"].sum()
+            tot_market = group["Market_Value_USD"].sum()
+            tot_pnl = tot_market - tot_cost
+            pnl_pct = (tot_pnl / tot_cost * 100) if tot_cost > 0 else 0.0
+            avg_cost = tot_cost / tot_qty if tot_qty > 0 else 0.0
+            market_price = group["Price"].iloc[0]
+            sources = ", ".join(group["Broker"].unique())
+            
+            grouped_rows.append({
+                "Symbol": sym,
+                "Total_Qty": tot_qty,
+                "Avg_Cost_USD": avg_cost,
+                "Market_Price": market_price,
+                "Total_Cost_USD": tot_cost,
+                "Market_Value_USD": tot_market,
+                "Unrealized_PL_USD": tot_pnl,
+                "Unrealized_PL_Pct": pnl_pct,
+                "Sources": sources
+            })
+            
+        df_grouped = pd.DataFrame(grouped_rows)
+        st.session_state["us_consolidated_df"] = df_grouped
+        
+        df_grouped_disp = df_grouped.copy()
+        df_grouped_disp.columns = ["Symbol", "Total Qty", "Avg Cost ($)", "Market Price ($)", "Total Cost ($)", "Market Value ($)", "Unrealized P/L ($)", "P/L (%)", "Sources"]
+        
+        formatted_df = df_grouped_disp.style.format({
+            "Total Qty": "{:,.4f}", "Avg Cost ($)": "${:,.2f}", "Market Price ($)": "${:,.2f}",
+            "Total Cost ($)": "${:,.2f}", "Market Value ($)": "${:,.2f}",
+            "Unrealized P/L ($)": "${:+,.2f}", "P/L (%)": "{:+.2f}%"
+        }).map(highlight_pnl, subset=["Unrealized P/L ($)", "P/L (%)"])
+        
+        st.dataframe(formatted_df, use_container_width=True)
+    else:
+        st.info("ไม่พบรายการถือครองหุ้นสหรัฐฯ ในระบบ")
