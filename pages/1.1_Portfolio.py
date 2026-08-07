@@ -11,7 +11,7 @@ except ImportError:
     HAS_GSPREAD = False
 
 # ==========================================
-# 1. PAGE STYLE & MINIMAL CARD CSS
+# 1. PAGE STYLE & COMPACT PILL NAVIGATION CSS
 # ==========================================
 st.markdown("""
     <style>
@@ -26,7 +26,7 @@ st.markdown("""
     .page-subtitle-minimal {
         color: #6b7280;
         font-size: 0.85rem;
-        margin-bottom: 20px;
+        margin-bottom: 15px;
     }
 
     /* Metric Cards */
@@ -71,38 +71,43 @@ st.markdown("""
         gap: 8px;
     }
 
-    /* Modern Large Navigation Cards Override */
-    div[data-testid="stColumn"] div.stButton > button {
+    /* COMPACT PILL BUTTONS OVERRIDE (HISTORY STYLE) */
+    .pill-nav-container div[data-testid="stColumn"] div.stButton > button {
         background-color: #0f1115 !important;
         border: 1px solid #1a1d24 !important;
-        border-radius: 14px !important;
-        padding: 16px 20px !important;
-        height: auto !important;
-        min-height: 100px !important;
-        text-align: left !important;
-        transition: all 0.25s ease !important;
+        border-radius: 8px !important;
+        padding: 8px 16px !important;
+        height: 42px !important;
+        min-height: 42px !important;
+        font-size: 0.88rem !important;
+        font-weight: 600 !important;
+        color: #9ca3af !important;
+        transition: all 0.2s ease !important;
         display: flex !important;
-        flex-direction: column !important;
+        align-items: center !important;
         justify-content: center !important;
+        width: 100% !important;
     }
 
-    div[data-testid="stColumn"] div.stButton > button:hover {
+    .pill-nav-container div[data-testid="stColumn"] div.stButton > button:hover {
         border-color: #38bdf8 !important;
+        color: #38bdf8 !important;
         background-color: #141822 !important;
-        transform: translateY(-2px);
-        box-shadow: 0 8px 20px rgba(56, 189, 248, 0.15);
     }
 
-    /* Active Big Card Highlight */
-    div[data-testid="stColumn"] div.stButton > button[kind="primary"] {
-        background: linear-gradient(135deg, #111e2e 0%, #0d1724 100%) !important;
+    /* Active Pill Button Highlight */
+    .pill-nav-container div[data-testid="stColumn"] div.stButton > button[kind="primary"] {
+        background: linear-gradient(90deg, #0284c7 0%, #0369a1 100%) !important;
+        color: #ffffff !important;
         border: 1px solid #38bdf8 !important;
-        box-shadow: 0 8px 20px rgba(56, 189, 248, 0.2) !important;
+        box-shadow: 0 4px 12px rgba(56, 189, 248, 0.25) !important;
     }
     </style>
 """, unsafe_allow_html=True)
 
-# Helper Function for Google Sheets Connection
+# ==========================================
+# 2. GOOGLE SHEETS PIPELINE & DATA LOADERS
+# ==========================================
 def get_gspread_client():
     if not HAS_GSPREAD:
         return None
@@ -148,49 +153,100 @@ def sync_portfolio_snapshot_to_gsheet(invested_val, market_val, pnl_val, pnl_pct
     except Exception as e:
         return False, f"เกิดข้อผิดพลาดในการเขียน Google Sheets: {str(e)}"
 
-# Minimal Header
+def load_master_holdings_from_sheets():
+    """ดึงข้อมูลโดยตรงจาก Webull_Order_History, Dime_Portfolio, Dime_TH_Portfolio"""
+    gc = get_gspread_client()
+    if not gc:
+        return pd.DataFrame()
+    try:
+        sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
+        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
+            
+        try:
+            sh = gc.open(sheet_title)
+        except Exception:
+            sh = gc.open_by_key(sheet_title) if len(sheet_title) > 20 else gc.open_by_url(sheet_title)
+
+        holdings = []
+
+        # 1. ดึงข้อมูลพอร์ต Webull จาก Webull_Order_History เสมอ
+        try:
+            ws_w = sh.worksheet("Webull_Order_History")
+            data_w = ws_w.get_all_records()
+            if data_w:
+                df_w = pd.DataFrame(data_w)
+                if not df_w.empty and "Symbol" in df_w.columns:
+                    for sym, grp in df_w.groupby("Symbol"):
+                        qty = pd.to_numeric(grp.get("Qty", grp.get("Quantity", 0)), errors='coerce').sum()
+                        if qty > 0:
+                            cost = pd.to_numeric(grp.get("Avg_Cost", grp.get("Price", 0)), errors='coerce').mean()
+                            price = pd.to_numeric(grp.get("Current_Price", grp.get("Price", cost)), errors='coerce').iloc[-1]
+                            inv = qty * cost
+                            mkt = qty * price
+                            pnl = mkt - inv
+                            pct = (pnl / inv * 100) if inv > 0 else 0
+                            holdings.append({"Broker": "Webull", "Symbol": sym, "Qty": qty, "Cost": cost, "Price": price, "Invested_USD": inv, "Market_Value_USD": mkt, "PnL_USD": pnl, "PnL_Pct": pct})
+        except Exception:
+            pass
+
+        # 2. ดึงข้อมูล Dime US
+        try:
+            ws_dus = sh.worksheet("Dime_Portfolio")
+            data_dus = ws_dus.get_all_records()
+            if data_dus:
+                df_dus = pd.DataFrame(data_dus)
+                if not df_dus.empty and "Symbol" in df_dus.columns:
+                    for _, row in df_dus.iterrows():
+                        qty = pd.to_numeric(row.get("Qty", 0), errors='coerce')
+                        if qty > 0:
+                            cost = pd.to_numeric(row.get("Cost", 0), errors='coerce')
+                            price = pd.to_numeric(row.get("Price", cost), errors='coerce')
+                            inv = qty * cost
+                            mkt = qty * price
+                            pnl = mkt - inv
+                            pct = (pnl / inv * 100) if inv > 0 else 0
+                            holdings.append({"Broker": "Dime US", "Symbol": str(row["Symbol"]), "Qty": qty, "Cost": cost, "Price": price, "Invested_USD": inv, "Market_Value_USD": mkt, "PnL_USD": pnl, "PnL_Pct": pct})
+        except Exception:
+            pass
+
+        # 3. ดึงข้อมูล Dime TH
+        try:
+            ws_dth = sh.worksheet("Dime_TH_Portfolio")
+            data_dth = ws_dth.get_all_records()
+            if data_dth:
+                df_dth = pd.DataFrame(data_dth)
+                if not df_dth.empty and "Symbol" in df_dth.columns:
+                    fx = st.session_state.get("usd_thb_rate", 35.0)
+                    for _, row in df_dth.iterrows():
+                        qty = pd.to_numeric(row.get("Qty", 0), errors='coerce')
+                        if qty > 0:
+                            cost = pd.to_numeric(row.get("Cost", 0), errors='coerce')
+                            price = pd.to_numeric(row.get("Price", cost), errors='coerce')
+                            inv_thb = qty * cost
+                            mkt_thb = qty * price
+                            holdings.append({"Broker": "Dime TH", "Symbol": str(row["Symbol"]), "Qty": qty, "Cost": cost, "Price": price, "Invested_USD": inv_thb / fx, "Market_Value_USD": mkt_thb / fx, "PnL_USD": (mkt_thb - inv_thb) / fx, "PnL_Pct": ((mkt_thb - inv_thb) / inv_thb * 100) if inv_thb > 0 else 0})
+        except Exception:
+            pass
+
+        return pd.DataFrame(holdings)
+    except Exception:
+        return pd.DataFrame()
+
+# Header Section
 st.markdown('<div class="page-title-minimal">Portfolio Overview</div>', unsafe_allow_html=True)
 st.markdown('<div class="page-subtitle-minimal">วิเคราะห์สัดส่วนการถือครองและผลตอบแทนรายโบรกเกอร์</div>', unsafe_allow_html=True)
 
-# Get Shared Master Data
+# Currency Control
+currency_mode = st.radio("Display Currency", ("USD ($)", "THB (฿)"), horizontal=True, index=0)
+
+# Load / Refresh Shared Data
 df_port = st.session_state.get("all_holdings_df", pd.DataFrame())
+if df_port.empty:
+    df_port = load_master_holdings_from_sheets()
+    st.session_state["all_holdings_df"] = df_port
+
 fx_rate = st.session_state.get("usd_thb_rate", 35.0)
-
-# Check active tab state early
-if "active_portfolio_tab" not in st.session_state:
-    st.session_state["active_portfolio_tab"] = "all"
-
-active_tab = st.session_state["active_portfolio_tab"]
-
-# Currency Switcher and Sync Button Control Panel
-c_curr, c_sync_space, c_sync_btn = st.columns([1.5, 1.0, 1.5])
-with c_curr:
-    currency_mode = st.radio(
-        "Display Currency",
-        ("USD ($)", "THB (฿)"),
-        horizontal=True,
-        index=0
-    )
-
-# Show Sync Button next to currency controls ONLY when active_tab == 'all'
-with c_sync_btn:
-    if active_tab == "all":
-        st.markdown("<div style='height: 28px;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 Sync Snapshot to Dashboard", key="btn_sync_top_control", use_container_width=True, type="primary"):
-            if not df_port.empty:
-                g_inv = df_port['Invested_USD'].sum()
-                g_mkt = df_port['Market_Value_USD'].sum()
-                g_pnl = g_mkt - g_inv
-                g_pct = (g_pnl / g_inv * 100) if g_inv > 0 else 0.0
-                
-                with st.spinner("⏳ กำลังบันทึกประวัติลง Portfolio_History..."):
-                    success, msg = sync_portfolio_snapshot_to_gsheet(g_inv, g_mkt, g_pnl, g_pct)
-                    if success:
-                        st.toast(f"✅ {msg}", icon="🎉")
-                    else:
-                        st.error(f"❌ {msg}")
-            else:
-                st.warning("⚠️ ไม่มีข้อมูลพอร์ตที่จะซิงค์")
 
 def highlight_pnl(val):
     if val is None or pd.isna(val):
@@ -211,44 +267,51 @@ def highlight_pnl(val):
     return 'color: #9ca3af;'
 
 # ==========================================
-# 2. LARGE MODERN NAVIGATION CARDS (GRID UI)
+# 3. COMPACT PILL TAB NAVIGATION
 # ==========================================
-col_c1, col_c2, col_c3, col_c4, col_c5 = st.columns(5)
+if "active_portfolio_tab" not in st.session_state:
+    st.session_state["active_portfolio_tab"] = "all"
 
-with col_c1:
+active_tab = st.session_state["active_portfolio_tab"]
+
+st.markdown('<div class="pill-nav-container">', unsafe_allow_html=True)
+c_tab1, c_tab2, c_tab3, c_tab4, c_tab5 = st.columns(5)
+
+with c_tab1:
     btn_type = "primary" if active_tab == "all" else "secondary"
-    if st.button("📊 All In One\n\nสรุปภาพรวมพอร์ตรวมทุกโบรกเกอร์", key="btn_tab_all", use_container_width=True, type=btn_type):
+    if st.button("📊 ภาพรวมทั้งหมด", key="btn_tab_all", use_container_width=True, type=btn_type):
         st.session_state["active_portfolio_tab"] = "all"
         st.rerun()
 
-with col_c2:
+with c_tab2:
     btn_type = "primary" if active_tab == "webull" else "secondary"
-    if st.button("🦅 Webull US\n\nข้อมูลตำแหน่งหุ้นสดจาก Webull API", key="btn_tab_webull", use_container_width=True, type=btn_type):
+    if st.button("🦅 Webull US", key="btn_tab_webull", use_container_width=True, type=btn_type):
         st.session_state["active_portfolio_tab"] = "webull"
         st.rerun()
 
-with col_c3:
+with c_tab3:
     btn_type = "primary" if active_tab == "dime_us" else "secondary"
-    if st.button("💵 Dime US\n\nรายการหุ้นสหรัฐฯ ใน Dime", key="btn_tab_dime_us", use_container_width=True, type=btn_type):
+    if st.button("💵 Dime US", key="btn_tab_dime_us", use_container_width=True, type=btn_type):
         st.session_state["active_portfolio_tab"] = "dime_us"
         st.rerun()
 
-with col_c4:
+with c_tab4:
     btn_type = "primary" if active_tab == "dime_th" else "secondary"
-    if st.button("🇹🇭 Dime TH\n\nรายการหุ้นไทยใน Dime", key="btn_tab_dime_th", use_container_width=True, type=btn_type):
+    if st.button("🇹🇭 Dime TH", key="btn_tab_dime_th", use_container_width=True, type=btn_type):
         st.session_state["active_portfolio_tab"] = "dime_th"
         st.rerun()
 
-with col_c5:
+with c_tab5:
     btn_type = "primary" if active_tab == "consolidated" else "secondary"
-    if st.button("🧩 US Consolidated\n\nรวมหุ้น US จากทุกโบรกถัวเฉลี่ยต้นทุน", key="btn_tab_consolidated", use_container_width=True, type=btn_type):
+    if st.button("🧩 US Consolidated", key="btn_tab_consolidated", use_container_width=True, type=btn_type):
         st.session_state["active_portfolio_tab"] = "consolidated"
         st.rerun()
+st.markdown('</div>', unsafe_allow_html=True)
 
 st.markdown("<br>", unsafe_allow_html=True)
 
 # ==========================================
-# 3. TAB CONTENT RENDERER
+# 4. TAB CONTENT RENDERER
 # ==========================================
 is_thb = "THB" in currency_mode
 multiplier = fx_rate if is_thb else 1.0
@@ -256,7 +319,25 @@ curr_symbol = "฿" if is_thb else "$"
 curr_text = "THB" if is_thb else "USD"
 
 if active_tab == "all":
-    st.subheader(f"🌐 สถิติรวมพอร์ตทุกโบรกเกอร์ ({curr_text})")
+    col_hdr_title, col_hdr_sync = st.columns([3, 1.2])
+    with col_hdr_title:
+        st.subheader(f"🌐 สถิติรวมพอร์ตทุกโบรกเกอร์ ({curr_text})")
+    with col_hdr_sync:
+        if st.button("🔄 Sync Snapshot to Dashboard", key="btn_sync_portfolio", use_container_width=True, type="primary"):
+            if not df_port.empty:
+                g_inv = df_port['Invested_USD'].sum()
+                g_mkt = df_port['Market_Value_USD'].sum()
+                g_pnl = g_mkt - g_inv
+                g_pct = (g_pnl / g_inv * 100) if g_inv > 0 else 0.0
+                
+                with st.spinner("⏳ กำลังบันทึกประวัติลง Portfolio_History..."):
+                    success, msg = sync_portfolio_snapshot_to_gsheet(g_inv, g_mkt, g_pnl, g_pct)
+                    if success:
+                        st.toast(f"✅ {msg}", icon="🎉")
+                    else:
+                        st.error(f"❌ {msg}")
+            else:
+                st.warning("⚠️ ไม่มีข้อมูลพอร์ตที่จะซิงค์")
 
     if not df_port.empty:
         grand_invested = df_port['Invested_USD'].sum() * multiplier
@@ -341,7 +422,7 @@ if active_tab == "all":
         st.info("ยังไม่มีข้อมูลหุ้นในพอร์ตโฟลิโอ")
 
 elif active_tab == "webull":
-    st.subheader("🦅 พอร์ตการลงทุน Webull (Live API Data)")
+    st.subheader("🦅 พอร์ตการลงทุน Webull (จาก Webull_Order_History)")
     df_w = df_port[df_port["Broker"] == "Webull"] if not df_port.empty else pd.DataFrame()
     if not df_w.empty:
         df_w_disp = df_w[["Symbol", "Qty", "Cost", "Price", "Invested_USD", "Market_Value_USD", "PnL_USD", "PnL_Pct"]].copy()
