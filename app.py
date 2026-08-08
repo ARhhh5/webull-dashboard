@@ -258,8 +258,9 @@ def clean_num(val):
     try: return float(val_str)
     except: return 0.0
 
-def fetch_portfolio_history_clean():
-    """ดึงข้อมูลประวัติจาก Portfolio_History แล้วคลีนวันให้เหลือ 1 แถวต่อวัน"""
+@st.cache_data(ttl=1)
+def fetch_portfolio_history_clean_realtime():
+    """ดึงข้อมูลประวัติจาก Portfolio_History แบบ Real-time 100% ไม่ค้าง Caching"""
     client = get_gspread_client()
     if not client:
         return pd.DataFrame()
@@ -293,7 +294,7 @@ def fetch_portfolio_history_clean():
             
             df_res["Date_Str"] = df_res["Parsed_Date"].dt.strftime("%Y-%m-%d")
             
-            # ยุบข้อมูลซ้ำในวันเดียวกัน ให้เหลือเฉพาะ Snapshot บรรทัดล่างสุดของวันนั้น
+            # ยุบข้อมูลซ้ำในวันเดียวกัน เอาเฉพาะ Snapshot ล่าสุด
             df_res = df_res.groupby("Date_Str", as_index=False).last()
             df_res = df_res.sort_values("Date_Str").reset_index(drop=True)
             return df_res
@@ -332,8 +333,8 @@ def render_dashboard():
     # 1. ดึงพอร์ตปัจจุบันสด
     df_shared = st.session_state.get("all_holdings_df", pd.DataFrame())
     
-    # 2. ดึงประวัติย้อนหลังจาก Portfolio_History
-    df_history = fetch_portfolio_history_clean()
+    # 2. ดึงประวัติย้อนหลังจาก Portfolio_History แบบ Real-time สดๆ
+    df_history = fetch_portfolio_history_clean_realtime()
 
     if not df_shared.empty:
         tot_invested_usd = df_shared['Invested_USD'].sum()
@@ -403,25 +404,31 @@ def render_dashboard():
         if "selected_tf" not in st.session_state:
             st.session_state["selected_tf"] = "MAX"
 
-        tf_options = ["1D", "7D", "1M", "6M", "1Y", "MAX"]
-        tf_cols = st.columns(len(tf_options))
-        
-        for idx, option in enumerate(tf_options):
-            btn_type = "primary" if st.session_state["selected_tf"] == option else "secondary"
-            if tf_cols[idx].button(option, key=f"tf_btn_{option}", use_container_width=True, type=btn_type):
-                st.session_state["selected_tf"] = option
+        col_tf_btns, col_refresh = st.columns([5, 1])
+        with col_tf_btns:
+            tf_options = ["1D", "7D", "1M", "6M", "1Y", "MAX"]
+            tf_cols = st.columns(len(tf_options))
+            
+            for idx, option in enumerate(tf_options):
+                btn_type = "primary" if st.session_state["selected_tf"] == option else "secondary"
+                if tf_cols[idx].button(option, key=f"tf_btn_{option}", use_container_width=True, type=btn_type):
+                    st.session_state["selected_tf"] = option
+                    st.rerun()
+
+        with col_refresh:
+            if st.button("🔄", help="รีเฟรชข้อมูลจาก Sheet ทันที"):
+                st.cache_data.clear()
                 st.rerun()
 
         selected_tf = st.session_state["selected_tf"]
 
         # ==========================================
-        # NEW CHART SLICING ENGINE
+        # REAL-TIME CHART SLICING ENGINE
         # ==========================================
         if not df_history.empty:
             max_dt = df_history["Parsed_Date"].max()
             
             if selected_tf == "1D":
-                # 1D: ดึงเฉพาะ 2 แถวล่าสุดเสมอ เพื่อดูมูฟเม้นท์รอบล่าสุด
                 filtered_df = df_history.tail(2).copy()
             elif selected_tf == "7D":
                 start_dt = max_dt - timedelta(days=7)
@@ -446,15 +453,8 @@ def render_dashboard():
             x_axis = filtered_df["Date_Str"].tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            # ข้อมูลจำลองสำรองกรณีเปิดไฟล์ครั้งแรกยังไม่มีชีท
-            x_axis = ['2026-08-01', '2026-08-02', '2026-08-05', '2026-08-08', '2026-08-12']
-            y_axis = [15000.00, 48180.96, 45987.10, 45778.22, display_market]
-            if selected_tf == "1D":
-                x_axis = x_axis[-2:]
-                y_axis = y_axis[-2:]
-            elif selected_tf == "7D":
-                x_axis = x_axis[-4:]
-                y_axis = y_axis[-4:]
+            x_axis = ['2026-08-01', '2026-08-08']
+            y_axis = [15000.00, display_market]
 
         # คำนวณ Auto-Zoom แกน Y
         min_y = min(y_axis) if y_axis else 0
@@ -482,7 +482,7 @@ def render_dashboard():
             margin=dict(t=15, b=10, l=10, r=10), 
             height=260
         )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dashboard_chart_v2_{selected_tf}_{currency_selected}")
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dash_rt_chart_{selected_tf}_{currency_selected}_{len(x_axis)}")
 
     # คำนวณ Broker Allocation จาก Shared DataFrame สด
     if not df_shared.empty:
