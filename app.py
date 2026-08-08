@@ -447,10 +447,11 @@ def render_dashboard():
             if filtered_df.empty:
                 filtered_df = df_history.copy()
 
-            x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d %H:%M").tolist()
+            # แสดงเฉพาะฟอร์แมต YYYY-MM-DD
+            x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d").tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            x_axis = ['2026-08-01 00:00', '2026-08-02 05:44', '2026-08-05 09:56', '2026-08-08 11:59']
+            x_axis = ['2026-08-01', '2026-08-02', '2026-08-05', '2026-08-08']
             y_axis = [15000.00, 48180.96, 45987.10, display_market]
         
         # คำนวณ Dynamic Y-Axis Range (Auto-Zoom) ตามเว็บการเงินมาตรฐาน
