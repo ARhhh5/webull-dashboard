@@ -184,7 +184,7 @@ def inject_custom_css():
         }
 
         .badge-delta-neg { background-color: rgba(239, 68, 68, 0.12); color: #f87171; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
-        .badge-delta-pos { background-color: rgba(34, 197, 94, 0.12); color: #4ade80; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+        .badge-delta-pos { background-color: rgba(34, 197, 94, 0.12); color: #4ade80; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-family: 'JetBrains Mono', monospace; }
 
         .allocation-bar-container {
             display: flex;
@@ -416,22 +416,21 @@ def render_dashboard():
 
         selected_tf = st.session_state["selected_tf"]
 
-        # จัดการกรองข้อมูลย้อนหลังจาก Portfolio_History พร้อม Smart Tail Fallback
+        # จัดการกรองข้อมูลย้อนหลังจาก Portfolio_History แบบเป๊ะๆ
         if df_history is not None and not df_history.empty:
             filtered_df = df_history.copy()
             max_date = filtered_df["Parsed_Date"].max()
             
             if selected_tf == "1D":
-                start_date = max_date - timedelta(days=1)
-                temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
-                # ถ้าจุดข้อมูลในช่วง 1D มีน้อยกว่า 2 จุด ให้ดึง 2 แถวล่าสุดเสมอ
-                filtered_df = temp_df if len(temp_df) >= 2 else filtered_df.tail(2)
+                # 1D: ดึงเฉพาะ 2 จุดล่าสุดเพื่อดูมูฟเม้นท์เปรียบเทียบ
+                filtered_df = filtered_df.tail(2)
                 
             elif selected_tf == "7D":
-                start_date = max_date - timedelta(days=7)
+                # 7D: ดึงเฉพาะข้อมูลย้อนหลังไม่เกิน 6 วันเพื่อไม่ให้โดนดึงจุด 7 วันที่แล้วติดมา
+                start_date = max_date - timedelta(days=6)
                 temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
-                # ถ้าจุดข้อมูลในช่วง 7D มีน้อยกว่า 2 จุด ให้ดึงย้อนหลังสูงสุดเท่าที่มี
-                filtered_df = temp_df if len(temp_df) >= 2 else filtered_df.tail(min(len(filtered_df), 7))
+                # ถ้าจุดข้อมูลมีมากกว่า 3 จุด ดึงจุดย้อนหลัง 3 จุดล่าสุด
+                filtered_df = temp_df if not temp_df.empty else filtered_df.tail(3)
                 
             elif selected_tf == "1M":
                 start_date = max_date - timedelta(days=30)
