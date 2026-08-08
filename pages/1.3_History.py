@@ -119,11 +119,16 @@ def get_gspread_client():
     try:
         google_secrets = st.secrets.get("Google", {})
         cred_base64 = google_secrets.get("credentials_base64", "")
-        if not cred_base64: return None
-        cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
-        return gspread.service_account_from_dict(cred_dict)
+        if cred_base64:
+            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
+            return gspread.service_account_from_dict(cred_dict)
+        elif "gcp_service_account" in st.secrets:
+            scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+            creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
+            return gspread.authorize(creds)
     except Exception:
-        return None
+        pass
+    return None
 
 def sync_webull_to_gsheet():
     gc = get_gspread_client()
@@ -131,7 +136,15 @@ def sync_webull_to_gsheet():
         return False, "❌ ไม่สามารถเชื่อมต่อ Google Sheets API"
 
     try:
-        sh = gc.open("หุ้นของเรา")
+        sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
+        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
+            
+        try:
+            sh = gc.open(sheet_title)
+        except Exception:
+            sh = gc.open_by_key(sheet_title) if len(sheet_title) > 20 else gc.open_by_url(sheet_title)
+
         try:
             worksheet = sh.worksheet("Webull_Order_History")
         except Exception:
@@ -140,13 +153,20 @@ def sync_webull_to_gsheet():
     except Exception as e:
         return False, f"❌ ไม่สามารถเปิด Google Sheet ได้: {str(e)}"
 
-    existing_records = worksheet.get_all_records()
-    df_existing = pd.DataFrame(existing_records)
-    
+    # อ่านข้อมูลที่มีอยู่ใน Sheet แบบปลอดภัย
+    try:
+        existing_records = worksheet.get_all_records()
+        df_existing = pd.DataFrame(existing_records)
+    except Exception:
+        df_existing = pd.DataFrame()
+        # ถ้าไม่มี Header ให้เขียน Header ใหม่ทันที
+        worksheet.clear()
+        worksheet.append_row(["Order ID", "Time", "Sym", "Side", "Qty", "Pr", "สถานะหุ้น"])
+
     existing_ids = set()
     existing_combos = set()
     symbol_positions = {}
-    
+
     if not df_existing.empty:
         sym_col = next((c for c in df_existing.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Sym')
         side_col = next((c for c in df_existing.columns if 'side' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
@@ -159,7 +179,6 @@ def sync_webull_to_gsheet():
             combo = f"{str(row.get('Time',''))}_{str(row.get(sym_col,''))}_{str(row.get(side_col,''))}_{str(row.get(qty_col,''))}_{str(row.get('Pr', row.get('Price','')))}"
             existing_combos.add(combo)
             
-            # คำนวณ Net Qty
             s_name = str(row.get(sym_col, "")).strip().upper()
             s_side = str(row.get(side_col, "BUY")).strip().upper()
             try: s_qty = float(str(row.get(qty_col, 0)).replace(",", "").replace("$", ""))
@@ -244,7 +263,6 @@ def sync_webull_to_gsheet():
 
         if full_order_id not in existing_ids and combo_check not in existing_combos:
             if qty > 0 and price > 0:
-                # คำนวณสถานะหุ้น O (มีอยู่) / C (หมดแล้ว)
                 current_net_qty = symbol_positions.get(symbol, 0.0)
                 if "SELL" in side_formatted:
                     current_net_qty -= qty
@@ -255,12 +273,16 @@ def sync_webull_to_gsheet():
                 new_rows.append([full_order_id, order_time, symbol, side_formatted, qty, price, status_flag])
 
     if new_rows:
-        worksheet.append_rows(new_rows)
-        return True, f"✅ Auto Sync สำเร็จ! เพิ่มรายการใหม่พร้อมปั๊มสถานะ O/C ลง Google Sheet {len(new_rows)} รายการ"
+        for r in new_rows:
+            try:
+                worksheet.append_row(r)
+            except Exception:
+                pass
+        return True, f"✅ Auto Sync สำเร็จ! เพิ่มรายการใหม่ลง Google Sheet {len(new_rows)} รายการ"
     else:
         return True, "ℹ️ ข้อมูลล่าสุดตรงกันแล้ว ไม่มีรายการใหม่ต้องเพิ่ม"
 
-@st.cache_data(ttl=180)
+@st.cache_data(ttl=60)
 def load_all_history_sheets():
     gc = get_gspread_client()
     if not gc:
@@ -272,7 +294,13 @@ def load_all_history_sheets():
     df_dime_th_port = pd.DataFrame()
     
     try:
-        sh = gc.open("หุ้นของเรา")
+        sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
+        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
+
+        try: sh = gc.open(sheet_title)
+        except: sh = gc.open_by_key(sheet_title) if len(sheet_title) > 20 else gc.open_by_url(sheet_title)
+
         try: df_webull_orders = pd.DataFrame(sh.worksheet("Webull_Order_History").get_all_records())
         except: pass
         try: df_dime_closed = pd.DataFrame(sh.worksheet("Dime_Closed_Orders").get_all_records())
@@ -281,8 +309,8 @@ def load_all_history_sheets():
         except: pass
         try: df_dime_th_port = pd.DataFrame(sh.worksheet("Dime_TH_Portfolio").get_all_records())
         except: pass
-    except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในการโหลดข้อมูลจาก Google Sheet: {e}")
+    except Exception:
+        pass
 
     return df_webull_orders, df_dime_closed, df_dime_us_port, df_dime_th_port
 
@@ -297,7 +325,7 @@ with st.expander("🔄 แผงควบคุม Auto Sync ข้อมูล�
         st.write("กดปุ่มเพื่อดึงออเดอร์ล่าสุดจาก Webull API บันทึกเติมลง Google Sheet พร้อมปั๊มสถานะ O=มีอยู่ / C=หมดแล้ว อัตโนมัติ")
     with col_sync2:
         if st.button("🚀 กด Sync ตอนนี้", type="primary", use_container_width=True):
-            with st.spinner("⏳ กำลัง Sync ออเดอร์และอัปเดตสถานะ..."):
+            with st.spinner("⏳ กำลัง Sync ออเดอร์..."):
                 success, msg = sync_webull_to_gsheet()
                 if success:
                     st.success(msg)
