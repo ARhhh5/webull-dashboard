@@ -274,7 +274,6 @@ def load_history_from_gsheet():
         if len(data) > 0:
             df = pd.DataFrame(data)
             
-            # ลบแถวที่เป็น Header
             first_val = str(df.iloc[0, 0]).strip()
             if "วัน" in first_val or "Date" in first_val or "Timestamp" in first_val:
                 df = df.iloc[1:].reset_index(drop=True)
@@ -331,7 +330,7 @@ def render_dashboard():
     is_usd = "USD" in currency_selected
     symbol = "$" if is_usd else "฿"
 
-    # 1. ลองดึงจาก Shared Session State ใน Portfolio ก่อน
+    # 1. ดึงจาก Shared Session State ใน Portfolio
     df_shared = st.session_state.get("all_holdings_df", pd.DataFrame())
     
     # 2. ดึงข้อมูลประวัติจาก Portfolio_History
@@ -417,20 +416,37 @@ def render_dashboard():
 
         selected_tf = st.session_state["selected_tf"]
 
-        # จัดการกรองข้อมูลย้อนหลังจาก Portfolio_History
+        # จัดการกรองข้อมูลย้อนหลังจาก Portfolio_History พร้อม Smart Tail Fallback
         if df_history is not None and not df_history.empty:
             filtered_df = df_history.copy()
             max_date = filtered_df["Parsed_Date"].max()
             
-            if selected_tf == "1D": start_date = max_date - timedelta(days=1)
-            elif selected_tf == "7D": start_date = max_date - timedelta(days=7)
-            elif selected_tf == "1M": start_date = max_date - timedelta(days=30)
-            elif selected_tf == "6M": start_date = max_date - timedelta(days=180)
-            elif selected_tf == "1Y": start_date = max_date - timedelta(days=365)
-            else: start_date = filtered_df["Parsed_Date"].min()
-
-            filtered_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
-            if filtered_df.empty: filtered_df = df_history.copy()
+            if selected_tf == "1D":
+                start_date = max_date - timedelta(days=1)
+                temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
+                # ถ้าจุดข้อมูลในช่วง 1D มีน้อยกว่า 2 จุด ให้ดึง 2 แถวล่าสุดเสมอ
+                filtered_df = temp_df if len(temp_df) >= 2 else filtered_df.tail(2)
+                
+            elif selected_tf == "7D":
+                start_date = max_date - timedelta(days=7)
+                temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
+                # ถ้าจุดข้อมูลในช่วง 7D มีน้อยกว่า 2 จุด ให้ดึงย้อนหลังสูงสุดเท่าที่มี
+                filtered_df = temp_df if len(temp_df) >= 2 else filtered_df.tail(min(len(filtered_df), 7))
+                
+            elif selected_tf == "1M":
+                start_date = max_date - timedelta(days=30)
+                temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
+                filtered_df = temp_df if not temp_df.empty else filtered_df.copy()
+            elif selected_tf == "6M":
+                start_date = max_date - timedelta(days=180)
+                temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
+                filtered_df = temp_df if not temp_df.empty else filtered_df.copy()
+            elif selected_tf == "1Y":
+                start_date = max_date - timedelta(days=365)
+                temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
+                filtered_df = temp_df if not temp_df.empty else filtered_df.copy()
+            else:  # MAX
+                filtered_df = df_history.copy()
 
             x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d").tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
@@ -464,12 +480,12 @@ def render_dashboard():
     # คำนวณ Broker Allocation จาก Shared DataFrame สด
     if not df_shared.empty:
         df_b_sum = df_shared.groupby("Broker")["Market_Value_USD"].sum().to_dict()
-        val_dime_us = df_b_sum.get("Dime US", 29101.91) * (1.0 if is_usd else usd_fx_rate)
-        val_webull = df_b_sum.get("Webull", 13937.89) * (1.0 if is_usd else usd_fx_rate)
-        val_dime_th = df_b_sum.get("Dime TH", 4904.66) * (1.0 if is_usd else usd_fx_rate)
+        val_dime_us = df_b_sum.get("Dime US", 32412.11) * (1.0 if is_usd else usd_fx_rate)
+        val_webull = df_b_sum.get("Webull", 9131.88) * (1.0 if is_usd else usd_fx_rate)
+        val_dime_th = df_b_sum.get("Dime TH", 4234.23) * (1.0 if is_usd else usd_fx_rate)
     else:
-        val_dime_us = 29101.91 * (1.0 if is_usd else usd_fx_rate)
-        val_webull = 13937.89 * (1.0 if is_usd else usd_fx_rate)
+        val_dime_us = 32412.11 * (1.0 if is_usd else usd_fx_rate)
+        val_webull = 9131.88 * (1.0 if is_usd else usd_fx_rate)
         val_dime_th = 4234.23 * (1.0 if is_usd else usd_fx_rate)
 
     c_btm_left, c_btm_right = st.columns([1.1, 1.9])
@@ -495,8 +511,8 @@ def render_dashboard():
     with c_btm_right:
         st.markdown('<div style="font-size: 0.85rem; font-weight: 600; color: #9ca3af; margin-bottom: 10px;">Top Holdings Performance</div>', unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3)
-        with g1: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 QQQM</span><span class="badge-delta-pos">+11.37%</span></div><div class="stock-price">$29,101.91</div></div>', unsafe_allow_html=True)
-        with g2: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 Webull</span><span class="badge-delta-neg">-34.48%</span></div><div class="stock-price">$9,131.88</div></div>', unsafe_allow_html=True)
+        with g1: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 Dime US</span><span class="badge-delta-pos">+11.37%</span></div><div class="stock-price">$32,412.11</div></div>', unsafe_allow_html=True)
+        with g2: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 Webull US</span><span class="badge-delta-neg">-34.48%</span></div><div class="stock-price">$9,131.88</div></div>', unsafe_allow_html=True)
         with g3: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 Dime TH</span><span class="badge-delta-neg">-13.67%</span></div><div class="stock-price">$4,234.23</div></div>', unsafe_allow_html=True)
 
 def load_page_module(file_name):
