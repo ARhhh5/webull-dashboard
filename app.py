@@ -184,7 +184,7 @@ def inject_custom_css():
         }
 
         .badge-delta-neg { background-color: rgba(239, 68, 68, 0.12); color: #f87171; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
-        .badge-delta-pos { background-color: rgba(34, 197, 94, 0.12); color: #4ade80; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-family: 'JetBrains Mono', monospace; }
+        .badge-delta-pos { background-color: rgba(34, 197, 94, 0.12); color: #4ade80; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
 
         .allocation-bar-container {
             display: flex;
@@ -416,52 +416,54 @@ def render_dashboard():
 
         selected_tf = st.session_state["selected_tf"]
 
-        # จัดการกรองข้อมูลย้อนหลังจาก Portfolio_History แบบเป๊ะๆ
+        # จัดการกรองข้อมูลย้อนหลังจาก Portfolio_History ตามวันที่จริงของบอส
         if df_history is not None and not df_history.empty:
-            filtered_df = df_history.copy()
-            max_date = filtered_df["Parsed_Date"].max()
+            df_history["Date_Only"] = df_history["Parsed_Date"].dt.date
+            max_date = df_history["Date_Only"].max()
             
             if selected_tf == "1D":
-                # 1D: ดึงเฉพาะ 2 จุดล่าสุดเพื่อดูมูฟเม้นท์เปรียบเทียบ
-                filtered_df = filtered_df.tail(2)
+                # 1D: แสดงเฉพาะวันล่าสุดวันเดียวเท่านั้น
+                filtered_df = df_history[df_history["Date_Only"] == max_date].copy()
                 
             elif selected_tf == "7D":
-                # 7D: ดึงเฉพาะข้อมูลย้อนหลังไม่เกิน 6 วันเพื่อไม่ให้โดนดึงจุด 7 วันที่แล้วติดมา
+                # 7D: คำนวณถอยหลังจากวันล่าสุดไม่เกิน 6 วัน (ไม่รวมวันที่ 7 เพื่อตัด 2026-08-01 ออก)
                 start_date = max_date - timedelta(days=6)
-                temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
-                # ถ้าจุดข้อมูลมีมากกว่า 3 จุด ดึงจุดย้อนหลัง 3 จุดล่าสุด
-                filtered_df = temp_df if not temp_df.empty else filtered_df.tail(3)
+                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
                 
             elif selected_tf == "1M":
                 start_date = max_date - timedelta(days=30)
-                temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
-                filtered_df = temp_df if not temp_df.empty else filtered_df.copy()
+                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
             elif selected_tf == "6M":
                 start_date = max_date - timedelta(days=180)
-                temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
-                filtered_df = temp_df if not temp_df.empty else filtered_df.copy()
+                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
             elif selected_tf == "1Y":
                 start_date = max_date - timedelta(days=365)
-                temp_df = filtered_df[filtered_df["Parsed_Date"] >= start_date]
-                filtered_df = temp_df if not temp_df.empty else filtered_df.copy()
+                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
             else:  # MAX
                 filtered_df = df_history.copy()
+
+            if filtered_df.empty:
+                filtered_df = df_history.tail(1).copy()
 
             x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d").tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            x_axis = ['2026-08-01', '2026-08-02', '2026-08-05', '2026-08-08']
-            y_axis = [15000.00, 48180.96, 45941.50, display_market]
+            x_axis = ['2026-08-08']
+            y_axis = [display_market]
         
         # วาดกราฟ Plotly
         fig = go.Figure()
+        
+        # ปรับโหมดวาดกราฟ: ถ้ามีจุดเดียวให้เน้นแสดง Marker ชัดเจน
+        trace_mode = 'markers' if len(x_axis) == 1 else 'lines+markers'
+        
         fig.add_trace(go.Scatter(
             x=x_axis, 
             y=y_axis, 
-            mode='lines+markers', 
+            mode=trace_mode, 
             line=dict(color='#38bdf8', width=3, shape='spline'), 
-            marker=dict(size=6, color='#38bdf8'),
-            fill='tozeroy', 
+            marker=dict(size=10 if len(x_axis) == 1 else 6, color='#38bdf8'),
+            fill='tozeroy' if len(x_axis) > 1 else None, 
             fillcolor='rgba(56, 189, 248, 0.05)',
             hovertemplate="<b>วันที่: %{x}</b><br>มูลค่าพอร์ต: %{y:$,.2f}<extra></extra>"
         ))
