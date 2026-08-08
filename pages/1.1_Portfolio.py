@@ -185,7 +185,7 @@ def clean_val(val):
         return 0.0
 
 def load_master_holdings_from_sheets():
-    """คำนวณยอดพอร์ตสะสม Net Position และกรองเอาเฉพาะหุ้นที่มีสถานะ O (มีอยู่)"""
+    """คำนวณยอดพอร์ตสะสม Net Position และกรองเอาเฉพาะหุ้นที่มีอยู่จริงใน Snapshot สดล่าสุด"""
     gc = get_gspread_client()
     if not gc:
         return pd.DataFrame()
@@ -201,48 +201,74 @@ def load_master_holdings_from_sheets():
 
         raw_records = []
 
-        # 1. คำนวณพอร์ต Webull จาก Webull_Order_History (กรองสถานะ Column G)
+        # 1. คำนวณพอร์ต Webull จาก Webull_Order_History
         try:
             ws_w = sh.worksheet("Webull_Order_History")
             data_w = ws_w.get_all_values()
             if len(data_w) > 1:
                 df_w = pd.DataFrame(data_w[1:], columns=data_w[0])
-                sym_col = next((c for c in df_w.columns if "Sym" in c or "Ticker" in c or "หุ้น" in c), df_w.columns[0])
-                side_col = next((c for c in df_w.columns if "Side" in c or "ประเภท" in c), None)
-                qty_col = next((c for c in df_w.columns if "Qty" in c or "Volume" in c or "จำนวน" in c), df_w.columns[1])
-                cost_col = next((c for c in df_w.columns if "Pr" in c or "Cost" in c or "ต้นทุน" in c or "Avg" in c), df_w.columns[2])
-                status_col = next((c for c in df_w.columns if "สถานะ" in c or "Status" in c), None)
+                cols = list(df_w.columns)
+                
+                sym_col = next((c for c in cols if "Sym" in c or "Ticker" in c or "หุ้น" in c), cols[2] if len(cols) > 2 else cols[0])
+                side_col = next((c for c in cols if "Side" in c or "ประเภท" in c), cols[3] if len(cols) > 3 else None)
+                qty_col = next((c for c in cols if "Qty" in c or "Volume" in c or "จำนวน" in c), cols[4] if len(cols) > 4 else cols[1])
+                cost_col = next((c for c in cols if "Pr" in c or "Cost" in c or "ต้นทุน" in c or "Avg" in c), cols[5] if len(cols) > 5 else cols[2])
+                time_col = next((c for c in cols if "Time" in c or "Date" in c or "วันที่" in c), cols[1] if len(cols) > 1 else None)
+
+                # ดึงวันทีล่าสุดเพื่อเช็ก Snapshot ปัจจุบัน
+                latest_date_str = ""
+                if time_col and time_col in df_w.columns:
+                    latest_date_str = str(df_w[time_col].iloc[-1]).strip()
+
+                # หาลำดับสัญลักษณ์หุ้นที่มีอยู่ใน Snapshot ล่าสุด (บรรทัดที่ Side เป็นค่าว่างของวันล่าสุด)
+                active_snapshot_symbols = set()
+                if latest_date_str:
+                    snap_rows = df_w[(df_w[time_col].astype(str).str.strip() == latest_date_str) & 
+                                     (df_w[side_col].astype(str).str.strip() == "")] if side_col else df_w
+                    for _, s_row in snap_rows.iterrows():
+                        s_sym = str(s_row.get(sym_col, "")).strip().upper()
+                        s_qty = clean_val(s_row.get(qty_col, 0))
+                        if s_sym and s_qty > 0:
+                            active_snapshot_symbols.add(s_sym)
 
                 for sym, grp in df_w.groupby(sym_col):
                     clean_sym = str(sym).strip().upper()
                     if not clean_sym:
                         continue
-                        
-                    # เช็ก Column G สถานะหุ้นเป็น C หรือไม่
-                    latest_status = ""
-                    if status_col:
-                        latest_status = str(grp.iloc[-1].get(status_col, "")).strip().upper()
+
+                    # กรองทิ้งทันทีถ้าหุ้นตัวนั้นไม่อยู่ใน Snapshot ล่าสุด (กรณีขายหมดแล้วเช่น ULTY)
+                    if active_snapshot_symbols and clean_sym not in active_snapshot_symbols:
+                        continue
 
                     total_qty = 0.0
                     total_cost_val = 0.0
+                    has_explicit_trades = False
 
                     for _, row in grp.iterrows():
                         q = clean_val(row.get(qty_col, 0))
                         p = clean_val(row.get(cost_col, 0))
-                        side = str(row.get(side_col, "BUY")).strip().upper() if side_col else "BUY"
+                        side = str(row.get(side_col, "")).strip().upper() if side_col else ""
 
                         if "SELL" in side or "ขาย" in side:
+                            has_explicit_trades = True
                             if total_qty > 0:
                                 avg_c = total_cost_val / total_qty
                                 total_qty -= q
                                 total_cost_val = total_qty * avg_c
-                        else: # BUY
+                        elif "BUY" in side or "ซื้อ" in side:
+                            has_explicit_trades = True
                             total_qty += q
                             total_cost_val += (q * p)
 
-                    # บันทึกเฉพาะหุ้นที่ยังถือครองอยู่จริง และสถานะไม่เท่ากับ C
-                    if total_qty > 0.0001 and latest_status != "C":
+                    # ถ้าไม่มีออเดอร์ BUY/SELL ตรงๆ ให้ใช้ค่าแถวล่าสุดจาก Snapshot
+                    if not has_explicit_trades or total_qty <= 0.0001:
+                        latest_r = grp.iloc[-1]
+                        total_qty = clean_val(latest_r.get(qty_col, 0))
+                        avg_cost = clean_val(latest_r.get(cost_col, 0))
+                    else:
                         avg_cost = total_cost_val / total_qty
+
+                    if total_qty > 0.0001:
                         raw_records.append({
                             "Broker": "Webull",
                             "Symbol": clean_sym,
