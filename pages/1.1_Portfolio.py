@@ -93,7 +93,7 @@ st.markdown("""
     .pill-nav-container div[data-testid="stColumn"] div.stButton > button:hover {
         border-color: #38bdf8 !important;
         color: #38bdf8 !important;
-        background-color: #161a23 !important;
+        background-color: #161822 !important;
     }
 
     /* Active Pill Button Highlight */
@@ -223,7 +223,7 @@ def load_master_holdings_from_sheets():
                         max_date = valid_dates["parsed_date"].max()
                         df_latest = df_w[df_w["parsed_date"] == max_date].copy()
                         
-                        # ยุบแถวซ้ำตาม Symbol (Deduplicate): ดึงเฉพาะแถวบรรทัดล่างสุดของแต่ละหุ้นในวันนั้น
+                        # ยุบแถวซ้ำตาม Symbol (Deduplicate)
                         for sym, grp in df_latest.groupby(sym_col):
                             clean_sym = str(sym).strip().upper()
                             if not clean_sym:
@@ -390,6 +390,34 @@ def highlight_pnl(val):
         return 'background-color: rgba(239, 68, 68, 0.15); color: #f87171; font-weight: bold;'
     return 'color: #9ca3af;'
 
+# Helper สำหรับแสดงการ์ดสรุปยอดในแต่ละแท็บ
+def render_tab_summary_metrics(df_sub, broker_name):
+    is_thb = "THB" in currency_mode
+    multiplier = fx_rate if is_thb else 1.0
+    symbol = "฿" if is_thb else "$"
+
+    if not df_sub.empty:
+        inv = df_sub["Invested_USD"].sum() * multiplier
+        mkt = df_sub["Market_Value_USD"].sum() * multiplier
+        pnl = mkt - inv
+        pct = (pnl / inv * 100) if inv > 0 else 0.0
+
+        pnl_class = "text-green" if pnl >= 0 else "text-red"
+        pnl_prefix = "+" if pnl >= 0 else ""
+
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">เงินลงทุนรวม ({broker_name})</div><div class="metric-value">{symbol}{inv:,.2f}</div></div>', unsafe_allow_html=True)
+        with c2:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">มูลค่าตลาดรวม ({broker_name})</div><div class="metric-value">{symbol}{mkt:,.2f}</div></div>', unsafe_allow_html=True)
+        with c3:
+            st.markdown(f'<div class="metric-card"><div class="metric-label">กำไร / ขาดทุนสุทธิ ({broker_name})</div><div class="metric-value {pnl_class}">{pnl_prefix}{symbol}{pnl:,.2f} ({pct:+.2f}%)</div></div>', unsafe_allow_html=True)
+    else:
+        c1, c2, c3 = st.columns(3)
+        with c1: st.markdown(f'<div class="metric-card"><div class="metric-label">เงินลงทุนรวม ({broker_name})</div><div class="metric-value">{symbol}0.00</div></div>', unsafe_allow_html=True)
+        with c2: st.markdown(f'<div class="metric-card"><div class="metric-label">มูลค่าตลาดรวม ({broker_name})</div><div class="metric-value">{symbol}0.00</div></div>', unsafe_allow_html=True)
+        with c3: st.markdown(f'<div class="metric-card"><div class="metric-label">กำไร / ขาดทุนสุทธิ ({broker_name})</div><div class="metric-value">{symbol}0.00 (0.00%)</div></div>', unsafe_allow_html=True)
+
 # ==========================================
 # 3. COMPACT PILL TAB NAVIGATION
 # ==========================================
@@ -546,85 +574,138 @@ if active_tab == "all":
         st.info("ยังไม่มีข้อมูลหุ้นในพอร์ตโฟลิโอ")
 
 elif active_tab == "webull":
-    st.subheader("🦅 พอร์ตการลงทุน Webull (Live Price via yfinance)")
+    st.subheader(f"🦅 พอร์ตการลงทุน Webull ({curr_text})")
     df_w = df_port[df_port["Broker"] == "Webull"] if not df_port.empty else pd.DataFrame()
+    
+    # แสดงการ์ดสรุปยอดประจำแท็บ Webull
+    render_tab_summary_metrics(df_w, "Webull US")
+    st.markdown("<br>", unsafe_allow_html=True)
+
     if not df_w.empty:
-        df_w_disp = df_w[["Symbol", "Qty", "Cost", "Price", "Invested_USD", "Market_Value_USD", "PnL_USD", "PnL_Pct"]].copy()
-        df_w_disp.columns = ["Symbol", "Qty", "Avg Cost ($)", "Market Price ($)", "Total Cost ($)", "Market Value ($)", "Unrealized P/L ($)", "P/L (%)"]
+        df_w_disp = df_w.copy()
+        if is_thb:
+            df_w_disp["Cost"] = df_w_disp["Cost"] * fx_rate
+            df_w_disp["Price"] = df_w_disp["Price"] * fx_rate
+            df_w_disp["Invested_USD"] = df_w_disp["Invested_USD"] * fx_rate
+            df_w_disp["Market_Value_USD"] = df_w_disp["Market_Value_USD"] * fx_rate
+            df_w_disp["PnL_USD"] = df_w_disp["PnL_USD"] * fx_rate
+
+        df_w_disp = df_w_disp[["Symbol", "Qty", "Cost", "Price", "Invested_USD", "Market_Value_USD", "PnL_USD", "PnL_Pct"]].copy()
+        df_w_disp.columns = ["Symbol", "Qty", f"Avg Cost ({curr_symbol})", f"Market Price ({curr_symbol})", f"Total Cost ({curr_symbol})", f"Market Value ({curr_symbol})", f"Unrealized P/L ({curr_symbol})", "P/L (%)"]
         
+        fmt_symbol = f"฿{{:,.2f}}" if is_thb else f"${{:,.2f}}"
+        fmt_pnl_symbol = f"฿{{:+,.2f}}" if is_thb else f"${{:+,.2f}}"
+
         formatted_df = df_w_disp.style.format({
-            "Qty": "{:,.4f}", "Avg Cost ($)": "${:,.2f}", "Market Price ($)": "${:,.2f}",
-            "Total Cost ($)": "${:,.2f}", "Market Value ($)": "${:,.2f}",
-            "Unrealized P/L ($)": "${:+,.2f}", "P/L (%)": "{:+.2f}%"
-        }).map(highlight_pnl, subset=["Unrealized P/L ($)", "P/L (%)"])
+            "Qty": "{:,.4f}", f"Avg Cost ({curr_symbol})": fmt_symbol, f"Market Price ({curr_symbol})": fmt_symbol,
+            f"Total Cost ({curr_symbol})": fmt_symbol, f"Market Value ({curr_symbol})": fmt_symbol,
+            f"Unrealized P/L ({curr_symbol})": fmt_pnl_symbol, "P/L (%)": "{:+.2f}%"
+        }).map(highlight_pnl, subset=[f"Unrealized P/L ({curr_symbol})", "P/L (%)"])
         
         st.dataframe(formatted_df, use_container_width=True)
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Webull")
 
 elif active_tab == "dime_us":
-    st.subheader("💵 พอร์ตการลงทุน Dime US (Live Price via yfinance)")
+    st.subheader(f"💵 พอร์ตการลงทุน Dime US ({curr_text})")
     df_dus = df_port[df_port["Broker"] == "Dime US"] if not df_port.empty else pd.DataFrame()
+    
+    # แสดงการ์ดสรุปยอดประจำแท็บ Dime US
+    render_tab_summary_metrics(df_dus, "Dime US")
+    st.markdown("<br>", unsafe_allow_html=True)
+
     if not df_dus.empty:
-        df_dus_disp = df_dus[["Symbol", "Qty", "Cost", "Price", "Invested_USD", "Market_Value_USD", "PnL_USD", "PnL_Pct"]].copy()
-        df_dus_disp.columns = ["Symbol", "Qty", "Avg Cost ($)", "Market Price ($)", "Total Cost ($)", "Market Value ($)", "Unrealized P/L ($)", "P/L (%)"]
+        df_dus_disp = df_dus.copy()
+        if is_thb:
+            df_dus_disp["Cost"] = df_dus_disp["Cost"] * fx_rate
+            df_dus_disp["Price"] = df_dus_disp["Price"] * fx_rate
+            df_dus_disp["Invested_USD"] = df_dus_disp["Invested_USD"] * fx_rate
+            df_dus_disp["Market_Value_USD"] = df_dus_disp["Market_Value_USD"] * fx_rate
+            df_dus_disp["PnL_USD"] = df_dus_disp["PnL_USD"] * fx_rate
+
+        df_dus_disp = df_dus_disp[["Symbol", "Qty", "Cost", "Price", "Invested_USD", "Market_Value_USD", "PnL_USD", "PnL_Pct"]].copy()
+        df_dus_disp.columns = ["Symbol", "Qty", f"Avg Cost ({curr_symbol})", f"Market Price ({curr_symbol})", f"Total Cost ({curr_symbol})", f"Market Value ({curr_symbol})", f"Unrealized P/L ({curr_symbol})", "P/L (%)"]
         
+        fmt_symbol = f"฿{{:,.2f}}" if is_thb else f"${{:,.2f}}"
+        fmt_pnl_symbol = f"฿{{:+,.2f}}" if is_thb else f"${{:+,.2f}}"
+
         formatted_df = df_dus_disp.style.format({
-            "Qty": "{:,.4f}", "Avg Cost ($)": "${:,.2f}", "Market Price ($)": "${:,.2f}",
-            "Total Cost ($)": "${:,.2f}", "Market Value ($)": "${:,.2f}",
-            "Unrealized P/L ($)": "${:+,.2f}", "P/L (%)": "{:+.2f}%"
-        }).map(highlight_pnl, subset=["Unrealized P/L ($)", "P/L (%)"])
+            "Qty": "{:,.4f}", f"Avg Cost ({curr_symbol})": fmt_symbol, f"Market Price ({curr_symbol})": fmt_symbol,
+            f"Total Cost ({curr_symbol})": fmt_symbol, f"Market Value ({curr_symbol})": fmt_symbol,
+            f"Unrealized P/L ({curr_symbol})": fmt_pnl_symbol, "P/L (%)": "{:+.2f}%"
+        }).map(highlight_pnl, subset=[f"Unrealized P/L ({curr_symbol})", "P/L (%)"])
         
         st.dataframe(formatted_df, use_container_width=True)
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime US")
 
 elif active_tab == "dime_th":
-    st.subheader("🇹🇭 พอร์ตการลงทุน Dime TH (หุ้นไทย - Live Price via yfinance)")
+    st.subheader(f"🇹🇭 พอร์ตการลงทุน Dime TH (หุ้นไทย - {curr_text})")
     df_dth = df_port[df_port["Broker"] == "Dime TH"] if not df_port.empty else pd.DataFrame()
+    
+    # แสดงการ์ดสรุปยอดประจำแท็บ Dime TH (แปลงหน่วยเงินตามที่เลือกทันที)
+    render_tab_summary_metrics(df_dth, "Dime TH")
+    st.markdown("<br>", unsafe_allow_html=True)
+
     if not df_dth.empty:
         df_dth_disp = df_dth.copy()
-        df_dth_disp["Total_Cost_THB"] = df_dth_disp["Qty"] * df_dth_disp["Cost"]
-        df_dth_disp["Market_Value_THB"] = df_dth_disp["Qty"] * df_dth_disp["Price"]
-        df_dth_disp["PnL_THB"] = df_dth_disp["Market_Value_THB"] - df_dth_disp["Total_Cost_THB"]
+        if is_thb:
+            df_dth_disp["Cost_Disp"] = df_dth_disp["Cost"]
+            df_dth_disp["Price_Disp"] = df_dth_disp["Price"]
+            df_dth_disp["Total_Cost_Disp"] = df_dth_disp["Qty"] * df_dth_disp["Cost"]
+            df_dth_disp["Market_Value_Disp"] = df_dth_disp["Qty"] * df_dth_disp["Price"]
+            df_dth_disp["PnL_Disp"] = df_dth_disp["Market_Value_Disp"] - df_dth_disp["Total_Cost_Disp"]
+        else:
+            df_dth_disp["Cost_Disp"] = df_dth_disp["Cost"] / fx_rate
+            df_dth_disp["Price_Disp"] = df_dth_disp["Price"] / fx_rate
+            df_dth_disp["Total_Cost_Disp"] = df_dth_disp["Invested_USD"]
+            df_dth_disp["Market_Value_Disp"] = df_dth_disp["Market_Value_USD"]
+            df_dth_disp["PnL_Disp"] = df_dth_disp["PnL_USD"]
+
+        df_dth_disp = df_dth_disp[["Symbol", "Qty", "Cost_Disp", "Price_Disp", "Total_Cost_Disp", "Market_Value_Disp", "PnL_Disp", "PnL_Pct"]]
+        df_dth_disp.columns = ["Symbol", "Qty", f"Avg Cost ({curr_symbol})", f"Market Price ({curr_symbol})", f"Total Cost ({curr_symbol})", f"Market Value ({curr_symbol})", f"Unrealized P/L ({curr_symbol})", "P/L (%)"]
         
-        df_dth_disp = df_dth_disp[["Symbol", "Qty", "Cost", "Price", "Total_Cost_THB", "Market_Value_THB", "PnL_THB", "PnL_Pct"]]
-        df_dth_disp.columns = ["Symbol", "Qty", "Avg Cost (฿)", "Market Price (฿)", "Total Cost (฿)", "Market Value (฿)", "Unrealized P/L (฿)", "P/L (%)"]
-        
+        fmt_symbol = f"฿{{:,.2f}}" if is_thb else f"${{:,.2f}}"
+        fmt_pnl_symbol = f"฿{{:+,.2f}}" if is_thb else f"${{:+,.2f}}"
+
         formatted_df = df_dth_disp.style.format({
-            "Qty": "{:,.0f}", "Avg Cost (฿)": "฿{:,.2f}", "Market Price (฿)": "฿{:,.2f}",
-            "Total Cost (฿)": "฿{:,.2f}", "Market Value (฿)": "฿{:,.2f}",
-            "Unrealized P/L (฿)": "฿{:+,.2f}", "P/L (%)": "{:+.2f}%"
-        }).map(highlight_pnl, subset=["Unrealized P/L (฿)", "P/L (%)"])
+            "Qty": "{:,.0f}", f"Avg Cost ({curr_symbol})": fmt_symbol, f"Market Price ({curr_symbol})": fmt_symbol,
+            f"Total Cost ({curr_symbol})": fmt_symbol, f"Market Value ({curr_symbol})": fmt_symbol,
+            f"Unrealized P/L ({curr_symbol})": fmt_pnl_symbol, "P/L (%)": "{:+.2f}%"
+        }).map(highlight_pnl, subset=[f"Unrealized P/L ({curr_symbol})", "P/L (%)"])
         
         st.dataframe(formatted_df, use_container_width=True)
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime TH")
 
 elif active_tab == "consolidated":
-    st.subheader("🧩 รวมหุ้นทุกตัวเฉพาะหุ้นสหรัฐฯ (US Consolidated Holdings)")
+    st.subheader(f"🧩 รวมหุ้นทุกตัวเฉพาะหุ้นสหรัฐฯ (US Consolidated Holdings - {curr_text})")
     df_us_only = df_port[df_port["Broker"].isin(["Webull", "Dime US"])] if not df_port.empty else pd.DataFrame()
     
+    # แสดงการ์ดสรุปยอดประจำแท็บ US Consolidated
+    render_tab_summary_metrics(df_us_only, "US Consolidated")
+    st.markdown("<br>", unsafe_allow_html=True)
+
     if not df_us_only.empty:
         grouped_rows = []
         for sym, group in df_us_only.groupby("Symbol"):
             tot_qty = group["Qty"].sum()
-            tot_cost = group["Invested_USD"].sum()
-            tot_market = group["Market_Value_USD"].sum()
+            tot_cost = group["Invested_USD"].sum() * multiplier
+            tot_market = group["Market_Value_USD"].sum() * multiplier
             tot_pnl = tot_market - tot_cost
             pnl_pct = (tot_pnl / tot_cost * 100) if tot_cost > 0 else 0.0
             avg_cost = tot_cost / tot_qty if tot_qty > 0 else 0.0
-            market_price = group["Price"].iloc[0]
+            market_price = (group["Price"].iloc[0]) * multiplier
             sources = ", ".join(group["Broker"].unique())
             
             grouped_rows.append({
                 "Symbol": sym,
                 "Total_Qty": tot_qty,
-                "Avg_Cost_USD": avg_cost,
+                "Avg_Cost": avg_cost,
                 "Market_Price": market_price,
-                "Total_Cost_USD": tot_cost,
-                "Market_Value_USD": tot_market,
-                "Unrealized_PL_USD": tot_pnl,
+                "Total_Cost": tot_cost,
+                "Market_Value": tot_market,
+                "Unrealized_PL": tot_pnl,
                 "Unrealized_PL_Pct": pnl_pct,
                 "Sources": sources
             })
@@ -633,13 +714,16 @@ elif active_tab == "consolidated":
         st.session_state["us_consolidated_df"] = df_grouped
         
         df_grouped_disp = df_grouped.copy()
-        df_grouped_disp.columns = ["Symbol", "Total Qty", "Avg Cost ($)", "Market Price ($)", "Total Cost ($)", "Market Value ($)", "Unrealized P/L ($)", "P/L (%)", "Sources"]
+        df_grouped_disp.columns = ["Symbol", "Total Qty", f"Avg Cost ({curr_symbol})", f"Market Price ({curr_symbol})", f"Total Cost ({curr_symbol})", f"Market Value ({curr_symbol})", f"Unrealized P/L ({curr_symbol})", "P/L (%)", "Sources"]
         
+        fmt_symbol = f"฿{{:,.2f}}" if is_thb else f"${{:,.2f}}"
+        fmt_pnl_symbol = f"฿{{:+,.2f}}" if is_thb else f"${{:+,.2f}}"
+
         formatted_df = df_grouped_disp.style.format({
-            "Total Qty": "{:,.4f}", "Avg Cost ($)": "${:,.2f}", "Market Price ($)": "${:,.2f}",
-            "Total Cost ($)": "${:,.2f}", "Market Value ($)": "${:,.2f}",
-            "Unrealized P/L ($)": "${:+,.2f}", "P/L (%)": "{:+.2f}%"
-        }).map(highlight_pnl, subset=["Unrealized P/L ($)", "P/L (%)"])
+            "Total Qty": "{:,.4f}", f"Avg Cost ({curr_symbol})": fmt_symbol, f"Market Price ({curr_symbol})": fmt_symbol,
+            f"Total Cost ({curr_symbol})": fmt_symbol, f"Market Value ({curr_symbol})": fmt_symbol,
+            f"Unrealized P/L ({curr_symbol})": fmt_pnl_symbol, "P/L (%)": "{:+.2f}%"
+        }).map(highlight_pnl, subset=[f"Unrealized P/L ({curr_symbol})", "P/L (%)"])
         
         st.dataframe(formatted_df, use_container_width=True)
     else:
