@@ -119,16 +119,11 @@ def get_gspread_client():
     try:
         google_secrets = st.secrets.get("Google", {})
         cred_base64 = google_secrets.get("credentials_base64", "")
-        if cred_base64:
-            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
-            return gspread.service_account_from_dict(cred_dict)
-        elif "gcp_service_account" in st.secrets:
-            scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-            creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
-            return gspread.authorize(creds)
+        if not cred_base64: return None
+        cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
+        return gspread.service_account_from_dict(cred_dict)
     except Exception:
-        pass
-    return None
+        return None
 
 def sync_webull_to_gsheet():
     gc = get_gspread_client()
@@ -153,13 +148,14 @@ def sync_webull_to_gsheet():
     except Exception as e:
         return False, f"❌ ไม่สามารถเปิด Google Sheet ได้: {str(e)}"
 
-    # อ่านข้อมูลที่มีอยู่ใน Sheet แบบปลอดภัย
     try:
-        existing_records = worksheet.get_all_records()
-        df_existing = pd.DataFrame(existing_records)
+        raw_vals = worksheet.get_all_values()
+        if len(raw_vals) > 1:
+            df_existing = pd.DataFrame(raw_vals[1:], columns=raw_vals[0])
+        else:
+            df_existing = pd.DataFrame()
     except Exception:
         df_existing = pd.DataFrame()
-        # ถ้าไม่มี Header ให้เขียน Header ใหม่ทันที
         worksheet.clear()
         worksheet.append_row(["Order ID", "Time", "Sym", "Side", "Qty", "Pr", "สถานะหุ้น"])
 
@@ -168,9 +164,10 @@ def sync_webull_to_gsheet():
     symbol_positions = {}
 
     if not df_existing.empty:
-        sym_col = next((c for c in df_existing.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Sym')
-        side_col = next((c for c in df_existing.columns if 'side' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
-        qty_col = next((c for c in df_existing.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
+        cols = [str(c).strip() for c in df_existing.columns]
+        sym_col = next((c for c in cols if 'sym' in c.lower() or 'ticker' in c.lower() or 'หุ้น' in c), cols[2] if len(cols) > 2 else 'Sym')
+        side_col = next((c for c in cols if 'side' in c.lower() or 'ฝั่ง' in c), cols[3] if len(cols) > 3 else 'Side')
+        qty_col = next((c for c in cols if 'qty' in c.lower() or 'volume' in c.lower() or 'จำนวน' in c), cols[4] if len(cols) > 4 else 'Qty')
         
         for _, row in df_existing.iterrows():
             oid = str(row.get("Order ID", "")).strip()
@@ -282,6 +279,18 @@ def sync_webull_to_gsheet():
     else:
         return True, "ℹ️ ข้อมูลล่าสุดตรงกันแล้ว ไม่มีรายการใหม่ต้องเพิ่ม"
 
+def load_sheet_to_df(worksheet):
+    """อ่าน Worksheet แปลงเป็น DataFrame อย่างปลอดภัยด้วย get_all_values"""
+    try:
+        data = worksheet.get_all_values()
+        if len(data) > 1:
+            df = pd.DataFrame(data[1:], columns=data[0])
+            df.columns = [str(c).strip() for c in df.columns]
+            return df
+    except Exception:
+        pass
+    return pd.DataFrame()
+
 @st.cache_data(ttl=60)
 def load_all_history_sheets():
     gc = get_gspread_client()
@@ -301,13 +310,13 @@ def load_all_history_sheets():
         try: sh = gc.open(sheet_title)
         except: sh = gc.open_by_key(sheet_title) if len(sheet_title) > 20 else gc.open_by_url(sheet_title)
 
-        try: df_webull_orders = pd.DataFrame(sh.worksheet("Webull_Order_History").get_all_records())
+        try: df_webull_orders = load_sheet_to_df(sh.worksheet("Webull_Order_History"))
         except: pass
-        try: df_dime_closed = pd.DataFrame(sh.worksheet("Dime_Closed_Orders").get_all_records())
+        try: df_dime_closed = load_sheet_to_df(sh.worksheet("Dime_Closed_Orders"))
         except: pass
-        try: df_dime_us_port = pd.DataFrame(sh.worksheet("Dime_Portfolio").get_all_records())
+        try: df_dime_us_port = load_sheet_to_df(sh.worksheet("Dime_Portfolio"))
         except: pass
-        try: df_dime_th_port = pd.DataFrame(sh.worksheet("Dime_TH_Portfolio").get_all_records())
+        try: df_dime_th_port = load_sheet_to_df(sh.worksheet("Dime_TH_Portfolio"))
         except: pass
     except Exception:
         pass
@@ -382,18 +391,16 @@ if tab_mode == "US_REALIZED":
     
     us_closed_summary = []
     
-    # 1.1 คำนวณ FIFO จาก Webull_Order_History
     if not df_webull.empty:
         df_w = df_webull.copy()
-        df_w.columns = [str(c).strip() for c in df_w.columns]
         
-        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Sym')
-        side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
-        qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
-        price_c = next((c for c in df_w.columns if 'pr' in str(c).lower() or 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Pr')
-        time_c = next((c for c in df_w.columns if 'time' in str(c).lower() or 'date' in str(c).lower() or 'เวลา' in str(c).lower()), 'Time')
+        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), df_w.columns[2] if len(df_w.columns) > 2 else 'Sym')
+        side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), df_w.columns[3] if len(df_w.columns) > 3 else 'Side')
+        qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), df_w.columns[4] if len(df_w.columns) > 4 else 'Qty')
+        price_c = next((c for c in df_w.columns if 'pr' in str(c).lower() or 'price' in str(c).lower() or 'ราคา' in str(c).lower()), df_w.columns[5] if len(df_w.columns) > 5 else 'Pr')
+        time_c = next((c for c in df_w.columns if 'time' in str(c).lower() or 'date' in str(c).lower() or 'เวลา' in str(c).lower()), df_w.columns[1] if len(df_w.columns) > 1 else 'Time')
         
-        if all(c in df_w.columns for c in [sym_c, side_c, qty_c, price_c]):
+        if sym_c in df_w.columns and side_c in df_w.columns:
             for symbol, group in df_w.groupby(sym_c):
                 symbol_clean = str(symbol).strip().upper()
                 if not symbol_clean or symbol_clean == 'NAN' or symbol_clean in SPLIT_STOCKS: continue
@@ -456,16 +463,13 @@ if tab_mode == "US_REALIZED":
                         "สถานะ": status_text
                     })
 
-    # 1.2 คำนวณจาก Dime_Closed_Orders (ฝั่ง US)
     if not df_dime_closed.empty:
         df_dc = df_dime_closed.copy()
-        df_dc.columns = [str(c).strip() for c in df_dc.columns]
         df_dc_us = df_dc[df_dc["ตลาด (US/TH)"].astype(str).str.strip().str.upper() == "US"] if "ตลาด (US/TH)" in df_dc.columns else df_dc
         
         us_port_map = {}
         if not df_dime_us.empty:
             df_us_clean = df_dime_us.copy()
-            df_us_clean.columns = [str(c).strip() for c in df_us_clean.columns]
             sym_col = next((c for c in df_us_clean.columns if 'หุ้น' in c or 'ticker' in c.lower() or 'sym' in c.lower()), None)
             vol_col = next((c for c in df_us_clean.columns if 'จำนวน' in c or 'volume' in c.lower() or 'qty' in c.lower()), None)
             if sym_col and vol_col:
@@ -549,7 +553,6 @@ elif tab_mode == "TH_REALIZED":
     th_port_map = {}
     if not df_dime_th.empty:
         df_th_clean = df_dime_th.copy()
-        df_th_clean.columns = [str(c).strip() for c in df_th_clean.columns]
         sym_col = next((c for c in df_th_clean.columns if 'หุ้น' in c or 'ticker' in c.lower() or 'sym' in c.lower()), None)
         vol_col = next((c for c in df_th_clean.columns if 'จำนวน' in c or 'volume' in c.lower() or 'qty' in c.lower()), None)
         if sym_col and vol_col:
@@ -561,7 +564,6 @@ elif tab_mode == "TH_REALIZED":
 
     if not df_dime_closed.empty:
         df_dc = df_dime_closed.copy()
-        df_dc.columns = [str(c).strip() for c in df_dc.columns]
         df_dc_th = df_dc[df_dc["ตลาด (US/TH)"].astype(str).str.strip().str.upper() == "TH"] if "ตลาด (US/TH)" in df_dc.columns else pd.DataFrame()
         
         if not df_dc_th.empty:
@@ -680,14 +682,13 @@ elif tab_mode == "REVERSE_SPLIT":
     
     if not df_webull.empty:
         df_w = df_webull.copy()
-        df_w.columns = [str(c).strip() for c in df_w.columns]
         
-        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Sym')
-        side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
-        qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
-        price_c = next((c for c in df_w.columns if 'pr' in str(c).lower() or 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Pr')
+        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), df_w.columns[2] if len(df_w.columns) > 2 else 'Sym')
+        side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), df_w.columns[3] if len(df_w.columns) > 3 else 'Side')
+        qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), df_w.columns[4] if len(df_w.columns) > 4 else 'Qty')
+        price_c = next((c for c in df_w.columns if 'pr' in str(c).lower() or 'price' in str(c).lower() or 'ราคา' in str(c).lower()), df_w.columns[5] if len(df_w.columns) > 5 else 'Pr')
         
-        if all(c in df_w.columns for c in [sym_c, side_c, qty_c, price_c]):
+        if sym_c in df_w.columns and side_c in df_w.columns:
             for symbol in SPLIT_STOCKS:
                 group = df_w[df_w[sym_c].astype(str).str.strip().str.upper() == symbol]
                 if group.empty: continue
