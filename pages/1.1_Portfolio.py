@@ -185,7 +185,7 @@ def clean_val(val):
         return 0.0
 
 def load_master_holdings_from_sheets():
-    """คำนวณยอดพอร์ตสะสม Net Position และกรองเอาเฉพาะหุ้นที่มีอยู่จริงใน Snapshot สดล่าสุด"""
+    """ดึงข้อมูลเฉพาะ Snapshot วันล่าสุดที่มีสถานะ 'O' (มีอยู่) เท่านั้น"""
     gc = get_gspread_client()
     if not gc:
         return pd.DataFrame()
@@ -201,7 +201,7 @@ def load_master_holdings_from_sheets():
 
         raw_records = []
 
-        # 1. คำนวณพอร์ต Webull จาก Webull_Order_History
+        # 1. ดึงพอร์ต Webull จาก Webull_Order_History (กรองเฉพาะวันล่าสุด + สถานะ 'O')
         try:
             ws_w = sh.worksheet("Webull_Order_History")
             data_w = ws_w.get_all_values()
@@ -209,72 +209,38 @@ def load_master_holdings_from_sheets():
                 df_w = pd.DataFrame(data_w[1:], columns=data_w[0])
                 cols = list(df_w.columns)
                 
+                time_col = next((c for c in cols if "Time" in c or "Date" in c or "วันที่" in c), cols[1] if len(cols) > 1 else None)
                 sym_col = next((c for c in cols if "Sym" in c or "Ticker" in c or "หุ้น" in c), cols[2] if len(cols) > 2 else cols[0])
-                side_col = next((c for c in cols if "Side" in c or "ประเภท" in c), cols[3] if len(cols) > 3 else None)
                 qty_col = next((c for c in cols if "Qty" in c or "Volume" in c or "จำนวน" in c), cols[4] if len(cols) > 4 else cols[1])
                 cost_col = next((c for c in cols if "Pr" in c or "Cost" in c or "ต้นทุน" in c or "Avg" in c), cols[5] if len(cols) > 5 else cols[2])
-                time_col = next((c for c in cols if "Time" in c or "Date" in c or "วันที่" in c), cols[1] if len(cols) > 1 else None)
+                status_col = next((c for c in cols if "สถานะ" in c or "Status" in c), cols[6] if len(cols) > 6 else None)
 
-                # ดึงวันทีล่าสุดเพื่อเช็ก Snapshot ปัจจุบัน
-                latest_date_str = ""
                 if time_col and time_col in df_w.columns:
-                    latest_date_str = str(df_w[time_col].iloc[-1]).strip()
-
-                # หาลำดับสัญลักษณ์หุ้นที่มีอยู่ใน Snapshot ล่าสุด (บรรทัดที่ Side เป็นค่าว่างของวันล่าสุด)
-                active_snapshot_symbols = set()
-                if latest_date_str:
-                    snap_rows = df_w[(df_w[time_col].astype(str).str.strip() == latest_date_str) & 
-                                     (df_w[side_col].astype(str).str.strip() == "")] if side_col else df_w
-                    for _, s_row in snap_rows.iterrows():
-                        s_sym = str(s_row.get(sym_col, "")).strip().upper()
-                        s_qty = clean_val(s_row.get(qty_col, 0))
-                        if s_sym and s_qty > 0:
-                            active_snapshot_symbols.add(s_sym)
-
-                for sym, grp in df_w.groupby(sym_col):
-                    clean_sym = str(sym).strip().upper()
-                    if not clean_sym:
-                        continue
-
-                    # กรองทิ้งทันทีถ้าหุ้นตัวนั้นไม่อยู่ใน Snapshot ล่าสุด (กรณีขายหมดแล้วเช่น ULTY)
-                    if active_snapshot_symbols and clean_sym not in active_snapshot_symbols:
-                        continue
-
-                    total_qty = 0.0
-                    total_cost_val = 0.0
-                    has_explicit_trades = False
-
-                    for _, row in grp.iterrows():
-                        q = clean_val(row.get(qty_col, 0))
-                        p = clean_val(row.get(cost_col, 0))
-                        side = str(row.get(side_col, "")).strip().upper() if side_col else ""
-
-                        if "SELL" in side or "ขาย" in side:
-                            has_explicit_trades = True
-                            if total_qty > 0:
-                                avg_c = total_cost_val / total_qty
-                                total_qty -= q
-                                total_cost_val = total_qty * avg_c
-                        elif "BUY" in side or "ซื้อ" in side:
-                            has_explicit_trades = True
-                            total_qty += q
-                            total_cost_val += (q * p)
-
-                    # ถ้าไม่มีออเดอร์ BUY/SELL ตรงๆ ให้ใช้ค่าแถวล่าสุดจาก Snapshot
-                    if not has_explicit_trades or total_qty <= 0.0001:
-                        latest_r = grp.iloc[-1]
-                        total_qty = clean_val(latest_r.get(qty_col, 0))
-                        avg_cost = clean_val(latest_r.get(cost_col, 0))
-                    else:
-                        avg_cost = total_cost_val / total_qty
-
-                    if total_qty > 0.0001:
-                        raw_records.append({
-                            "Broker": "Webull",
-                            "Symbol": clean_sym,
-                            "Qty": total_qty,
-                            "Cost": avg_cost
-                        })
+                    # แปลงวันที่เพื่อหา Max Date อัตโนมัติ
+                    df_w["parsed_date"] = pd.to_datetime(df_w[time_col], errors='coerce')
+                    valid_dates = df_w.dropna(subset=["parsed_date"])
+                    
+                    if not valid_dates.empty:
+                        max_date = valid_dates["parsed_date"].max()
+                        
+                        # กรองเอาเฉพาะแถวที่มีวันที่ = วันล่าสุด
+                        df_latest = df_w[df_w["parsed_date"] == max_date].copy()
+                        
+                        for _, row in df_latest.iterrows():
+                            clean_sym = str(row.get(sym_col, "")).strip().upper()
+                            qty = clean_val(row.get(qty_col, 0))
+                            cost = clean_val(row.get(cost_col, 0))
+                            
+                            status_val = str(row.get(status_col, "")).strip().upper() if status_col else ""
+                            
+                            # เงื่อนไขสำคัญ: หุ้นต้องมี Qty > 0 และ สถานะต้องเป็น 'O' หรือค่าว่าง (ถ้าระบบยังไม่ได้ปั๊ม C)
+                            if clean_sym and qty > 0 and status_val != "C":
+                                raw_records.append({
+                                    "Broker": "Webull",
+                                    "Symbol": clean_sym,
+                                    "Qty": qty,
+                                    "Cost": cost
+                                })
         except Exception:
             pass
 
@@ -293,20 +259,16 @@ def load_master_holdings_from_sheets():
                     if not clean_sym:
                         continue
                     
-                    tot_q = 0.0
-                    tot_c = 0.0
-                    for _, row in grp.iterrows():
-                        q = clean_val(row.get(qty_col, 0))
-                        c = clean_val(row.get(cost_col, 0))
-                        tot_q += q
-                        tot_c += (q * c)
+                    latest_row = grp.iloc[-1]
+                    tot_q = clean_val(latest_row.get(qty_col, 0))
+                    tot_c = clean_val(latest_row.get(cost_col, 0))
 
                     if tot_q > 0.0001:
                         raw_records.append({
                             "Broker": "Dime US",
                             "Symbol": clean_sym,
                             "Qty": tot_q,
-                            "Cost": tot_c / tot_q
+                            "Cost": tot_c
                         })
         except Exception:
             pass
@@ -326,20 +288,16 @@ def load_master_holdings_from_sheets():
                     if not clean_sym:
                         continue
                     
-                    tot_q = 0.0
-                    tot_c = 0.0
-                    for _, row in grp.iterrows():
-                        q = clean_val(row.get(qty_col, 0))
-                        c = clean_val(row.get(cost_col, 0))
-                        tot_q += q
-                        tot_c += (q * c)
+                    latest_row = grp.iloc[-1]
+                    tot_q = clean_val(latest_row.get(qty_col, 0))
+                    tot_c = clean_val(latest_row.get(cost_col, 0))
 
                     if tot_q > 0.0001:
                         raw_records.append({
                             "Broker": "Dime TH",
                             "Symbol": clean_sym,
                             "Qty": tot_q,
-                            "Cost": tot_c / tot_q
+                            "Cost": tot_c
                         })
         except Exception:
             pass
