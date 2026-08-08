@@ -185,7 +185,7 @@ def clean_val(val):
         return 0.0
 
 def load_master_holdings_from_sheets():
-    """ดึงข้อมูลเฉพาะ Snapshot วันล่าสุด พร้อมยุบรายการเบิ้ล (Deduplicate Symbol) ให้เหลือ 1 แถวต่อหุ้น"""
+    """ดึงข้อมูลพอร์ตทุกโบรกเกอร์ โดยคำนวณถัวเฉลี่ยน้ำหนักกรณีมีหลายบัญชี (Multiple Accounts Deduplication)"""
     gc = get_gspread_client()
     if not gc:
         return pd.DataFrame()
@@ -201,7 +201,7 @@ def load_master_holdings_from_sheets():
 
         raw_records = []
 
-        # 1. ดึงพอร์ต Webull จาก Webull_Order_History (แก้ปัญหายอดเบิ้ลซ้ำ)
+        # 1. ดึงพอร์ต Webull จาก Webull_Order_History
         try:
             ws_w = sh.worksheet("Webull_Order_History")
             data_w = ws_w.get_all_values()
@@ -223,7 +223,6 @@ def load_master_holdings_from_sheets():
                         max_date = valid_dates["parsed_date"].max()
                         df_latest = df_w[df_w["parsed_date"] == max_date].copy()
                         
-                        # ยุบแถวซ้ำตาม Symbol (Deduplicate)
                         for sym, grp in df_latest.groupby(sym_col):
                             clean_sym = str(sym).strip().upper()
                             if not clean_sym:
@@ -244,7 +243,7 @@ def load_master_holdings_from_sheets():
         except Exception:
             pass
 
-        # 2. ดึงพอร์ต Dime US จาก Dime_Portfolio (Deduplicate ราย Symbol)
+        # 2. ดึงพอร์ต Dime US จาก Dime_Portfolio (คำนวณถัวเฉลี่ยถ้านับรวมหลายบัญชี)
         try:
             ws_dus = sh.worksheet("Dime_Portfolio")
             data_dus = ws_dus.get_all_values()
@@ -259,21 +258,28 @@ def load_master_holdings_from_sheets():
                     if not clean_sym:
                         continue
                     
-                    latest_row = grp.iloc[-1]
-                    tot_q = clean_val(latest_row.get(qty_col, 0))
-                    tot_c = clean_val(latest_row.get(cost_col, 0))
+                    tot_qty = 0.0
+                    tot_cost_cash = 0.0
+                    
+                    for _, row in grp.iterrows():
+                        q = clean_val(row.get(qty_col, 0))
+                        c = clean_val(row.get(cost_col, 0))
+                        if q > 0:
+                            tot_qty += q
+                            tot_cost_cash += (q * c)
 
-                    if tot_q > 0.0001:
+                    if tot_qty > 0.0001:
+                        avg_cost = tot_cost_cash / tot_qty
                         raw_records.append({
                             "Broker": "Dime US",
                             "Symbol": clean_sym,
-                            "Qty": tot_q,
-                            "Cost": tot_c
+                            "Qty": tot_qty,
+                            "Cost": avg_cost
                         })
         except Exception:
             pass
 
-        # 3. ดึงพอร์ต Dime TH จาก Dime_TH_Portfolio (Deduplicate ราย Symbol)
+        # 3. ดึงพอร์ต Dime TH จาก Dime_TH_Portfolio (คำนวณถัวเฉลี่ยถ้านับรวมหลายบัญชี)
         try:
             ws_dth = sh.worksheet("Dime_TH_Portfolio")
             data_dth = ws_dth.get_all_values()
@@ -288,16 +294,23 @@ def load_master_holdings_from_sheets():
                     if not clean_sym:
                         continue
                     
-                    latest_row = grp.iloc[-1]
-                    tot_q = clean_val(latest_row.get(qty_col, 0))
-                    tot_c = clean_val(latest_row.get(cost_col, 0))
+                    tot_qty = 0.0
+                    tot_cost_cash = 0.0
+                    
+                    for _, row in grp.iterrows():
+                        q = clean_val(row.get(qty_col, 0))
+                        c = clean_val(row.get(cost_col, 0))
+                        if q > 0:
+                            tot_qty += q
+                            tot_cost_cash += (q * c)
 
-                    if tot_q > 0.0001:
+                    if tot_qty > 0.0001:
+                        avg_cost = tot_cost_cash / tot_qty
                         raw_records.append({
                             "Broker": "Dime TH",
                             "Symbol": clean_sym,
-                            "Qty": tot_q,
-                            "Cost": tot_c
+                            "Qty": tot_qty,
+                            "Cost": avg_cost
                         })
         except Exception:
             pass
@@ -643,7 +656,7 @@ elif active_tab == "dime_th":
     st.subheader(f"🇹🇭 พอร์ตการลงทุน Dime TH (หุ้นไทย - {curr_text})")
     df_dth = df_port[df_port["Broker"] == "Dime TH"] if not df_port.empty else pd.DataFrame()
     
-    # แสดงการ์ดสรุปยอดประจำแท็บ Dime TH (แปลงหน่วยเงินตามที่เลือกทันที)
+    # แสดงการ์ดสรุปยอดประจำแท็บ Dime TH
     render_tab_summary_metrics(df_dth, "Dime TH")
     st.markdown("<br>", unsafe_allow_html=True)
 
