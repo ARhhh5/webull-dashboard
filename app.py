@@ -229,7 +229,6 @@ inject_custom_css()
 # 2. GOOGLE SHEETS DATA PIPELINE
 # ==========================================
 def get_gspread_client():
-    """เชื่อมต่อ Google Sheets API โดยสแกนหา Credentials จาก Secrets ทุกตำแหน่งที่เป็นไปได้"""
     if not HAS_GSPREAD:
         return None
     try:
@@ -259,49 +258,48 @@ def clean_num(val):
     try: return float(val_str)
     except: return 0.0
 
-def load_history_from_gsheet():
-    """ดึงข้อมูลประวัติย้อนหลังจาก Portfolio_History มาประมวลผลอย่างยืดหยุ่นแบบ Safe Engine"""
+def fetch_portfolio_history_clean():
+    """ดึงข้อมูลประวัติจาก Portfolio_History แล้วคลีนวันให้เหลือ 1 แถวต่อวัน"""
     client = get_gspread_client()
     if not client:
-        return None
+        return pd.DataFrame()
     try:
         sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
         if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
             sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
             
-        try:
-            sh = client.open(sheet_title)
-        except Exception:
-            sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
+        try: sh = client.open(sheet_title)
+        except: sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
 
-        worksheet = sh.worksheet("Portfolio_History")
-        data = worksheet.get_all_values()
+        ws = sh.worksheet("Portfolio_History")
+        data = ws.get_all_values()
         
         if len(data) > 1:
             df = pd.DataFrame(data[1:], columns=data[0])
             cols = [str(c).strip() for c in df.columns]
             
             time_c = next((c for c in cols if 'วัน' in c or 'date' in c.lower() or 'time' in c.lower() or 'timestamp' in c.lower()), cols[0])
-            inv_c = next((c for c in cols if 'ตั้งต้น' in c or 'invested' in c.lower() or 'ต้นทุน' in c), cols[1] if len(cols) > 1 else cols[0])
             mkt_c = next((c for c in cols if 'ปัจจุบัน' in c or 'market' in c.lower() or 'มูลค่า' in c), cols[2] if len(cols) > 2 else cols[0])
-            pnl_c = next((c for c in cols if 'กำไร' in c or 'pnl' in c.lower()), cols[3] if len(cols) > 3 else cols[0])
-            pct_c = next((c for c in cols if '%' in c or 'pct' in c.lower()), cols[4] if len(cols) > 4 else cols[0])
+            inv_c = next((c for c in cols if 'ตั้งต้น' in c or 'invested' in c.lower() or 'ต้นทุน' in c), cols[1] if len(cols) > 1 else cols[0])
 
-            df_clean = pd.DataFrame()
-            df_clean["Timestamp"] = df[time_c].astype(str)
-            df_clean["Invested"] = df[inv_c].apply(clean_num)
-            df_clean["MarketValue"] = df[mkt_c].apply(clean_num)
-            df_clean["PnL"] = df[pnl_c].apply(clean_num)
-            df_clean["PnLPct"] = df[pct_c].apply(clean_num) if pct_c in df.columns else 0.0
-
-            df_clean = df_clean[df_clean["MarketValue"] > 0].reset_index(drop=True)
-            df_clean["Parsed_Date"] = pd.to_datetime(df_clean["Timestamp"], errors='coerce')
-            df_clean = df_clean.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
-
-            return df_clean
+            df_res = pd.DataFrame()
+            df_res["Raw_Date"] = df[time_c].astype(str)
+            df_res["MarketValue"] = df[mkt_c].apply(clean_num)
+            df_res["Invested"] = df[inv_c].apply(clean_num)
+            
+            df_res = df_res[df_res["MarketValue"] > 0].reset_index(drop=True)
+            df_res["Parsed_Date"] = pd.to_datetime(df_res["Raw_Date"], errors='coerce')
+            df_res = df_res.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
+            
+            df_res["Date_Str"] = df_res["Parsed_Date"].dt.strftime("%Y-%m-%d")
+            
+            # ยุบข้อมูลซ้ำในวันเดียวกัน ให้เหลือเฉพาะ Snapshot บรรทัดล่างสุดของวันนั้น
+            df_res = df_res.groupby("Date_Str", as_index=False).last()
+            df_res = df_res.sort_values("Date_Str").reset_index(drop=True)
+            return df_res
     except Exception:
         pass
-    return None
+    return pd.DataFrame()
 
 # ==========================================
 # 3. DASHBOARD MAIN RENDER FUNCTION
@@ -331,23 +329,23 @@ def render_dashboard():
     is_usd = "USD" in currency_selected
     symbol = "$" if is_usd else "฿"
 
-    # 1. ดึงจาก Shared Session State ใน Portfolio
+    # 1. ดึงพอร์ตปัจจุบันสด
     df_shared = st.session_state.get("all_holdings_df", pd.DataFrame())
     
-    # 2. ดึงข้อมูลประวัติจาก Portfolio_History
-    df_history = load_history_from_gsheet()
+    # 2. ดึงประวัติย้อนหลังจาก Portfolio_History
+    df_history = fetch_portfolio_history_clean()
 
     if not df_shared.empty:
         tot_invested_usd = df_shared['Invested_USD'].sum()
         tot_market_usd = df_shared['Market_Value_USD'].sum()
         tot_pnl_usd = tot_market_usd - tot_invested_usd
         tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
-    elif df_history is not None and not df_history.empty:
+    elif not df_history.empty:
         latest_row = df_history.iloc[-1]
         tot_invested_usd = latest_row["Invested"]
         tot_market_usd = latest_row["MarketValue"]
-        tot_pnl_usd = latest_row["PnL"] if latest_row["PnL"] != 0 else (tot_market_usd - tot_invested_usd)
-        tot_pnl_pct = latest_row["PnLPct"] if latest_row["PnLPct"] != 0 else ((tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0)
+        tot_pnl_usd = tot_market_usd - tot_invested_usd
+        tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
     else:
         tot_invested_usd = 47944.46
         tot_market_usd = 45778.22
@@ -405,7 +403,6 @@ def render_dashboard():
         if "selected_tf" not in st.session_state:
             st.session_state["selected_tf"] = "MAX"
 
-        # แสดงปุ่มกดเลือกช่วงเวลา (Pills/Buttons)
         tf_options = ["1D", "7D", "1M", "6M", "1Y", "MAX"]
         tf_cols = st.columns(len(tf_options))
         
@@ -417,52 +414,54 @@ def render_dashboard():
 
         selected_tf = st.session_state["selected_tf"]
 
-        # กรองประวัติย้อนหลังจาก Portfolio_History ตามหลักวิศวกรรมการเงินแบบ Dynamic 100%
-        if df_history is not None and not df_history.empty:
-            df_history["Date_Only"] = df_history["Parsed_Date"].dt.date
-            max_date = df_history["Date_Only"].max()
+        # ==========================================
+        # NEW CHART SLICING ENGINE
+        # ==========================================
+        if not df_history.empty:
+            max_dt = df_history["Parsed_Date"].max()
             
             if selected_tf == "1D":
-                # 1D: ดึงเฉพาะ 2 จุดล่าสุดของประวัติจริงเพื่อดู Delta มูฟเม้นท์
+                # 1D: ดึงเฉพาะ 2 แถวล่าสุดเสมอ เพื่อดูมูฟเม้นท์รอบล่าสุด
                 filtered_df = df_history.tail(2).copy()
-                
             elif selected_tf == "7D":
-                # 7D: คำนวณถอยหลัง 7 วันบริบูรณ์จากวันล่าสุด (Max Date - 7 Days)
-                start_date = max_date - timedelta(days=7)
-                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
+                start_dt = max_dt - timedelta(days=7)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
                 if len(filtered_df) < 2:
-                    filtered_df = df_history.tail(3).copy()
-                    
+                    filtered_df = df_history.tail(7).copy()
             elif selected_tf == "1M":
-                start_date = max_date - timedelta(days=30)
-                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
+                start_dt = max_dt - timedelta(days=30)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
             elif selected_tf == "6M":
-                start_date = max_date - timedelta(days=180)
-                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
+                start_dt = max_dt - timedelta(days=180)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
             elif selected_tf == "1Y":
-                start_date = max_date - timedelta(days=365)
-                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
+                start_dt = max_dt - timedelta(days=365)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
             else:  # MAX
                 filtered_df = df_history.copy()
 
             if filtered_df.empty:
                 filtered_df = df_history.copy()
 
-            # แสดงผลแกน X เฉพาะฟอร์แมตวันที่ YYYY-MM-DD
-            x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d").tolist()
+            x_axis = filtered_df["Date_Str"].tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            # Fallback ชั่วคราวกรณีไม่มีชีทเลยเท่านั้น (ไม่ใช่ Hardcoded บังคับ)
+            # ข้อมูลจำลองสำรองกรณีเปิดไฟล์ครั้งแรกยังไม่มีชีท
             x_axis = ['2026-08-01', '2026-08-02', '2026-08-05', '2026-08-08', '2026-08-12']
             y_axis = [15000.00, 48180.96, 45987.10, 45778.22, display_market]
+            if selected_tf == "1D":
+                x_axis = x_axis[-2:]
+                y_axis = y_axis[-2:]
+            elif selected_tf == "7D":
+                x_axis = x_axis[-4:]
+                y_axis = y_axis[-4:]
 
-        # คำนวณ Dynamic Y-Axis Range (Auto-Zoom) ให้ฟิตตาม Min-Max ของช่วงเวลานั้นๆ
+        # คำนวณ Auto-Zoom แกน Y
         min_y = min(y_axis) if y_axis else 0
         max_y = max(y_axis) if y_axis else 100
         padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
         y_range = [max(0, min_y - padding), max_y + padding]
 
-        # วาดกราฟ Plotly พร้อม Key กำหนดแบบ Dynamic บังคับ Rerun
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=x_axis, 
@@ -483,7 +482,7 @@ def render_dashboard():
             margin=dict(t=15, b=10, l=10, r=10), 
             height=260
         )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dash_plotly_{selected_tf}_{currency_selected}")
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dashboard_chart_v2_{selected_tf}_{currency_selected}")
 
     # คำนวณ Broker Allocation จาก Shared DataFrame สด
     if not df_shared.empty:
