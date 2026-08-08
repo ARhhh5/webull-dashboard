@@ -416,51 +416,51 @@ def render_dashboard():
 
         selected_tf = st.session_state["selected_tf"]
 
-        # คำนวณช่วงเวลาด้วย Standard Rolling Window Formula
+        # กรองประวัติย้อนหลังจาก Portfolio_History ตามหลักมาตรฐานวิศวกรรมการเงิน
         if df_history is not None and not df_history.empty:
-            max_dt = df_history["Parsed_Date"].max()
+            df_history["Date_Only"] = df_history["Parsed_Date"].dt.date
+            max_date = df_history["Date_Only"].max()
             
             if selected_tf == "1D":
-                start_dt = max_dt - timedelta(days=1)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
-                if len(filtered_df) < 2:
-                    filtered_df = df_history.tail(2)
-                    
+                # 1D: ดึงเฉพาะ 2 จุดล่าสุดเพื่อเปรียบเทียบมูฟเม้นท์
+                filtered_df = df_history.tail(2).copy()
+                
             elif selected_tf == "7D":
-                start_dt = max_dt - timedelta(days=7)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
-                if filtered_df.empty:
-                    filtered_df = df_history.tail(3)
+                # 7D: ถอยหลังจากวันล่าสุดไม่เกิน 7 วัน (นับเฉพาะวันลงไป)
+                start_date = max_date - timedelta(days=7)
+                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
+                if len(filtered_df) < 2:
+                    filtered_df = df_history.tail(3).copy()
                     
             elif selected_tf == "1M":
-                start_dt = max_dt - timedelta(days=30)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
+                start_date = max_date - timedelta(days=30)
+                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
             elif selected_tf == "6M":
-                start_dt = max_dt - timedelta(days=180)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
+                start_date = max_date - timedelta(days=180)
+                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
             elif selected_tf == "1Y":
-                start_dt = max_dt - timedelta(days=365)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
+                start_date = max_date - timedelta(days=365)
+                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
             else:  # MAX
                 filtered_df = df_history.copy()
 
             if filtered_df.empty:
                 filtered_df = df_history.copy()
 
-            # แสดงเฉพาะฟอร์แมต YYYY-MM-DD
+            # แสดงผลวันที่เฉพาะฟอร์แมต YYYY-MM-DD
             x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d").tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            x_axis = ['2026-08-01', '2026-08-02', '2026-08-05', '2026-08-08']
-            y_axis = [15000.00, 48180.96, 45987.10, display_market]
-        
-        # คำนวณ Dynamic Y-Axis Range (Auto-Zoom) ตามเว็บการเงินมาตรฐาน
+            x_axis = ['2026-08-01', '2026-08-02', '2026-08-05', '2026-08-08', '2026-08-12']
+            y_axis = [15000.00, 48180.96, 45987.10, 45778.22, display_market]
+
+        # คำนวณ Dynamic Y-Axis Range (Auto-Zoom) ตามสเกล Min-Max จริงของช่วงเวลานั้น
         min_y = min(y_axis) if y_axis else 0
         max_y = max(y_axis) if y_axis else 100
         padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
         y_range = [max(0, min_y - padding), max_y + padding]
 
-        # วาดกราฟ Plotly Standard Dynamic Zoom Line
+        # วาดกราฟ Plotly พร้อม Key กำหนดแบบ Dynamic
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=x_axis, 
@@ -481,7 +481,7 @@ def render_dashboard():
             margin=dict(t=15, b=10, l=10, r=10), 
             height=260
         )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"plotly_chart_{selected_tf}_{currency_selected}")
 
     # คำนวณ Broker Allocation จาก Shared DataFrame สด
     if not df_shared.empty:
