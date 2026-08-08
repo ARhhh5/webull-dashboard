@@ -260,7 +260,7 @@ def clean_num(val):
 
 @st.cache_data(ttl=1)
 def fetch_portfolio_history_clean_realtime():
-    """ดึงข้อมูลประวัติจาก Portfolio_History แบบ Real-time 100% ไม่ค้าง Caching"""
+    """ดึงข้อมูลประวัติจาก Portfolio_History แบบ Real-time ไม่ค้าง Caching"""
     client = get_gspread_client()
     if not client:
         return pd.DataFrame()
@@ -423,21 +423,24 @@ def render_dashboard():
         selected_tf = st.session_state["selected_tf"]
 
         # ==========================================
-        # REAL-TIME CHART SLICING ENGINE
+        # DYNAMIC HISTORICAL SLICING ENGINE (NEW)
         # ==========================================
         if not df_history.empty:
             max_dt = df_history["Parsed_Date"].max()
             
             if selected_tf == "1D":
+                # 1D: ดึงเฉพาะ 2 จุดล่าสุดเสมอ เพื่อดู Delta เคลื่อนไหว
                 filtered_df = df_history.tail(2).copy()
             elif selected_tf == "7D":
                 start_dt = max_dt - timedelta(days=7)
                 filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
                 if len(filtered_df) < 2:
-                    filtered_df = df_history.tail(7).copy()
+                    filtered_df = df_history.tail(3).copy()
             elif selected_tf == "1M":
                 start_dt = max_dt - timedelta(days=30)
                 filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
+                if len(filtered_df) < 2:
+                    filtered_df = df_history.tail(5).copy()
             elif selected_tf == "6M":
                 start_dt = max_dt - timedelta(days=180)
                 filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
@@ -453,10 +456,11 @@ def render_dashboard():
             x_axis = filtered_df["Date_Str"].tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            x_axis = ['2026-08-01', '2026-08-08']
-            y_axis = [15000.00, display_market]
+            # Fallback Dynamic ล่าสุดตาม Session พอร์ต
+            x_axis = ['Latest']
+            y_axis = [display_market]
 
-        # คำนวณ Auto-Zoom แกน Y
+        # คำนวณ Auto-Zoom แกน Y เพื่อให้เห็นความผันผวนพริ้วสวยงาม
         min_y = min(y_axis) if y_axis else 0
         max_y = max(y_axis) if y_axis else 100
         padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
@@ -482,7 +486,7 @@ def render_dashboard():
             margin=dict(t=15, b=10, l=10, r=10), 
             height=260
         )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dash_rt_chart_{selected_tf}_{currency_selected}_{len(x_axis)}")
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dash_v3_chart_{selected_tf}_{currency_selected}_{len(x_axis)}")
 
     # คำนวณ Broker Allocation จาก Shared DataFrame สด
     if not df_shared.empty:
