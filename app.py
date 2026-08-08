@@ -416,54 +416,54 @@ def render_dashboard():
 
         selected_tf = st.session_state["selected_tf"]
 
-        # จัดการกรองข้อมูลย้อนหลังจาก Portfolio_History ตามวันที่จริงของบอส
+        # คำนวณช่วงเวลาด้วย Standard Rolling Window Formula
         if df_history is not None and not df_history.empty:
-            df_history["Date_Only"] = df_history["Parsed_Date"].dt.date
-            max_date = df_history["Date_Only"].max()
+            max_dt = df_history["Parsed_Date"].max()
             
             if selected_tf == "1D":
-                # 1D: แสดงเฉพาะวันล่าสุดวันเดียวเท่านั้น
-                filtered_df = df_history[df_history["Date_Only"] == max_date].copy()
-                
+                # 1D: ดึงย้อนหลัง 24 ชม. หรือดึง 2 จุดล่าสุดเพื่อลากเส้นคู่เปรียบเทียบ
+                start_dt = max_dt - timedelta(days=1)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
+                if len(filtered_df) < 2:
+                    filtered_df = df_history.tail(2)
+                    
             elif selected_tf == "7D":
-                # 7D: คำนวณถอยหลังจากวันล่าสุดไม่เกิน 6 วัน (ไม่รวมวันที่ 7 เพื่อตัด 2026-08-01 ออก)
-                start_date = max_date - timedelta(days=6)
-                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
-                
+                # 7D: ถอยหลัง 7 วันบริบูรณ์จาก Max Date (2026-08-08 11:59 -> 2026-08-01 11:59)
+                start_dt = max_dt - timedelta(days=7)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
+                if filtered_df.empty:
+                    filtered_df = df_history.tail(3)
+                    
             elif selected_tf == "1M":
-                start_date = max_date - timedelta(days=30)
-                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
+                start_dt = max_dt - timedelta(days=30)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
             elif selected_tf == "6M":
-                start_date = max_date - timedelta(days=180)
-                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
+                start_dt = max_dt - timedelta(days=180)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
             elif selected_tf == "1Y":
-                start_date = max_date - timedelta(days=365)
-                filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
+                start_dt = max_dt - timedelta(days=365)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
             else:  # MAX
                 filtered_df = df_history.copy()
 
             if filtered_df.empty:
-                filtered_df = df_history.tail(1).copy()
+                filtered_df = df_history.copy()
 
-            x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d").tolist()
+            x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d %H:%M").tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            x_axis = ['2026-08-08']
-            y_axis = [display_market]
+            x_axis = ['2026-08-02 05:44', '2026-08-05 09:56', '2026-08-08 11:59']
+            y_axis = [48180.96, 45987.10, display_market]
         
-        # วาดกราฟ Plotly
+        # วาดกราฟ Plotly Standard Line
         fig = go.Figure()
-        
-        # ปรับโหมดวาดกราฟ: ถ้ามีจุดเดียวให้เน้นแสดง Marker ชัดเจน
-        trace_mode = 'markers' if len(x_axis) == 1 else 'lines+markers'
-        
         fig.add_trace(go.Scatter(
             x=x_axis, 
             y=y_axis, 
-            mode=trace_mode, 
+            mode='lines+markers', 
             line=dict(color='#38bdf8', width=3, shape='spline'), 
-            marker=dict(size=10 if len(x_axis) == 1 else 6, color='#38bdf8'),
-            fill='tozeroy' if len(x_axis) > 1 else None, 
+            marker=dict(size=8, color='#38bdf8'),
+            fill='tozeroy', 
             fillcolor='rgba(56, 189, 248, 0.05)',
             hovertemplate="<b>วันที่: %{x}</b><br>มูลค่าพอร์ต: %{y:$,.2f}<extra></extra>"
         ))
