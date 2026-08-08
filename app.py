@@ -421,14 +421,12 @@ def render_dashboard():
             max_dt = df_history["Parsed_Date"].max()
             
             if selected_tf == "1D":
-                # 1D: ดึงย้อนหลัง 24 ชม. หรือดึง 2 จุดล่าสุดเพื่อลากเส้นคู่เปรียบเทียบ
                 start_dt = max_dt - timedelta(days=1)
                 filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
                 if len(filtered_df) < 2:
                     filtered_df = df_history.tail(2)
                     
             elif selected_tf == "7D":
-                # 7D: ถอยหลัง 7 วันบริบูรณ์จาก Max Date (2026-08-08 11:59 -> 2026-08-01 11:59)
                 start_dt = max_dt - timedelta(days=7)
                 filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
                 if filtered_df.empty:
@@ -452,10 +450,16 @@ def render_dashboard():
             x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d %H:%M").tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            x_axis = ['2026-08-02 05:44', '2026-08-05 09:56', '2026-08-08 11:59']
-            y_axis = [48180.96, 45987.10, display_market]
+            x_axis = ['2026-08-01 00:00', '2026-08-02 05:44', '2026-08-05 09:56', '2026-08-08 11:59']
+            y_axis = [15000.00, 48180.96, 45987.10, display_market]
         
-        # วาดกราฟ Plotly Standard Line
+        # คำนวณ Dynamic Y-Axis Range (Auto-Zoom) ตามเว็บการเงินมาตรฐาน
+        min_y = min(y_axis) if y_axis else 0
+        max_y = max(y_axis) if y_axis else 100
+        padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
+        y_range = [max(0, min_y - padding), max_y + padding]
+
+        # วาดกราฟ Plotly Standard Dynamic Zoom Line
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=x_axis, 
@@ -472,7 +476,7 @@ def render_dashboard():
             plot_bgcolor='rgba(0,0,0,0)', 
             font=dict(color='#6b7280', family='Plus Jakarta Sans'), 
             xaxis=dict(showgrid=False, zeroline=False, type='category'), 
-            yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False), 
+            yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False, range=y_range, autorange=False), 
             margin=dict(t=15, b=10, l=10, r=10), 
             height=260
         )
