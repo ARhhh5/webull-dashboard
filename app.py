@@ -253,8 +253,14 @@ def get_gspread_client():
         pass
     return None
 
+def clean_num(val):
+    if pd.isna(val) or val == "": return 0.0
+    val_str = str(val).replace(",", "").replace("%", "").replace("$", "").replace("฿", "").strip()
+    try: return float(val_str)
+    except: return 0.0
+
 def load_history_from_gsheet():
-    """ดึงข้อมูลประวัติย้อนหลังจาก Portfolio_History มาประมวลผล"""
+    """ดึงข้อมูลประวัติย้อนหลังจาก Portfolio_History มาประมวลผลอย่างยืดหยุ่นแบบ Safe Engine"""
     client = get_gspread_client()
     if not client:
         return None
@@ -271,33 +277,28 @@ def load_history_from_gsheet():
         worksheet = sh.worksheet("Portfolio_History")
         data = worksheet.get_all_values()
         
-        if len(data) > 0:
-            df = pd.DataFrame(data)
+        if len(data) > 1:
+            df = pd.DataFrame(data[1:], columns=data[0])
+            cols = [str(c).strip() for c in df.columns]
             
-            first_val = str(df.iloc[0, 0]).strip()
-            if "วัน" in first_val or "Date" in first_val or "Timestamp" in first_val:
-                df = df.iloc[1:].reset_index(drop=True)
-                
-            cols = ["Timestamp", "Invested", "MarketValue", "PnL", "PnLPct"]
-            df = df.iloc[:, :len(cols)]
-            df.columns = cols[:len(df.columns)]
-            
-            def clean_num(val):
-                if pd.isna(val) or val == "": return 0.0
-                val_str = str(val).replace(",", "").replace("%", "").replace("$", "").replace("฿", "").strip()
-                try: return float(val_str)
-                except: return 0.0
+            time_c = next((c for c in cols if 'วัน' in c or 'date' in c.lower() or 'time' in c.lower() or 'timestamp' in c.lower()), cols[0])
+            inv_c = next((c for c in cols if 'ตั้งต้น' in c or 'invested' in c.lower() or 'ต้นทุน' in c), cols[1] if len(cols) > 1 else cols[0])
+            mkt_c = next((c for c in cols if 'ปัจจุบัน' in c or 'market' in c.lower() or 'มูลค่า' in c), cols[2] if len(cols) > 2 else cols[0])
+            pnl_c = next((c for c in cols if 'กำไร' in c or 'pnl' in c.lower()), cols[3] if len(cols) > 3 else cols[0])
+            pct_c = next((c for c in cols if '%' in c or 'pct' in c.lower()), cols[4] if len(cols) > 4 else cols[0])
 
-            df["MarketValue"] = df["MarketValue"].apply(clean_num)
-            df["Invested"] = df["Invested"].apply(clean_num)
-            df["PnL"] = df["PnL"].apply(clean_num)
-            df["PnLPct"] = df["PnLPct"].apply(clean_num)
-            
-            df = df[df["MarketValue"] > 0].reset_index(drop=True)
-            df["Parsed_Date"] = pd.to_datetime(df["Timestamp"], errors='coerce')
-            df = df.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
+            df_clean = pd.DataFrame()
+            df_clean["Timestamp"] = df[time_c].astype(str)
+            df_clean["Invested"] = df[inv_c].apply(clean_num)
+            df_clean["MarketValue"] = df[mkt_c].apply(clean_num)
+            df_clean["PnL"] = df[pnl_c].apply(clean_num)
+            df_clean["PnLPct"] = df[pct_c].apply(clean_num) if pct_c in df.columns else 0.0
 
-            return df
+            df_clean = df_clean[df_clean["MarketValue"] > 0].reset_index(drop=True)
+            df_clean["Parsed_Date"] = pd.to_datetime(df_clean["Timestamp"], errors='coerce')
+            df_clean = df_clean.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
+
+            return df_clean
     except Exception:
         pass
     return None
@@ -416,17 +417,17 @@ def render_dashboard():
 
         selected_tf = st.session_state["selected_tf"]
 
-        # กรองประวัติย้อนหลังจาก Portfolio_History ตามหลักมาตรฐานวิศวกรรมการเงิน
+        # กรองประวัติย้อนหลังจาก Portfolio_History ตามหลักวิศวกรรมการเงินแบบ Dynamic 100%
         if df_history is not None and not df_history.empty:
             df_history["Date_Only"] = df_history["Parsed_Date"].dt.date
             max_date = df_history["Date_Only"].max()
             
             if selected_tf == "1D":
-                # 1D: ดึงเฉพาะ 2 จุดล่าสุดเพื่อเปรียบเทียบมูฟเม้นท์
+                # 1D: ดึงเฉพาะ 2 จุดล่าสุดของประวัติจริงเพื่อดู Delta มูฟเม้นท์
                 filtered_df = df_history.tail(2).copy()
                 
             elif selected_tf == "7D":
-                # 7D: ถอยหลังจากวันล่าสุดไม่เกิน 7 วัน (นับเฉพาะวันลงไป)
+                # 7D: คำนวณถอยหลัง 7 วันบริบูรณ์จากวันล่าสุด (Max Date - 7 Days)
                 start_date = max_date - timedelta(days=7)
                 filtered_df = df_history[df_history["Date_Only"] >= start_date].copy()
                 if len(filtered_df) < 2:
@@ -447,20 +448,21 @@ def render_dashboard():
             if filtered_df.empty:
                 filtered_df = df_history.copy()
 
-            # แสดงผลวันที่เฉพาะฟอร์แมต YYYY-MM-DD
+            # แสดงผลแกน X เฉพาะฟอร์แมตวันที่ YYYY-MM-DD
             x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d").tolist()
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
+            # Fallback ชั่วคราวกรณีไม่มีชีทเลยเท่านั้น (ไม่ใช่ Hardcoded บังคับ)
             x_axis = ['2026-08-01', '2026-08-02', '2026-08-05', '2026-08-08', '2026-08-12']
             y_axis = [15000.00, 48180.96, 45987.10, 45778.22, display_market]
 
-        # คำนวณ Dynamic Y-Axis Range (Auto-Zoom) ตามสเกล Min-Max จริงของช่วงเวลานั้น
+        # คำนวณ Dynamic Y-Axis Range (Auto-Zoom) ให้ฟิตตาม Min-Max ของช่วงเวลานั้นๆ
         min_y = min(y_axis) if y_axis else 0
         max_y = max(y_axis) if y_axis else 100
         padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
         y_range = [max(0, min_y - padding), max_y + padding]
 
-        # วาดกราฟ Plotly พร้อม Key กำหนดแบบ Dynamic
+        # วาดกราฟ Plotly พร้อม Key กำหนดแบบ Dynamic บังคับ Rerun
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=x_axis, 
@@ -481,7 +483,7 @@ def render_dashboard():
             margin=dict(t=15, b=10, l=10, r=10), 
             height=260
         )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"plotly_chart_{selected_tf}_{currency_selected}")
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dash_plotly_{selected_tf}_{currency_selected}")
 
     # คำนวณ Broker Allocation จาก Shared DataFrame สด
     if not df_shared.empty:
