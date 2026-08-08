@@ -7,6 +7,7 @@ from datetime import datetime, timedelta
 import streamlit as st
 import pandas as pd
 import plotly.graph_objects as go
+import yfinance as yf
 
 # ตรวจสอบการ Import gspread สำหรับจัดการ Google Sheets
 try:
@@ -182,16 +183,6 @@ def inject_custom_css():
         .asset-label { display: flex; align-items: center; gap: 10px; color: #cbd5e1; }
         .asset-val { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #ffffff; }
 
-        .stock-grid-card {
-            background-color: #111318;
-            border: 1px solid #1a1d26;
-            border-radius: 10px;
-            padding: 14px;
-            margin-bottom: 10px;
-        }
-        .stock-symbol { font-weight: 700; color: #ffffff; font-size: 0.9rem; }
-        .stock-price { font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-top: 6px; }
-
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
     </style>
@@ -200,7 +191,7 @@ def inject_custom_css():
 inject_custom_css()
 
 # ==========================================
-# 2. GOOGLE SHEETS DATA PIPELINE
+# 2. GOOGLE SHEETS DATA PIPELINE (ROBUST)
 # ==========================================
 def get_gspread_client():
     if not HAS_GSPREAD:
@@ -232,12 +223,30 @@ def clean_num(val):
     try: return float(val_str)
     except: return 0.0
 
-@st.cache_data(ttl=1)
-def fetch_portfolio_history_clean_realtime():
-    """ดึงข้อมูลประวัติจาก Portfolio_History แบบ Real-time ไม่ค้าง Caching"""
+def fetch_live_prices(symbols):
+    price_map = {}
+    if not symbols: return price_map
+    clean_symbols = [str(s).strip().upper() for s in symbols if str(s).strip()]
+    for sym in clean_symbols:
+        try:
+            ticker = yf.Ticker(sym)
+            fast_info = ticker.fast_info
+            price = fast_info.last_price
+            if price is None or pd.isna(price):
+                hist = ticker.history(period="1d")
+                if not hist.empty: price = hist['Close'].iloc[-1]
+            price_map[sym] = float(price) if price and not pd.isna(price) else None
+        except Exception:
+            price_map[sym] = None
+    return price_map
+
+@st.cache_data(ttl=10)
+def load_all_portfolio_data_direct():
+    """คำนวณพอร์ตสดทุกโบรกเกอร์โดยตรงจาก Google Sheets (ไม่พึ่ง Session State)"""
     client = get_gspread_client()
     if not client:
-        return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
+        
     try:
         sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
         if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
@@ -246,72 +255,156 @@ def fetch_portfolio_history_clean_realtime():
         try: sh = client.open(sheet_title)
         except: sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
 
-        ws = sh.worksheet("Portfolio_History")
-        data = ws.get_all_values()
-        
-        if len(data) > 1:
-            df = pd.DataFrame(data[1:], columns=data[0])
-            cols = [str(c).strip() for c in df.columns]
-            
-            # ค้นหาคอลัมน์อย่างยืดหยุ่น
-            time_c = next((c for c in cols if 'วัน' in c or 'date' in c.lower() or 'time' in c.lower() or 'timestamp' in c.lower()), cols[0])
-            mkt_c = next((c for c in cols if 'ปัจจุบัน' in c or 'market' in c.lower() or 'มูลค่าป' in c), cols[2] if len(cols) > 2 else cols[0])
-            inv_c = next((c for c in cols if 'ตั้งต้น' in c or 'invested' in c.lower() or 'ต้นทุน' in c or 'มูลค่าต' in c), cols[1] if len(cols) > 1 else cols[0])
+        # 1. อ่านพอร์ต Webull ( Webull_Order_History )
+        raw_records = []
+        try:
+            ws_w = sh.worksheet("Webull_Order_History")
+            data_w = ws_w.get_all_values()
+            if len(data_w) > 1:
+                df_w = pd.DataFrame(data_w[1:], columns=data_w[0])
+                cols = list(df_w.columns)
+                time_col = next((c for c in cols if "Time" in c or "Date" in c or "วันที่" in c), cols[1] if len(cols) > 1 else None)
+                sym_col = next((c for c in cols if "Sym" in c or "Ticker" in c or "หุ้น" in c), cols[2] if len(cols) > 2 else cols[0])
+                qty_col = next((c for c in cols if "Qty" in c or "Volume" in c or "จำนวน" in c), cols[4] if len(cols) > 4 else cols[1])
+                cost_col = next((c for c in cols if "Pr" in c or "Cost" in c or "ต้นทุน" in c or "Avg" in c), cols[5] if len(cols) > 5 else cols[2])
+                status_col = next((c for c in cols if "สถานะ" in c or "Status" in c), cols[6] if len(cols) > 6 else None)
 
-            df_res = pd.DataFrame()
-            df_res["Raw_Date"] = df[time_c].astype(str)
-            df_res["MarketValue"] = df[mkt_c].apply(clean_num)
-            df_res["Invested"] = df[inv_c].apply(clean_num)
-            
-            # กรองข้อมูลที่มีมูลค่ามากกว่า 0
-            df_res = df_res[df_res["MarketValue"] > 0].reset_index(drop=True)
-            df_res["Parsed_Date"] = pd.to_datetime(df_res["Raw_Date"], format='mixed', errors='coerce')
-            df_res = df_res.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
-            
-            df_res["Date_Str"] = df_res["Parsed_Date"].dt.strftime("%Y-%m-%d")
-            
-            # ยุบข้อมูลซ้ำในวันเดียวกัน เอาเฉพาะ Snapshot ล่าสุด
-            df_res = df_res.groupby("Date_Str", as_index=False).last()
-            df_res = df_res.sort_values("Date_Str").reset_index(drop=True)
-            return df_res
+                if time_col and time_col in df_w.columns:
+                    df_w["parsed_date"] = pd.to_datetime(df_w[time_col], errors='coerce')
+                    valid_dates = df_w.dropna(subset=["parsed_date"])
+                    if not valid_dates.empty:
+                        max_date = valid_dates["parsed_date"].max()
+                        df_latest = df_w[df_w["parsed_date"] == max_date].copy()
+                        for sym, grp in df_latest.groupby(sym_col):
+                            clean_sym = str(sym).strip().upper()
+                            if not clean_sym: continue
+                            latest_r = grp.iloc[-1]
+                            qty = clean_num(latest_r.get(qty_col, 0))
+                            cost = clean_num(latest_r.get(cost_col, 0))
+                            status_val = str(latest_r.get(status_col, "")).strip().upper() if status_col else ""
+                            if qty > 0 and status_val != "C":
+                                raw_records.append({"Broker": "Webull", "Symbol": clean_sym, "Qty": qty, "Cost": cost})
+        except Exception: pass
+
+        # 2. อ่านพอร์ต Dime US ( Dime_Portfolio )
+        try:
+            ws_dus = sh.worksheet("Dime_Portfolio")
+            data_dus = ws_dus.get_all_values()
+            if len(data_dus) > 1:
+                df_dus = pd.DataFrame(data_dus[1:], columns=data_dus[0])
+                sym_col = next((c for c in df_dus.columns if "หุ้น" in c or "Ticker" in c or "Sym" in c), df_dus.columns[0])
+                qty_col = next((c for c in df_dus.columns if "จำนวน" in c or "Volume" in c or "Qty" in c), df_dus.columns[1])
+                cost_col = next((c for c in df_dus.columns if "ต้นทุน" in c or "Avg" in c or "Cost" in c), df_dus.columns[2])
+
+                for sym, grp in df_dus.groupby(sym_col):
+                    clean_sym = str(sym).strip().upper()
+                    if not clean_sym: continue
+                    tot_q = sum(clean_num(r.get(qty_col, 0)) for _, r in grp.iterrows())
+                    tot_c_cash = sum(clean_num(r.get(qty_col, 0)) * clean_num(r.get(cost_col, 0)) for _, r in grp.iterrows())
+                    if tot_q > 0.0001:
+                        raw_records.append({"Broker": "Dime US", "Symbol": clean_sym, "Qty": tot_q, "Cost": tot_c_cash / tot_q})
+        except Exception: pass
+
+        # 3. อ่านพอร์ต Dime TH ( Dime_TH_Portfolio )
+        try:
+            ws_dth = sh.worksheet("Dime_TH_Portfolio")
+            data_dth = ws_dth.get_all_values()
+            if len(data_dth) > 1:
+                df_dth = pd.DataFrame(data_dth[1:], columns=data_dth[0])
+                sym_col = next((c for c in df_dth.columns if "หุ้น" in c or "Ticker" in c or "Sym" in c), df_dth.columns[0])
+                qty_col = next((c for c in df_dth.columns if "จำนวน" in c or "Volume" in c or "Qty" in c), df_dth.columns[1])
+                cost_col = next((c for c in df_dth.columns if "ต้นทุน" in c or "Avg" in c or "Cost" in c), df_dth.columns[2])
+
+                for sym, grp in df_dth.groupby(sym_col):
+                    clean_sym = str(sym).strip().upper()
+                    if not clean_sym: continue
+                    tot_q = sum(clean_num(r.get(qty_col, 0)) for _, r in grp.iterrows())
+                    tot_c_cash = sum(clean_num(r.get(qty_col, 0)) * clean_num(r.get(cost_col, 0)) for _, r in grp.iterrows())
+                    if tot_q > 0.0001:
+                        raw_records.append({"Broker": "Dime TH", "Symbol": clean_sym, "Qty": tot_q, "Cost": tot_c_cash / tot_q})
+        except Exception: pass
+
+        # 4. อ่านประวัติการเติบโตพอร์ต ( Portfolio_History )
+        df_history = pd.DataFrame()
+        try:
+            ws_h = sh.worksheet("Portfolio_History")
+            data_h = ws_h.get_all_values()
+            if len(data_h) > 1:
+                df_h = pd.DataFrame(data_h[1:], columns=data_h[0])
+                cols = [str(c).strip() for c in df_h.columns]
+                time_c = next((c for c in cols if 'วัน' in c or 'date' in c.lower() or 'time' in c.lower() or 'timestamp' in c.lower()), cols[0])
+                mkt_c = next((c for c in cols if 'ปัจจุบัน' in c or 'market' in c.lower() or 'มูลค่าป' in c), cols[2] if len(cols) > 2 else cols[0])
+                inv_c = next((c for c in cols if 'ตั้งต้น' in c or 'invested' in c.lower() or 'ต้นทุน' in c or 'มูลค่าต' in c), cols[1] if len(cols) > 1 else cols[0])
+
+                df_history["Raw_Date"] = df_h[time_c].astype(str)
+                df_history["MarketValue"] = df_h[mkt_c].apply(clean_num)
+                df_history["Invested"] = df_h[inv_c].apply(clean_num)
+                df_history = df_history[df_history["MarketValue"] > 0].reset_index(drop=True)
+                df_history["Parsed_Date"] = pd.to_datetime(df_history["Raw_Date"], format='mixed', errors='coerce')
+                df_history = df_history.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
+                df_history["Date_Str"] = df_history["Parsed_Date"].dt.strftime("%Y-%m-%d")
+                df_history = df_history.groupby("Date_Str", as_index=False).last().sort_values("Date_Str").reset_index(drop=True)
+        except Exception: pass
+
+        if not raw_records:
+            return pd.DataFrame(), df_history
+
+        df_holdings = pd.DataFrame(raw_records)
+
+        # 5. ดึง Live Price ผ่าน yfinance
+        us_symbols = df_holdings[df_holdings["Broker"].isin(["Webull", "Dime US"])]["Symbol"].unique().tolist()
+        th_symbols = [f"{s}.BK" for s in df_holdings[df_holdings["Broker"] == "Dime TH"]["Symbol"].unique().tolist()]
+        live_prices = fetch_live_prices(us_symbols + th_symbols)
+        fx_rate = st.session_state.get("usd_thb_rate", 35.0)
+
+        calc_holdings = []
+        for _, row in df_holdings.iterrows():
+            broker, sym, qty, cost = row["Broker"], row["Symbol"], row["Qty"], row["Cost"]
+            if broker in ["Webull", "Dime US"]:
+                price = live_prices.get(sym) or cost
+                inv_usd, mkt_usd = qty * cost, qty * price
+                calc_holdings.append({"Broker": broker, "Symbol": sym, "Qty": qty, "Cost": cost, "Price": price, "Invested_USD": inv_usd, "Market_Value_USD": mkt_usd, "PnL_USD": mkt_usd - inv_usd})
+            else:
+                th_sym = f"{sym}.BK"
+                price = live_prices.get(th_sym) or cost
+                inv_thb, mkt_thb = qty * cost, qty * price
+                calc_holdings.append({"Broker": broker, "Symbol": sym, "Qty": qty, "Cost": cost, "Price": price, "Invested_USD": inv_thb / fx_rate, "Market_Value_USD": mkt_thb / fx_rate, "PnL_USD": (mkt_thb - inv_thb) / fx_rate})
+
+        return pd.DataFrame(calc_holdings), df_history
+
     except Exception:
-        pass
-    return pd.DataFrame()
+        return pd.DataFrame(), pd.DataFrame()
 
 # ==========================================
 # 3. DASHBOARD MAIN RENDER FUNCTION
 # ==========================================
 def render_dashboard():
-    # Header Control Bar
     col_refresh, c_curr = st.columns([3, 1])
     with col_refresh:
-        if st.button("🔄 ดึงข้อมูลล่าสุด", help="ล้างแคชและดึงข้อมูลจาก Google Sheet ใหม่"):
+        if st.button("🔄 ดึงข้อมูลสดจาก Google Sheets", help="ล้างแคชและดึงข้อมูลจาก Google Sheet ใหม่"):
             st.cache_data.clear()
             st.rerun()
     with c_curr:
         currency_selected = st.radio("Display Currency", ("USD ($)", "THB (฿)"), horizontal=True, index=0)
 
-    usd_fx_rate = st.session_state.get("usd_thb_rate", 32.96)
+    usd_fx_rate = st.session_state.get("usd_thb_rate", 35.0)
     is_usd = "USD" in currency_selected
 
-    # Load Real-time Data (Strictly from Google Sheets, No Mocks)
-    df_shared = st.session_state.get("all_holdings_df", pd.DataFrame())
-    df_history = fetch_portfolio_history_clean_realtime()
+    # ดึงข้อมูลพอร์ตสดตรงจาก Google Sheets
+    df_holdings, df_history = load_all_portfolio_data_direct()
 
-    # Calculate Totals
-    if not df_history.empty:
+    if not df_holdings.empty:
+        tot_invested_usd = df_holdings['Invested_USD'].sum()
+        tot_market_usd = df_holdings['Market_Value_USD'].sum()
+        tot_pnl_usd = tot_market_usd - tot_invested_usd
+        tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
+    elif not df_history.empty:
         latest_row = df_history.iloc[-1]
         tot_invested_usd = latest_row["Invested"]
         tot_market_usd = latest_row["MarketValue"]
         tot_pnl_usd = tot_market_usd - tot_invested_usd
         tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
-    elif not df_shared.empty:
-        tot_invested_usd = df_shared['Invested_USD'].sum()
-        tot_market_usd = df_shared['Market_Value_USD'].sum()
-        tot_pnl_usd = tot_market_usd - tot_invested_usd
-        tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
     else:
-        # หากดึงไม่ได้เลย ให้เป็น 0 (ลบข้อมูล Mock Data ทั้งหมด)
         tot_invested_usd = 0.0
         tot_market_usd = 0.0
         tot_pnl_usd = 0.0
@@ -344,9 +437,8 @@ def render_dashboard():
     # DIME AREA CHART WITH INTERACTIVE HOVER
     # ----------------------------------------------------
     if "selected_tf" not in st.session_state:
-        st.session_state["selected_tf"] = "1M"
+        st.session_state["selected_tf"] = "MAX"
 
-    # Timeframe Range Selector Pills (Dime Style)
     st.markdown('<div class="dime-pill-container">', unsafe_allow_html=True)
     tf_options = ["1W", "1M", "3M", "6M", "YTD", "1Y", "MAX"]
     tf_cols = st.columns(len(tf_options))
@@ -371,6 +463,7 @@ def render_dashboard():
         elif selected_tf == "1M":
             start_dt = max_dt - timedelta(days=30)
             filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
+            if len(filtered_df) < 2: filtered_df = df_history.tail(4).copy()
         elif selected_tf == "3M":
             start_dt = max_dt - timedelta(days=90)
             filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
@@ -391,9 +484,8 @@ def render_dashboard():
         x_axis = filtered_df["Date_Str"].tolist()
         y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
     else:
-        # หากไม่มีข้อมูลในชีท ให้กราฟแสดงศูนย์แทนการใช้ Mock Data
         x_axis = [datetime.now().strftime("%Y-%m-%d")]
-        y_axis = [0.0]
+        y_axis = [display_market_usd if is_usd else display_market_thb]
 
     # Auto Zoom Y-Axis Calculation
     min_y = min(y_axis) if y_axis else 0
@@ -408,7 +500,7 @@ def render_dashboard():
         y=y_axis, 
         mode='lines+markers' if len(x_axis) < 10 else 'lines', 
         line=dict(color='#8b5cf6', width=3, shape='spline'), 
-        marker=dict(size=6, color='#8b5cf6'),
+        marker=dict(size=8, color='#8b5cf6'),
         fill='tozeroy', 
         fillcolor='rgba(139, 92, 246, 0.12)',
         hovertemplate="<b>วันที่: %{x}</b><br>มูลค่า: %{y:$,.2f}<extra></extra>" if is_usd else "<b>วันที่: %{x}</b><br>มูลค่า: ฿%{y:,.2f}<extra></extra>"
@@ -422,10 +514,10 @@ def render_dashboard():
         yaxis=dict(showgrid=True, gridcolor='#161923', zeroline=False, range=y_range, autorange=False), 
         margin=dict(t=10, b=10, l=10, r=10), 
         height=280,
-        hovermode="x unified" # Crosshair Cursor Hover
+        hovermode="x unified"
     )
     
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dime_app_chart_{selected_tf}_{currency_selected}_{len(x_axis)}")
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dime_app_chart_v4_{selected_tf}_{currency_selected}_{len(x_axis)}")
 
     # ----------------------------------------------------
     # BROKER ALLOCATION
@@ -433,8 +525,8 @@ def render_dashboard():
     st.markdown("<br>", unsafe_allow_html=True)
     c_btm_left, c_btm_right = st.columns([1.1, 1.9])
 
-    if not df_shared.empty:
-        df_b_sum = df_shared.groupby("Broker")["Market_Value_USD"].sum().to_dict()
+    if not df_holdings.empty:
+        df_b_sum = df_holdings.groupby("Broker")["Market_Value_USD"].sum().to_dict()
         val_dime_us = df_b_sum.get("Dime US", 0.0) * (1.0 if is_usd else usd_fx_rate)
         val_webull = df_b_sum.get("Webull", 0.0) * (1.0 if is_usd else usd_fx_rate)
         val_dime_th = df_b_sum.get("Dime TH", 0.0) * (1.0 if is_usd else usd_fx_rate)
