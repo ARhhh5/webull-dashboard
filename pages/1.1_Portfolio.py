@@ -185,7 +185,7 @@ def clean_val(val):
         return 0.0
 
 def load_master_holdings_from_sheets():
-    """คำนวณยอดพอร์ตสะสม Net Position จากประวัติการซื้อ-ขายใน Google Sheets"""
+    """คำนวณยอดพอร์ตสะสม Net Position และกรองเอาเฉพาะหุ้นที่มีสถานะ O (มีอยู่)"""
     gc = get_gspread_client()
     if not gc:
         return pd.DataFrame()
@@ -201,7 +201,7 @@ def load_master_holdings_from_sheets():
 
         raw_records = []
 
-        # 1. คำนวณ Net Position พอร์ต Webull จาก Webull_Order_History (ซื้อ - ขาย)
+        # 1. คำนวณพอร์ต Webull จาก Webull_Order_History (กรองสถานะ Column G)
         try:
             ws_w = sh.worksheet("Webull_Order_History")
             data_w = ws_w.get_all_values()
@@ -211,13 +211,18 @@ def load_master_holdings_from_sheets():
                 side_col = next((c for c in df_w.columns if "Side" in c or "ประเภท" in c), None)
                 qty_col = next((c for c in df_w.columns if "Qty" in c or "Volume" in c or "จำนวน" in c), df_w.columns[1])
                 cost_col = next((c for c in df_w.columns if "Pr" in c or "Cost" in c or "ต้นทุน" in c or "Avg" in c), df_w.columns[2])
+                status_col = next((c for c in df_w.columns if "สถานะ" in c or "Status" in c), None)
 
-                # วนลูปตาม Symbol เพื่อคิดคำนวณ Net Qty และ Average Cost
                 for sym, grp in df_w.groupby(sym_col):
                     clean_sym = str(sym).strip().upper()
                     if not clean_sym:
                         continue
                         
+                    # เช็ก Column G สถานะหุ้นเป็น C หรือไม่
+                    latest_status = ""
+                    if status_col:
+                        latest_status = str(grp.iloc[-1].get(status_col, "")).strip().upper()
+
                     total_qty = 0.0
                     total_cost_val = 0.0
 
@@ -235,8 +240,8 @@ def load_master_holdings_from_sheets():
                             total_qty += q
                             total_cost_val += (q * p)
 
-                    # บันทึกเฉพาะหุ้นที่ยังถือครองอยู่จริง (Net Qty > 0.0001)
-                    if total_qty > 0.0001:
+                    # บันทึกเฉพาะหุ้นที่ยังถือครองอยู่จริง และสถานะไม่เท่ากับ C
+                    if total_qty > 0.0001 and latest_status != "C":
                         avg_cost = total_cost_val / total_qty
                         raw_records.append({
                             "Broker": "Webull",
@@ -247,7 +252,7 @@ def load_master_holdings_from_sheets():
         except Exception:
             pass
 
-        # 2. คำนวณ Net Position พอร์ต Dime US จาก Dime_Portfolio
+        # 2. คำนวณ Dime US จาก Dime_Portfolio
         try:
             ws_dus = sh.worksheet("Dime_Portfolio")
             data_dus = ws_dus.get_all_values()
@@ -280,7 +285,7 @@ def load_master_holdings_from_sheets():
         except Exception:
             pass
 
-        # 3. คำนวณ Net Position พอร์ต Dime TH จาก Dime_TH_Portfolio
+        # 3. คำนวณ Dime TH จาก Dime_TH_Portfolio
         try:
             ws_dth = sh.worksheet("Dime_TH_Portfolio")
             data_dth = ws_dth.get_all_values()
