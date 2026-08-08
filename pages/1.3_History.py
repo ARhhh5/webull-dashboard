@@ -136,7 +136,7 @@ def sync_webull_to_gsheet():
             worksheet = sh.worksheet("Webull_Order_History")
         except Exception:
             worksheet = sh.add_worksheet(title="Webull_Order_History", rows="1000", cols="10")
-            worksheet.append_row(["Order ID", "Time", "Symbol", "Side", "Qty", "Price"])
+            worksheet.append_row(["Order ID", "Time", "Sym", "Side", "Qty", "Pr", "สถานะหุ้น"])
     except Exception as e:
         return False, f"❌ ไม่สามารถเปิด Google Sheet ได้: {str(e)}"
 
@@ -145,14 +145,31 @@ def sync_webull_to_gsheet():
     
     existing_ids = set()
     existing_combos = set()
+    symbol_positions = {}
     
     if not df_existing.empty:
+        sym_col = next((c for c in df_existing.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Sym')
+        side_col = next((c for c in df_existing.columns if 'side' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
+        qty_col = next((c for c in df_existing.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
+        
         for _, row in df_existing.iterrows():
             oid = str(row.get("Order ID", "")).strip()
             if oid:
                 existing_ids.add(oid)
-            combo = f"{str(row.get('Time',''))}_{str(row.get('Symbol',''))}_{str(row.get('Side',''))}_{str(row.get('Qty',''))}_{str(row.get('Price',''))}"
+            combo = f"{str(row.get('Time',''))}_{str(row.get(sym_col,''))}_{str(row.get(side_col,''))}_{str(row.get(qty_col,''))}_{str(row.get('Pr', row.get('Price','')))}"
             existing_combos.add(combo)
+            
+            # คำนวณ Net Qty
+            s_name = str(row.get(sym_col, "")).strip().upper()
+            s_side = str(row.get(side_col, "BUY")).strip().upper()
+            try: s_qty = float(str(row.get(qty_col, 0)).replace(",", "").replace("$", ""))
+            except: s_qty = 0.0
+            
+            if s_name:
+                if "SELL" in s_side or "ขาย" in s_side:
+                    symbol_positions[s_name] = symbol_positions.get(s_name, 0.0) - s_qty
+                else:
+                    symbol_positions[s_name] = symbol_positions.get(s_name, 0.0) + s_qty
 
     webull_config = st.secrets.get("Webull", {})
     APP_KEY = webull_config.get("AppKey", "").strip() or webull_config.get("app_key", "").strip()
@@ -227,11 +244,19 @@ def sync_webull_to_gsheet():
 
         if full_order_id not in existing_ids and combo_check not in existing_combos:
             if qty > 0 and price > 0:
-                new_rows.append([full_order_id, order_time, symbol, side_formatted, qty, price])
+                # คำนวณสถานะหุ้น O (มีอยู่) / C (หมดแล้ว)
+                current_net_qty = symbol_positions.get(symbol, 0.0)
+                if "SELL" in side_formatted:
+                    current_net_qty -= qty
+                else:
+                    current_net_qty += qty
+                
+                status_flag = "O" if current_net_qty > 0.0001 else "C"
+                new_rows.append([full_order_id, order_time, symbol, side_formatted, qty, price, status_flag])
 
     if new_rows:
         worksheet.append_rows(new_rows)
-        return True, f"✅ Auto Sync สำเร็จ! เพิ่มรายการใหม่ลง Google Sheet ทั้งหมด {len(new_rows)} รายการ"
+        return True, f"✅ Auto Sync สำเร็จ! เพิ่มรายการใหม่พร้อมปั๊มสถานะ O/C ลง Google Sheet {len(new_rows)} รายการ"
     else:
         return True, "ℹ️ ข้อมูลล่าสุดตรงกันแล้ว ไม่มีรายการใหม่ต้องเพิ่ม"
 
@@ -269,13 +294,14 @@ df_webull, df_dime_closed, df_dime_us, df_dime_th = load_all_history_sheets()
 with st.expander("🔄 แผงควบคุม Auto Sync ข้อมูลจาก Webull API", expanded=False):
     col_sync1, col_sync2 = st.columns([3, 1])
     with col_sync1:
-        st.write("กดปุ่มเพื่อดึงออเดอร์ล่าสุดจาก Webull API บันทึกเติมลง Google Sheet อัตโนมัติ")
+        st.write("กดปุ่มเพื่อดึงออเดอร์ล่าสุดจาก Webull API บันทึกเติมลง Google Sheet พร้อมปั๊มสถานะ O=มีอยู่ / C=หมดแล้ว อัตโนมัติ")
     with col_sync2:
         if st.button("🚀 กด Sync ตอนนี้", type="primary", use_container_width=True):
-            with st.spinner("⏳ กำลัง Sync ออเดอร์..."):
+            with st.spinner("⏳ กำลัง Sync ออเดอร์และอัปเดตสถานะ..."):
                 success, msg = sync_webull_to_gsheet()
                 if success:
                     st.success(msg)
+                    st.cache_data.clear()
                     st.rerun()
                 else:
                     st.error(msg)
@@ -333,10 +359,10 @@ if tab_mode == "US_REALIZED":
         df_w = df_webull.copy()
         df_w.columns = [str(c).strip() for c in df_w.columns]
         
-        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Symbol')
+        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Sym')
         side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
         qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
-        price_c = next((c for c in df_w.columns if 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Price')
+        price_c = next((c for c in df_w.columns if 'pr' in str(c).lower() or 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Pr')
         time_c = next((c for c in df_w.columns if 'time' in str(c).lower() or 'date' in str(c).lower() or 'เวลา' in str(c).lower()), 'Time')
         
         if all(c in df_w.columns for c in [sym_c, side_c, qty_c, price_c]):
@@ -628,10 +654,10 @@ elif tab_mode == "REVERSE_SPLIT":
         df_w = df_webull.copy()
         df_w.columns = [str(c).strip() for c in df_w.columns]
         
-        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Symbol')
+        sym_c = next((c for c in df_w.columns if 'sym' in str(c).lower() or 'ticker' in str(c).lower() or 'หุ้น' in str(c)), 'Sym')
         side_c = next((c for c in df_w.columns if 'side' in str(c).lower() or 'buy/sell' in str(c).lower() or 'ฝั่ง' in str(c)), 'Side')
         qty_c = next((c for c in df_w.columns if 'qty' in str(c).lower() or 'volume' in str(c).lower() or 'จำนวน' in str(c)), 'Qty')
-        price_c = next((c for c in df_w.columns if 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Price')
+        price_c = next((c for c in df_w.columns if 'pr' in str(c).lower() or 'price' in str(c).lower() or 'ราคา' in str(c).lower()), 'Pr')
         
         if all(c in df_w.columns for c in [sym_c, side_c, qty_c, price_c]):
             for symbol in SPLIT_STOCKS:
