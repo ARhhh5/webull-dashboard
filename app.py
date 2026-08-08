@@ -182,6 +182,16 @@ def inject_custom_css():
         .asset-label { display: flex; align-items: center; gap: 10px; color: #cbd5e1; }
         .asset-val { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #ffffff; }
 
+        .stock-grid-card {
+            background-color: #111318;
+            border: 1px solid #1a1d26;
+            border-radius: 10px;
+            padding: 14px;
+            margin-bottom: 10px;
+        }
+        .stock-symbol { font-weight: 700; color: #ffffff; font-size: 0.9rem; }
+        .stock-price { font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-top: 6px; }
+
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
     </style>
@@ -224,7 +234,7 @@ def clean_num(val):
 
 @st.cache_data(ttl=1)
 def fetch_portfolio_history_clean_realtime():
-    """ดึงข้อมูลประวัติจาก Portfolio_History แบบ Real-time 100%"""
+    """ดึงข้อมูลประวัติจาก Portfolio_History แบบ Real-time ไม่ค้าง Caching"""
     client = get_gspread_client()
     if not client:
         return pd.DataFrame()
@@ -243,17 +253,19 @@ def fetch_portfolio_history_clean_realtime():
             df = pd.DataFrame(data[1:], columns=data[0])
             cols = [str(c).strip() for c in df.columns]
             
+            # ค้นหาคอลัมน์อย่างยืดหยุ่น
             time_c = next((c for c in cols if 'วัน' in c or 'date' in c.lower() or 'time' in c.lower() or 'timestamp' in c.lower()), cols[0])
-            mkt_c = next((c for c in cols if 'ปัจจุบัน' in c or 'market' in c.lower() or 'มูลค่า' in c), cols[2] if len(cols) > 2 else cols[0])
-            inv_c = next((c for c in cols if 'ตั้งต้น' in c or 'invested' in c.lower() or 'ต้นทุน' in c), cols[1] if len(cols) > 1 else cols[0])
+            mkt_c = next((c for c in cols if 'ปัจจุบัน' in c or 'market' in c.lower() or 'มูลค่าป' in c), cols[2] if len(cols) > 2 else cols[0])
+            inv_c = next((c for c in cols if 'ตั้งต้น' in c or 'invested' in c.lower() or 'ต้นทุน' in c or 'มูลค่าต' in c), cols[1] if len(cols) > 1 else cols[0])
 
             df_res = pd.DataFrame()
             df_res["Raw_Date"] = df[time_c].astype(str)
             df_res["MarketValue"] = df[mkt_c].apply(clean_num)
             df_res["Invested"] = df[inv_c].apply(clean_num)
             
+            # กรองข้อมูลที่มีมูลค่ามากกว่า 0
             df_res = df_res[df_res["MarketValue"] > 0].reset_index(drop=True)
-            df_res["Parsed_Date"] = pd.to_datetime(df_res["Raw_Date"], errors='coerce')
+            df_res["Parsed_Date"] = pd.to_datetime(df_res["Raw_Date"], format='mixed', errors='coerce')
             df_res = df_res.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
             
             df_res["Date_Str"] = df_res["Parsed_Date"].dt.strftime("%Y-%m-%d")
@@ -271,35 +283,39 @@ def fetch_portfolio_history_clean_realtime():
 # ==========================================
 def render_dashboard():
     # Header Control Bar
-    c_title, c_curr = st.columns([3, 1])
-    with c_title:
-        st.write("") # Spacer
+    col_refresh, c_curr = st.columns([3, 1])
+    with col_refresh:
+        if st.button("🔄 ดึงข้อมูลล่าสุด", help="ล้างแคชและดึงข้อมูลจาก Google Sheet ใหม่"):
+            st.cache_data.clear()
+            st.rerun()
     with c_curr:
         currency_selected = st.radio("Display Currency", ("USD ($)", "THB (฿)"), horizontal=True, index=0)
 
     usd_fx_rate = st.session_state.get("usd_thb_rate", 32.96)
     is_usd = "USD" in currency_selected
 
-    # Load Real-time Data
+    # Load Real-time Data (Strictly from Google Sheets, No Mocks)
     df_shared = st.session_state.get("all_holdings_df", pd.DataFrame())
     df_history = fetch_portfolio_history_clean_realtime()
 
-    if not df_shared.empty:
-        tot_invested_usd = df_shared['Invested_USD'].sum()
-        tot_market_usd = df_shared['Market_Value_USD'].sum()
-        tot_pnl_usd = tot_market_usd - tot_invested_usd
-        tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
-    elif not df_history.empty:
+    # Calculate Totals
+    if not df_history.empty:
         latest_row = df_history.iloc[-1]
         tot_invested_usd = latest_row["Invested"]
         tot_market_usd = latest_row["MarketValue"]
         tot_pnl_usd = tot_market_usd - tot_invested_usd
         tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
+    elif not df_shared.empty:
+        tot_invested_usd = df_shared['Invested_USD'].sum()
+        tot_market_usd = df_shared['Market_Value_USD'].sum()
+        tot_pnl_usd = tot_market_usd - tot_invested_usd
+        tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
     else:
-        tot_invested_usd = 26600.00
-        tot_market_usd = 30073.93
-        tot_pnl_usd = 3473.93
-        tot_pnl_pct = 13.05
+        # หากดึงไม่ได้เลย ให้เป็น 0 (ลบข้อมูล Mock Data ทั้งหมด)
+        tot_invested_usd = 0.0
+        tot_market_usd = 0.0
+        tot_pnl_usd = 0.0
+        tot_pnl_pct = 0.0
 
     display_market_usd = tot_market_usd
     display_market_thb = tot_market_usd * usd_fx_rate
@@ -351,11 +367,10 @@ def render_dashboard():
         if selected_tf == "1W":
             start_dt = max_dt - timedelta(days=7)
             filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
-            if len(filtered_df) < 2: filtered_df = df_history.tail(3).copy()
+            if len(filtered_df) < 2: filtered_df = df_history.tail(2).copy()
         elif selected_tf == "1M":
             start_dt = max_dt - timedelta(days=30)
             filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
-            if len(filtered_df) < 2: filtered_df = df_history.tail(5).copy()
         elif selected_tf == "3M":
             start_dt = max_dt - timedelta(days=90)
             filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
@@ -376,9 +391,9 @@ def render_dashboard():
         x_axis = filtered_df["Date_Str"].tolist()
         y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
     else:
-        # Mock Data for initial load
-        x_axis = ['2026-07-14', '2026-07-20', '2026-07-24', '2026-07-29', '2026-08-04', '2026-08-08']
-        y_axis = [28500.00, 29200.00, 28100.00, 27400.00, 29800.00, display_market_usd if is_usd else display_market_thb]
+        # หากไม่มีข้อมูลในชีท ให้กราฟแสดงศูนย์แทนการใช้ Mock Data
+        x_axis = [datetime.now().strftime("%Y-%m-%d")]
+        y_axis = [0.0]
 
     # Auto Zoom Y-Axis Calculation
     min_y = min(y_axis) if y_axis else 0
@@ -391,8 +406,9 @@ def render_dashboard():
     fig.add_trace(go.Scatter(
         x=x_axis, 
         y=y_axis, 
-        mode='lines', 
+        mode='lines+markers' if len(x_axis) < 10 else 'lines', 
         line=dict(color='#8b5cf6', width=3, shape='spline'), 
+        marker=dict(size=6, color='#8b5cf6'),
         fill='tozeroy', 
         fillcolor='rgba(139, 92, 246, 0.12)',
         hovertemplate="<b>วันที่: %{x}</b><br>มูลค่า: %{y:$,.2f}<extra></extra>" if is_usd else "<b>วันที่: %{x}</b><br>มูลค่า: ฿%{y:,.2f}<extra></extra>"
@@ -412,20 +428,20 @@ def render_dashboard():
     st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dime_app_chart_{selected_tf}_{currency_selected}_{len(x_axis)}")
 
     # ----------------------------------------------------
-    # BROKER ALLOCATION & TOP HOLDINGS
+    # BROKER ALLOCATION
     # ----------------------------------------------------
     st.markdown("<br>", unsafe_allow_html=True)
     c_btm_left, c_btm_right = st.columns([1.1, 1.9])
 
     if not df_shared.empty:
         df_b_sum = df_shared.groupby("Broker")["Market_Value_USD"].sum().to_dict()
-        val_dime_us = df_b_sum.get("Dime US", 32412.11) * (1.0 if is_usd else usd_fx_rate)
-        val_webull = df_b_sum.get("Webull", 9131.88) * (1.0 if is_usd else usd_fx_rate)
-        val_dime_th = df_b_sum.get("Dime TH", 4234.23) * (1.0 if is_usd else usd_fx_rate)
+        val_dime_us = df_b_sum.get("Dime US", 0.0) * (1.0 if is_usd else usd_fx_rate)
+        val_webull = df_b_sum.get("Webull", 0.0) * (1.0 if is_usd else usd_fx_rate)
+        val_dime_th = df_b_sum.get("Dime TH", 0.0) * (1.0 if is_usd else usd_fx_rate)
     else:
-        val_dime_us = 18000.00 * (1.0 if is_usd else usd_fx_rate)
-        val_webull = 8000.00 * (1.0 if is_usd else usd_fx_rate)
-        val_dime_th = 4073.93 * (1.0 if is_usd else usd_fx_rate)
+        val_dime_us = 0.0
+        val_webull = 0.0
+        val_dime_th = 0.0
 
     curr_sym = "$" if is_usd else "฿"
 
@@ -449,11 +465,11 @@ def render_dashboard():
         """, unsafe_allow_html=True)
 
     with c_btm_right:
-        st.markdown('<div class="dime-sub-label" style="margin-bottom: 10px;">Top Holdings Performance</div>', unsafe_allow_html=True)
+        st.markdown('<div class="dime-sub-label" style="margin-bottom: 10px;">ภาพรวมพอร์ตตามโบรกเกอร์</div>', unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3)
-        with g1: st.markdown('<div class="dash-card" style="padding: 14px;"><div style="display:flex; justify-content:space-between;"><span style="font-weight:700; color:#fff;">🟢 Dime US</span><span style="color:#4ade80; font-weight:700;">+11.37%</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">$32,412.11</div></div>', unsafe_allow_html=True)
-        with g2: st.markdown('<div class="dash-card" style="padding: 14px;"><div style="display:flex; justify-content:space-between;"><span style="font-weight:700; color:#fff;">🔴 Webull US</span><span style="color:#f87171; font-weight:700;">-34.48%</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">$9,131.88</div></div>', unsafe_allow_html=True)
-        with g3: st.markdown('<div class="dash-card" style="padding: 14px;"><div style="display:flex; justify-content:space-between;"><span style="font-weight:700; color:#fff;">🔴 Dime TH</span><span style="color:#f87171; font-weight:700;">-13.67%</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">$4,234.23</div></div>', unsafe_allow_html=True)
+        with g1: st.markdown(f'<div class="dash-card" style="padding: 14px;"><div style="display:flex; justify-content:space-between;"><span style="font-weight:700; color:#fff;">🟢 Dime US</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">{curr_sym}{val_dime_us:,.2f}</div></div>', unsafe_allow_html=True)
+        with g2: st.markdown(f'<div class="dash-card" style="padding: 14px;"><div style="display:flex; justify-content:space-between;"><span style="font-weight:700; color:#fff;">🔵 Webull US</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">{curr_sym}{val_webull:,.2f}</div></div>', unsafe_allow_html=True)
+        with g3: st.markdown(f'<div class="dash-card" style="padding: 14px;"><div style="display:flex; justify-content:space-between;"><span style="font-weight:700; color:#fff;">🔴 Dime TH</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">{curr_sym}{val_dime_th:,.2f}</div></div>', unsafe_allow_html=True)
 
 def load_page_module(file_name):
     possible_paths = [f"pages/{file_name}.py", f"pages/{file_name}"]
