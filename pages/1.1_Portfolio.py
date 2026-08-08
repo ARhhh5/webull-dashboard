@@ -93,7 +93,7 @@ st.markdown("""
     .pill-nav-container div[data-testid="stColumn"] div.stButton > button:hover {
         border-color: #38bdf8 !important;
         color: #38bdf8 !important;
-        background-color: #141822 !important;
+        background-color: #161a23 !important;
     }
 
     /* Active Pill Button Highlight */
@@ -185,7 +185,7 @@ def clean_val(val):
         return 0.0
 
 def load_master_holdings_from_sheets():
-    """ดึงข้อมูลเฉพาะ Snapshot วันล่าสุดที่มีสถานะ 'O' (มีอยู่) เท่านั้น"""
+    """ดึงข้อมูลเฉพาะ Snapshot วันล่าสุด พร้อมยุบรายการเบิ้ล (Deduplicate Symbol) ให้เหลือ 1 แถวต่อหุ้น"""
     gc = get_gspread_client()
     if not gc:
         return pd.DataFrame()
@@ -201,7 +201,7 @@ def load_master_holdings_from_sheets():
 
         raw_records = []
 
-        # 1. ดึงพอร์ต Webull จาก Webull_Order_History (กรองเฉพาะวันล่าสุด + สถานะ 'O')
+        # 1. ดึงพอร์ต Webull จาก Webull_Order_History (แก้ปัญหายอดเบิ้ลซ้ำ)
         try:
             ws_w = sh.worksheet("Webull_Order_History")
             data_w = ws_w.get_all_values()
@@ -216,25 +216,25 @@ def load_master_holdings_from_sheets():
                 status_col = next((c for c in cols if "สถานะ" in c or "Status" in c), cols[6] if len(cols) > 6 else None)
 
                 if time_col and time_col in df_w.columns:
-                    # แปลงวันที่เพื่อหา Max Date อัตโนมัติ
                     df_w["parsed_date"] = pd.to_datetime(df_w[time_col], errors='coerce')
                     valid_dates = df_w.dropna(subset=["parsed_date"])
                     
                     if not valid_dates.empty:
                         max_date = valid_dates["parsed_date"].max()
-                        
-                        # กรองเอาเฉพาะแถวที่มีวันที่ = วันล่าสุด
                         df_latest = df_w[df_w["parsed_date"] == max_date].copy()
                         
-                        for _, row in df_latest.iterrows():
-                            clean_sym = str(row.get(sym_col, "")).strip().upper()
-                            qty = clean_val(row.get(qty_col, 0))
-                            cost = clean_val(row.get(cost_col, 0))
+                        # ยุบแถวซ้ำตาม Symbol (Deduplicate): ดึงเฉพาะแถวบรรทัดล่างสุดของแต่ละหุ้นในวันนั้น
+                        for sym, grp in df_latest.groupby(sym_col):
+                            clean_sym = str(sym).strip().upper()
+                            if not clean_sym:
+                                continue
+                                
+                            latest_r = grp.iloc[-1]
+                            qty = clean_val(latest_r.get(qty_col, 0))
+                            cost = clean_val(latest_r.get(cost_col, 0))
+                            status_val = str(latest_r.get(status_col, "")).strip().upper() if status_col else ""
                             
-                            status_val = str(row.get(status_col, "")).strip().upper() if status_col else ""
-                            
-                            # เงื่อนไขสำคัญ: หุ้นต้องมี Qty > 0 และ สถานะต้องเป็น 'O' หรือค่าว่าง (ถ้าระบบยังไม่ได้ปั๊ม C)
-                            if clean_sym and qty > 0 and status_val != "C":
+                            if qty > 0 and status_val != "C":
                                 raw_records.append({
                                     "Broker": "Webull",
                                     "Symbol": clean_sym,
@@ -244,7 +244,7 @@ def load_master_holdings_from_sheets():
         except Exception:
             pass
 
-        # 2. คำนวณ Dime US จาก Dime_Portfolio
+        # 2. ดึงพอร์ต Dime US จาก Dime_Portfolio (Deduplicate ราย Symbol)
         try:
             ws_dus = sh.worksheet("Dime_Portfolio")
             data_dus = ws_dus.get_all_values()
@@ -273,7 +273,7 @@ def load_master_holdings_from_sheets():
         except Exception:
             pass
 
-        # 3. คำนวณ Dime TH จาก Dime_TH_Portfolio
+        # 3. ดึงพอร์ต Dime TH จาก Dime_TH_Portfolio (Deduplicate ราย Symbol)
         try:
             ws_dth = sh.worksheet("Dime_TH_Portfolio")
             data_dth = ws_dth.get_all_values()
