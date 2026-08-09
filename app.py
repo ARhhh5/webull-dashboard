@@ -157,7 +157,7 @@ def inject_custom_css():
         }
 
         .dime-pill-container div[data-testid="stColumn"] div.stButton > button[kind="primary"] {
-            background-color: #f43f5e !important; /* Red tone highlight for button */
+            background-color: #f43f5e !important;
             color: #ffffff !important;
             border: 1px solid #fb7185 !important;
             box-shadow: 0 2px 10px rgba(244, 63, 94, 0.4) !important;
@@ -274,12 +274,10 @@ def fetch_portfolio_history_clean_realtime():
 # 3. DASHBOARD MAIN RENDER FUNCTION
 # ==========================================
 def render_dashboard():
-    # Header Control Bar
-    col_refresh, c_curr = st.columns([3, 1])
-    with col_refresh:
-        if st.button("🔄 ดึงข้อมูลสดจาก Google Sheets", help="ล้างแคชและดึงข้อมูลจาก Google Sheet ใหม่"):
-            st.cache_data.clear()
-            st.rerun()
+    # Header Control Bar (Cleaned up, no refresh button)
+    c_spacer, c_curr = st.columns([3, 1])
+    with c_spacer:
+        st.empty() # Placeholder for spacing
     with c_curr:
         currency_selected = st.radio("Display Currency", ("USD ($)", "THB (฿)"), horizontal=True, index=0)
 
