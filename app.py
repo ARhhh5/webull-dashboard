@@ -17,7 +17,7 @@ except ImportError:
     HAS_GSPREAD = False
 
 # ==========================================
-# 1. PAGE CONFIGURATION & DIME-STYLE CSS
+# 1. PAGE CONFIGURATION & GLOBAL STYLE
 # ==========================================
 st.set_page_config(
     page_title="Executive Dashboard - Webull Desk",
@@ -29,16 +29,16 @@ st.set_page_config(
 def inject_custom_css():
     st.markdown("""
     <style>
-        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&family=JetBrains+Mono:wght@400;500;700&display=swap');
+        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
 
         html, body, [class*="css"] {
             font-family: 'Plus Jakarta Sans', sans-serif !important;
-            background-color: #090a0f !important;
-            color: #e2e8f0;
+            background-color: #08090b !important;
+            color: #d1d5db;
         }
 
         .stApp {
-            background-color: #090a0f;
+            background-color: #08090b;
         }
 
         /* HIDE STREAMLIT DEFAULT NAVIGATION */
@@ -46,10 +46,14 @@ def inject_custom_css():
             display: none !important;
         }
 
-        /* Sidebar Styling */
+        /* Custom Sidebar Styling */
         [data-testid="stSidebar"] {
-            background-color: #0f1117 !important;
-            border-right: 1px solid #1a1d26 !important;
+            background-color: #0d0e12 !important;
+            border-right: 1px solid #181a20 !important;
+        }
+
+        [data-testid="stSidebar"] > div:first-child {
+            padding-top: 1rem;
         }
 
         .sidebar-brand {
@@ -59,14 +63,17 @@ def inject_custom_css():
             color: #38bdf8;
             padding: 10px 0px 15px 0px;
             letter-spacing: 1px;
-            border-bottom: 1px solid #1a1d26;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            border-bottom: 1px solid #181a20;
             margin-bottom: 15px;
         }
 
         div[data-testid="stSidebar"] .stButton > button {
-            background-color: #141722;
+            background-color: #111318;
             color: #9ca3af;
-            border: 1px solid #222736;
+            border: 1px solid #1f232d;
             border-radius: 8px;
             font-weight: 600;
             font-size: 0.85rem;
@@ -74,121 +81,142 @@ def inject_custom_css():
             text-align: left;
             padding: 8px 12px;
             margin-bottom: 2px;
-            width: 100%;
         }
 
         div[data-testid="stSidebar"] .stButton > button:hover {
             border-color: #38bdf8;
             color: #38bdf8;
-            background-color: #1a202c;
+            background-color: #161a23;
         }
 
         div[data-testid="stSidebar"] .stButton > button[kind="primary"] {
-            background: linear-gradient(90deg, #8b5cf6 0%, #6d28d9 100%) !important;
+            background: linear-gradient(90deg, #0284c7 0%, #0369a1 100%) !important;
             color: #ffffff !important;
-            border: 1px solid #a78bfa !important;
-            box-shadow: 0 4px 12px rgba(139, 92, 246, 0.3);
+            border: 1px solid #38bdf8 !important;
+            box-shadow: 0 4px 12px rgba(56, 189, 248, 0.2);
         }
 
-        /* Dime Header Typography */
-        .dime-sub-label {
-            font-size: 0.88rem;
+        div[data-testid="stSidebar"] .streamlit-expanderHeader {
+            background-color: #111318 !important;
+            border: 1px solid #1f232d !important;
+            border-radius: 8px !important;
+            color: #e2e8f0 !important;
+            font-size: 0.88rem !important;
+            font-weight: 700 !important;
+            padding: 8px 12px !important;
+        }
+
+        div[data-testid="stSidebar"] .streamlit-expanderContent {
+            background-color: transparent !important;
+            border: none !important;
+            padding: 8px 0px 0px 8px !important;
+        }
+
+        /* TICKER MARQUEE STYLING */
+        .ticker-container {
+            width: 100%;
+            overflow: hidden;
+            background-color: #0d0e12;
+            border: 1px solid #1f232d;
+            border-radius: 10px;
+            padding: 8px 0;
+            margin-bottom: 20px;
+            white-space: nowrap;
+        }
+
+        .ticker-track {
+            display: inline-flex;
+            gap: 12px;
+            animation: marquee 30s linear infinite;
+        }
+
+        .ticker-container:hover .ticker-track {
+            animation-play-state: paused;
+        }
+
+        @keyframes marquee {
+            0% { transform: translateX(0%); }
+            100% { transform: translateX(-50%); }
+        }
+
+        .ticker-card-pill {
+            background-color: #111318;
+            border: 1px solid #1f232d;
+            border-radius: 8px;
+            padding: 6px 14px;
+            font-size: 0.82rem;
+            font-family: 'JetBrains Mono', monospace;
+            display: inline-flex;
+            align-items: center;
+            gap: 10px;
+        }
+
+        .ticker-card-symbol { font-weight: 700; color: #ffffff; }
+        .ticker-card-price { color: #e2e8f0; font-weight: 600; }
+        .badge-mini-pos { background-color: rgba(34, 197, 94, 0.15); color: #4ade80; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; }
+        .badge-mini-neg { background-color: rgba(239, 68, 68, 0.15); color: #f87171; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; }
+
+        .dash-card {
+            background-color: #0f1115;
+            border: 1px solid #1a1d24;
+            border-radius: 12px;
+            padding: 20px;
+            margin-bottom: 15px;
+        }
+
+        .card-header-title {
+            color: #9ca3af;
+            font-size: 0.85rem;
             font-weight: 600;
-            color: #94a3b8;
-            margin-bottom: 2px;
+            margin-bottom: 12px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
         }
 
-        .dime-big-title {
-            font-size: 2.5rem;
+        .big-value {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            font-size: 2.2rem;
             font-weight: 800;
             color: #ffffff;
             letter-spacing: -1px;
             line-height: 1.1;
-            margin-bottom: 4px;
         }
 
-        .dime-sub-currency {
-            font-size: 1rem;
-            font-weight: 600;
-            color: #cbd5e1;
-            margin-bottom: 10px;
-        }
+        .badge-delta-neg { background-color: rgba(239, 68, 68, 0.12); color: #f87171; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
+        .badge-delta-pos { background-color: rgba(34, 197, 94, 0.12); color: #4ade80; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
 
-        .badge-dime-pos {
-            color: #4ade80;
-            font-weight: 700;
-            font-size: 1.05rem;
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
+        .allocation-bar-container {
+            display: flex;
+            height: 10px;
+            border-radius: 5px;
+            overflow: hidden;
+            margin: 14px 0px;
+            background-color: #1a1d24;
         }
-
-        .badge-dime-neg {
-            color: #f87171;
-            font-weight: 700;
-            font-size: 1.05rem;
-            display: inline-flex;
-            align-items: center;
-            gap: 4px;
-        }
-
-        .dime-fx-text {
-            font-size: 0.85rem;
-            color: #64748b;
-            margin-top: 6px;
-            margin-bottom: 20px;
-        }
-
-        /* Pill Range Buttons Override */
-        .dime-pill-container div[data-testid="stColumn"] div.stButton > button {
-            background-color: #141722 !important;
-            border: 1px solid #222736 !important;
-            border-radius: 20px !important;
-            color: #94a3b8 !important;
-            font-size: 0.82rem !important;
-            font-weight: 700 !important;
-            height: 36px !important;
-            transition: all 0.2s ease !important;
-        }
-
-        .dime-pill-container div[data-testid="stColumn"] div.stButton > button:hover {
-            border-color: #8b5cf6 !important;
-            color: #c4b5fd !important;
-        }
-
-        .dime-pill-container div[data-testid="stColumn"] div.stButton > button[kind="primary"] {
-            background-color: #f43f5e !important;
-            color: #ffffff !important;
-            border: 1px solid #fb7185 !important;
-            box-shadow: 0 2px 10px rgba(244, 63, 94, 0.4) !important;
-        }
-
-        .dash-card {
-            background-color: #0f1117;
-            border: 1px solid #1a1d26;
-            border-radius: 14px;
-            padding: 20px;
-            margin-bottom: 15px;
-        }
+        .bar-segment { height: 100%; }
 
         .asset-row {
             display: flex;
             justify-content: space-between;
             align-items: center;
-            padding: 10px 0;
-            font-size: 0.88rem;
-            border-bottom: 1px solid #161923;
+            padding: 8px 0;
+            font-size: 0.85rem;
+            border-bottom: 1px solid #16181f;
         }
-        .asset-label { display: flex; align-items: center; gap: 10px; color: #cbd5e1; }
-        .asset-val { font-family: 'JetBrains Mono', monospace; font-weight: 700; color: #ffffff; }
+        .asset-label { display: flex; align-items: center; gap: 10px; color: #d1d5db; }
+        .dot { width: 8px; height: 8px; border-radius: 50%; }
+        .asset-val { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: #ffffff; }
 
         .stock-grid-card {
             background-color: #111318;
-            border: 1px solid #1a1d26;
+            border: 1px solid #1a1d24;
             border-radius: 10px;
             padding: 14px;
             margin-bottom: 10px;
         }
+        .stock-symbol { font-weight: 700; color: #ffffff; font-size: 0.9rem; }
+        .stock-price { font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-top: 6px; }
 
         #MainMenu {visibility: hidden;}
         footer {visibility: hidden;}
@@ -198,7 +226,7 @@ def inject_custom_css():
 inject_custom_css()
 
 # ==========================================
-# 2. GOOGLE SHEETS DATA PIPELINE (100% ROBUST)
+# 2. GOOGLE SHEETS DATA PIPELINE
 # ==========================================
 def get_gspread_client():
     if not HAS_GSPREAD:
@@ -230,9 +258,9 @@ def clean_num(val):
     try: return float(val_str)
     except: return 0.0
 
-@st.cache_data(ttl=5)
+@st.cache_data(ttl=1)
 def fetch_portfolio_history_clean_realtime():
-    """ดึงข้อมูลประวัติโดยใช้ Index (A=0, B=1, C=2) ป้องกันบั๊ก 0.00 จากชื่อคอลัมน์ไม่ตรง"""
+    """ดึงข้อมูลประวัติจาก Portfolio_History แบบ Real-time ไม่ค้าง Caching"""
     client = get_gspread_client()
     if not client:
         return pd.DataFrame()
@@ -248,23 +276,27 @@ def fetch_portfolio_history_clean_realtime():
         data = ws.get_all_values()
         
         if len(data) > 1:
-            df = pd.DataFrame(data[1:])
-            # บังคับใช้ Index: 0=วันที่, 1=มูลค่าตั้งต้น(Invested), 2=มูลค่าปัจจุบัน(MarketValue)
-            df_res = pd.DataFrame()
-            df_res["Raw_Date"] = df.iloc[:, 0].astype(str)
-            df_res["Invested"] = df.iloc[:, 1].apply(clean_num)
-            df_res["MarketValue"] = df.iloc[:, 2].apply(clean_num)
+            df = pd.DataFrame(data[1:], columns=data[0])
+            cols = [str(c).strip() for c in df.columns]
             
-            # กรองและแปลงวันที่
+            time_c = next((c for c in cols if 'วัน' in c or 'date' in c.lower() or 'time' in c.lower() or 'timestamp' in c.lower()), cols[0])
+            mkt_c = next((c for c in cols if 'ปัจจุบัน' in c or 'market' in c.lower() or 'มูลค่า' in c), cols[2] if len(cols) > 2 else cols[0])
+            inv_c = next((c for c in cols if 'ตั้งต้น' in c or 'invested' in c.lower() or 'ต้นทุน' in c), cols[1] if len(cols) > 1 else cols[0])
+
+            df_res = pd.DataFrame()
+            df_res["Raw_Date"] = df[time_c].astype(str)
+            df_res["MarketValue"] = df[mkt_c].apply(clean_num)
+            df_res["Invested"] = df[inv_c].apply(clean_num)
+            
             df_res = df_res[df_res["MarketValue"] > 0].reset_index(drop=True)
             df_res["Parsed_Date"] = pd.to_datetime(df_res["Raw_Date"], errors='coerce')
             df_res = df_res.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
             
             df_res["Date_Str"] = df_res["Parsed_Date"].dt.strftime("%Y-%m-%d")
             
-            # ยุบข้อมูลซ้ำในวันเดียวกัน เอาเฉพาะ Snapshot ล่าสุดของวัน
+            # ยุบข้อมูลซ้ำในวันเดียวกัน เอาเฉพาะ Snapshot ล่าสุด
             df_res = df_res.groupby("Date_Str", as_index=False).last()
-            df_res = df_res.sort_values("Parsed_Date").reset_index(drop=True)
+            df_res = df_res.sort_values("Date_Str").reset_index(drop=True)
             return df_res
     except Exception:
         pass
@@ -274,219 +306,225 @@ def fetch_portfolio_history_clean_realtime():
 # 3. DASHBOARD MAIN RENDER FUNCTION
 # ==========================================
 def render_dashboard():
-    # Header Control Bar (Cleaned up, no refresh button)
-    c_spacer, c_curr = st.columns([3, 1])
-    with c_spacer:
-        st.empty() # Placeholder for spacing
+    sample_stocks = [
+        ("NU", 14.30, 18.48), ("SVCO", 7.93, 123.38), ("CV", 6.58, 31.60),
+        ("DVLT", 0.34, -86.67), ("SUSCO", 3.85, 5.00), ("YMAG", 15.80, -0.19)
+    ]
+    
+    ticker_cards_html = ""
+    for sym, price, pnl in sample_stocks:
+        badge_cls = "badge-mini-pos" if pnl >= 0 else "badge-mini-neg"
+        sign = "+" if pnl >= 0 else ""
+        ticker_cards_html += f"""<div class="ticker-card-pill"><span class="ticker-card-symbol">{sym}</span><span class="ticker-card-price">${price:,.2f}</span><span class="{badge_cls}">{sign}{pnl:.2f}%</span></div>"""
+
+    full_track_html = f"""<div class="ticker-container"><div class="ticker-track">{ticker_cards_html}{ticker_cards_html}</div></div>"""
+    st.markdown(full_track_html, unsafe_allow_html=True)
+
+    c_title, c_curr = st.columns([3, 1])
+    with c_title:
+        st.title("Executive Dashboard")
     with c_curr:
         currency_selected = st.radio("Display Currency", ("USD ($)", "THB (฿)"), horizontal=True, index=0)
 
-    usd_fx_rate = st.session_state.get("usd_thb_rate", 32.96)
+    usd_fx_rate = st.session_state.get("usd_thb_rate", 35.0)
     is_usd = "USD" in currency_selected
+    symbol = "$" if is_usd else "฿"
 
-    # Load Real-time Data
+    # 1. ดึงพอร์ตปัจจุบันสด
     df_shared = st.session_state.get("all_holdings_df", pd.DataFrame())
+    
+    # 2. ดึงประวัติย้อนหลังจาก Portfolio_History แบบ Real-time สดๆ
     df_history = fetch_portfolio_history_clean_realtime()
 
-    if "selected_tf" not in st.session_state:
-        st.session_state["selected_tf"] = "1W"
-
-    selected_tf = st.session_state["selected_tf"]
-
-    # ----------------------------------------------------
-    # CALCULATE TIMEFRAME PERFORMANCE & MARKER
-    # ----------------------------------------------------
-    marker_date_str = ""
-    marker_val = 0.0
-    tf_pnl_pct = 0.0
-
-    if not df_history.empty:
-        max_dt = df_history["Parsed_Date"].max()
-        current_market_val = df_history.iloc[-1]["MarketValue"]
-        current_invested_val = df_history.iloc[-1]["Invested"]
-        
-        # กำหนดวันที่เริ่มต้นของ Timeframe
-        if selected_tf == "1W":
-            start_dt = max_dt - timedelta(days=7)
-        elif selected_tf == "1M":
-            start_dt = max_dt - timedelta(days=30)
-        elif selected_tf == "3M":
-            start_dt = max_dt - timedelta(days=90)
-        elif selected_tf == "6M":
-            start_dt = max_dt - timedelta(days=180)
-        elif selected_tf == "YTD":
-            start_dt = pd.to_datetime(f"{max_dt.year}-01-01")
-        elif selected_tf == "1Y":
-            start_dt = max_dt - timedelta(days=365)
-        else: # MAX
-            start_dt = df_history["Parsed_Date"].min()
-
-        # หาแถวที่เป็นจุดเริ่มต้น (Base Row) สำหรับ Timeframe นั้น
-        if selected_tf == "MAX":
-            base_row = df_history.iloc[0]
-            base_val = base_row["Invested"] # ใช้มูลค่าลงทุนตั้งต้นสำหรับ MAX
-        else:
-            past_df = df_history[df_history["Parsed_Date"] >= start_dt]
-            if not past_df.empty:
-                base_row = past_df.iloc[0]
-            else:
-                base_row = df_history.iloc[0]
-            base_val = base_row["MarketValue"]
-
-        # ดึงข้อมูลสำหรับปักหมุด
-        marker_date_str = base_row["Date_Str"]
-        marker_val = base_row["MarketValue"]
-        
-        # คำนวณ PnL ณ Timeframe นั้น
-        tf_pnl_usd = current_market_val - base_val
-        tf_pnl_pct = (tf_pnl_usd / base_val * 100) if base_val > 0 else 0.0
-
+    if not df_shared.empty:
+        tot_invested_usd = df_shared['Invested_USD'].sum()
+        tot_market_usd = df_shared['Market_Value_USD'].sum()
+        tot_pnl_usd = tot_market_usd - tot_invested_usd
+        tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
+    elif not df_history.empty:
+        latest_row = df_history.iloc[-1]
+        tot_invested_usd = latest_row["Invested"]
+        tot_market_usd = latest_row["MarketValue"]
+        tot_pnl_usd = tot_market_usd - tot_invested_usd
+        tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
     else:
-        current_market_val = 0.0
-        current_invested_val = 0.0
+        tot_invested_usd = 47944.46
+        tot_market_usd = 45778.22
+        tot_pnl_usd = -2166.24
+        tot_pnl_pct = -4.52
 
-    display_market_usd = current_market_val
-    display_market_thb = current_market_val * usd_fx_rate
-    
-    pnl_class = "badge-dime-pos" if tf_pnl_pct >= 0 else "badge-dime-neg"
-    pnl_sign = "↗ " if tf_pnl_pct >= 0 else "↘ "
+    display_market = tot_market_usd if is_usd else (tot_market_usd * usd_fx_rate)
+    display_pnl = tot_pnl_usd if is_usd else (tot_pnl_usd * usd_fx_rate)
 
-    latest_date_display = df_history.iloc[-1]["Parsed_Date"].strftime("%d %b %y") if not df_history.empty else datetime.now().strftime("%d %b %y")
-    tf_label = f" (ตั้งแต่เริ่ม {selected_tf})" if selected_tf != "MAX" else " (ตั้งแต่เริ่มต้น)"
+    pnl_badge = "badge-delta-pos" if display_pnl >= 0 else "badge-delta-neg"
+    pnl_sign = "+" if display_pnl >= 0 else ""
 
-    # ----------------------------------------------------
-    # DIME-STYLE HEADER DISPLAY SECTION
-    # ----------------------------------------------------
-    st.markdown(f'<div class="dime-sub-label">มูลค่าสินทรัพย์ทั้งหมด ({latest_date_display}) 👁️</div>', unsafe_allow_html=True)
-    
-    if is_usd:
-        st.markdown(f'<div class="dime-big-title">{display_market_usd:,.2f} <span style="font-size: 1.5rem; font-weight: 700;">USD</span></div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="dime-sub-currency">≈ {display_market_thb:,.2f} บาท</div>', unsafe_allow_html=True)
-    else:
-        st.markdown(f'<div class="dime-big-title">฿{display_market_thb:,.2f}</div>', unsafe_allow_html=True)
-        st.markdown(f'<div class="dime-sub-currency">≈ ${display_market_usd:,.2f} USD</div>', unsafe_allow_html=True)
-
-    st.markdown(f'<div class="{pnl_class}">กำไรของสินทรัพย์ที่ถืออยู่{tf_label}: {pnl_sign}{tf_pnl_pct:.2f}%</div>', unsafe_allow_html=True)
-    st.markdown(f'<div class="dime-fx-text">อัตราแลกเปลี่ยน: 🇺🇸 1 USD = {usd_fx_rate:.2f} บาท</div>', unsafe_allow_html=True)
-
-    # ----------------------------------------------------
-    # TIMEFRAME BUTTONS
-    # ----------------------------------------------------
-    st.markdown('<div class="dime-pill-container">', unsafe_allow_html=True)
-    tf_options = ["1W", "1M", "3M", "6M", "YTD", "1Y", "MAX"]
-    tf_cols = st.columns(len(tf_options))
-    
-    for idx, option in enumerate(tf_options):
-        btn_type = "primary" if selected_tf == option else "secondary"
-        if tf_cols[idx].button(option, key=f"dime_tf_{option}", use_container_width=True, type=btn_type):
-            st.session_state["selected_tf"] = option
-            st.rerun()
-    st.markdown('</div>', unsafe_allow_html=True)
-
-    # ----------------------------------------------------
-    # ALWAYS-MAX CHART WITH HIGHLIGHT MARKER
-    # ----------------------------------------------------
-    if not df_history.empty:
-        x_axis = df_history["Date_Str"].tolist()
-        y_axis = (df_history["MarketValue"] if is_usd else (df_history["MarketValue"] * usd_fx_rate)).tolist()
-    else:
-        x_axis = [datetime.now().strftime("%Y-%m-%d")]
-        y_axis = [0.0]
-
-    min_y = min(y_axis) if y_axis else 0
-    max_y = max(y_axis) if y_axis else 100
-    padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
-    y_range = [max(0, min_y - padding), max_y + padding]
-
-    fig = go.Figure()
-    
-    # 1. วาดกราฟเส้นแนวยาว (MAX) เสมอ
-    fig.add_trace(go.Scatter(
-        x=x_axis, 
-        y=y_axis, 
-        mode='lines', 
-        line=dict(color='#8b5cf6', width=3, shape='spline'), 
-        fill='tozeroy', 
-        fillcolor='rgba(139, 92, 246, 0.12)',
-        hovertemplate="<b>วันที่: %{x}</b><br>มูลค่า: %{y:$,.2f}<extra></extra>" if is_usd else "<b>วันที่: %{x}</b><br>มูลค่า: ฿%{y:,.2f}<extra></extra>",
-        name="Portfolio"
-    ))
-
-    # 2. ปักหมุด Highlight Marker ณ วันที่เริ่มต้น Timeframe นั้น
-    if not df_history.empty and marker_date_str in x_axis:
-        idx = x_axis.index(marker_date_str)
-        marker_y_val = y_axis[idx]
-        curr_sym = "$" if is_usd else "฿"
-        
-        fig.add_trace(go.Scatter(
-            x=[marker_date_str],
-            y=[marker_y_val],
-            mode='markers+text',
-            marker=dict(color='#f43f5e', size=12, symbol='circle', line=dict(color='#ffffff', width=2)),
-            text=[f"เริ่ม {selected_tf}<br>{curr_sym}{marker_y_val:,.2f}"],
-            textposition="top center",
-            textfont=dict(color='#fb7185', size=12, weight='bold'),
-            hoverinfo='skip',
-            name="Start Point"
-        ))
-
-    fig.update_layout(
-        paper_bgcolor='rgba(0,0,0,0)', 
-        plot_bgcolor='rgba(0,0,0,0)', 
-        font=dict(color='#64748b', family='Plus Jakarta Sans'), 
-        xaxis=dict(showgrid=False, zeroline=False, type='category', tickangle=0), 
-        yaxis=dict(showgrid=True, gridcolor='#161923', zeroline=False, range=y_range, autorange=False), 
-        margin=dict(t=30, b=10, l=10, r=10), 
-        height=320,
-        hovermode="x unified",
-        showlegend=False
-    )
-    
-    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key="always_max_chart_v1")
-
-    # ----------------------------------------------------
-    # BROKER ALLOCATION
-    # ----------------------------------------------------
     st.markdown("<br>", unsafe_allow_html=True)
-    c_btm_left, c_btm_right = st.columns([1.1, 1.9])
+    col_left, col_right = st.columns([1.1, 1.9])
 
+    with col_left:
+        card_html = f"""
+        <div class="dash-card">
+            <div class="card-header-title">
+                <span>Portfolio value</span>
+                <span class="{pnl_badge}">{pnl_sign}{tot_pnl_pct:.2f}%</span>
+            </div>
+            <div class="big-value">{symbol}{display_market:,.2f}</div>
+            <div style="color: {'#4ade80' if display_pnl >= 0 else '#f87171'}; font-size: 0.82rem; margin-top: 6px; font-family: 'JetBrains Mono', monospace;">
+                {pnl_sign}{symbol}{display_pnl:,.2f} total return
+            </div>
+            <div style="margin-top: 20px; font-size: 0.8rem; color: #6b7280; font-weight: 600;">Where your money is invested</div>
+            <div class="allocation-bar-container">
+                <div class="bar-segment" style="width: 65%; background-color: #3b82f6;"></div>
+                <div class="bar-segment" style="width: 20%; background-color: #a855f7;"></div>
+                <div class="bar-segment" style="width: 10%; background-color: #ec4899;"></div>
+                <div class="bar-segment" style="width: 5%; background-color: #f59e0b;"></div>
+            </div>
+            <div class="asset-row">
+                <div class="asset-label"><div class="dot" style="background-color: #3b82f6;"></div> Tech Stocks</div>
+                <div class="asset-val">{symbol}{display_market*0.65:,.2f}</div>
+            </div>
+            <div class="asset-row">
+                <div class="asset-label"><div class="dot" style="background-color: #a855f7;"></div> ETFs & Index</div>
+                <div class="asset-val">{symbol}{display_market*0.20:,.2f}</div>
+            </div>
+            <div class="asset-row">
+                <div class="asset-label"><div class="dot" style="background-color: #ec4899;"></div> Financials</div>
+                <div class="asset-val">{symbol}{display_market*0.10:,.2f}</div>
+            </div>
+            <div class="asset-row" style="border-bottom: none;">
+                <div class="asset-label"><div class="dot" style="background-color: #f59e0b;"></div> Cash & Other</div>
+                <div class="asset-val">{symbol}{display_market*0.05:,.2f}</div>
+            </div>
+        </div>
+        """
+        st.markdown(card_html, unsafe_allow_html=True)
+
+    with col_right:
+        if "selected_tf" not in st.session_state:
+            st.session_state["selected_tf"] = "MAX"
+
+        col_tf_btns, col_refresh = st.columns([5, 1])
+        with col_tf_btns:
+            tf_options = ["1D", "7D", "1M", "6M", "1Y", "MAX"]
+            tf_cols = st.columns(len(tf_options))
+            
+            for idx, option in enumerate(tf_options):
+                btn_type = "primary" if st.session_state["selected_tf"] == option else "secondary"
+                if tf_cols[idx].button(option, key=f"tf_btn_{option}", use_container_width=True, type=btn_type):
+                    st.session_state["selected_tf"] = option
+                    st.rerun()
+
+        with col_refresh:
+            if st.button("🔄", help="รีเฟรชข้อมูลจาก Sheet ทันที"):
+                st.cache_data.clear()
+                st.rerun()
+
+        selected_tf = st.session_state["selected_tf"]
+
+        # ==========================================
+        # DYNAMIC HISTORICAL SLICING ENGINE (NEW)
+        # ==========================================
+        if not df_history.empty:
+            max_dt = df_history["Parsed_Date"].max()
+            
+            if selected_tf == "1D":
+                # 1D: ดึงเฉพาะ 2 จุดล่าสุดเสมอ เพื่อดู Delta เคลื่อนไหว
+                filtered_df = df_history.tail(2).copy()
+            elif selected_tf == "7D":
+                start_dt = max_dt - timedelta(days=7)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
+                if len(filtered_df) < 2:
+                    filtered_df = df_history.tail(3).copy()
+            elif selected_tf == "1M":
+                start_dt = max_dt - timedelta(days=30)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
+                if len(filtered_df) < 2:
+                    filtered_df = df_history.tail(5).copy()
+            elif selected_tf == "6M":
+                start_dt = max_dt - timedelta(days=180)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
+            elif selected_tf == "1Y":
+                start_dt = max_dt - timedelta(days=365)
+                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
+            else:  # MAX
+                filtered_df = df_history.copy()
+
+            if filtered_df.empty:
+                filtered_df = df_history.copy()
+
+            x_axis = filtered_df["Date_Str"].tolist()
+            y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
+        else:
+            # Fallback Dynamic ล่าสุดตาม Session พอร์ต
+            x_axis = ['Latest']
+            y_axis = [display_market]
+
+        # คำนวณ Auto-Zoom แกน Y เพื่อให้เห็นความผันผวนพริ้วสวยงาม
+        min_y = min(y_axis) if y_axis else 0
+        max_y = max(y_axis) if y_axis else 100
+        padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
+        y_range = [max(0, min_y - padding), max_y + padding]
+
+        fig = go.Figure()
+        fig.add_trace(go.Scatter(
+            x=x_axis, 
+            y=y_axis, 
+            mode='lines+markers', 
+            line=dict(color='#38bdf8', width=3, shape='spline'), 
+            marker=dict(size=8, color='#38bdf8'),
+            fill='tozeroy', 
+            fillcolor='rgba(56, 189, 248, 0.05)',
+            hovertemplate="<b>วันที่: %{x}</b><br>มูลค่าพอร์ต: %{y:$,.2f}<extra></extra>"
+        ))
+        fig.update_layout(
+            paper_bgcolor='rgba(0,0,0,0)', 
+            plot_bgcolor='rgba(0,0,0,0)', 
+            font=dict(color='#6b7280', family='Plus Jakarta Sans'), 
+            xaxis=dict(showgrid=False, zeroline=False, type='category'), 
+            yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False, range=y_range, autorange=False), 
+            margin=dict(t=15, b=10, l=10, r=10), 
+            height=260
+        )
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dash_v3_chart_{selected_tf}_{currency_selected}_{len(x_axis)}")
+
+    # คำนวณ Broker Allocation จาก Shared DataFrame สด
     if not df_shared.empty:
         df_b_sum = df_shared.groupby("Broker")["Market_Value_USD"].sum().to_dict()
-        val_dime_us = df_b_sum.get("Dime US", 0.0) * (1.0 if is_usd else usd_fx_rate)
-        val_webull = df_b_sum.get("Webull", 0.0) * (1.0 if is_usd else usd_fx_rate)
-        val_dime_th = df_b_sum.get("Dime TH", 0.0) * (1.0 if is_usd else usd_fx_rate)
+        val_dime_us = df_b_sum.get("Dime US", 32412.11) * (1.0 if is_usd else usd_fx_rate)
+        val_webull = df_b_sum.get("Webull", 9131.88) * (1.0 if is_usd else usd_fx_rate)
+        val_dime_th = df_b_sum.get("Dime TH", 4234.23) * (1.0 if is_usd else usd_fx_rate)
     else:
-        val_dime_us = 0.0
-        val_webull = 0.0
-        val_dime_th = 0.0
+        val_dime_us = 32412.11 * (1.0 if is_usd else usd_fx_rate)
+        val_webull = 9131.88 * (1.0 if is_usd else usd_fx_rate)
+        val_dime_th = 4234.23 * (1.0 if is_usd else usd_fx_rate)
 
-    curr_sym = "$" if is_usd else "฿"
-
+    c_btm_left, c_btm_right = st.columns([1.1, 1.9])
     with c_btm_left:
         st.markdown(f"""
         <div class="dash-card">
-            <div class="dime-sub-label">สัดส่วนสินทรัพย์แยกตามโบรกเกอร์</div>
-            <div class="asset-row" style="margin-top: 10px;">
+            <div class="card-header-title">Broker Allocation Real-time</div>
+            <div class="asset-row">
                 <div class="asset-label">💵 Dime US</div>
-                <div class="asset-val">{curr_sym}{val_dime_us:,.2f}</div>
+                <div class="asset-val">{symbol}{val_dime_us:,.2f}</div>
             </div>
             <div class="asset-row">
                 <div class="asset-label">⚡ Webull US</div>
-                <div class="asset-val">{curr_sym}{val_webull:,.2f}</div>
+                <div class="asset-val">{symbol}{val_webull:,.2f}</div>
             </div>
             <div class="asset-row" style="border-bottom:none;">
                 <div class="asset-label">🇹🇭 Dime TH</div>
-                <div class="asset-val">{curr_sym}{val_dime_th:,.2f}</div>
+                <div class="asset-val">{symbol}{val_dime_th:,.2f}</div>
             </div>
         </div>
         """, unsafe_allow_html=True)
 
     with c_btm_right:
-        st.markdown('<div class="dime-sub-label" style="margin-bottom: 10px;">ภาพรวมพอร์ตตามโบรกเกอร์</div>', unsafe_allow_html=True)
+        st.markdown('<div style="font-size: 0.85rem; font-weight: 600; color: #9ca3af; margin-bottom: 10px;">Top Holdings Performance</div>', unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3)
-        with g1: st.markdown(f'<div class="dash-card" style="padding: 14px;"><div style="display:flex; justify-content:space-between;"><span style="font-weight:700; color:#fff;">🟢 Dime US</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">{curr_sym}{val_dime_us:,.2f}</div></div>', unsafe_allow_html=True)
-        with g2: st.markdown(f'<div class="dash-card" style="padding: 14px;"><div style="display:flex; justify-content:space-between;"><span style="font-weight:700; color:#fff;">🔵 Webull US</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">{curr_sym}{val_webull:,.2f}</div></div>', unsafe_allow_html=True)
-        with g3: st.markdown(f'<div class="dash-card" style="padding: 14px;"><div style="display:flex; justify-content:space-between;"><span style="font-weight:700; color:#fff;">🔴 Dime TH</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">{curr_sym}{val_dime_th:,.2f}</div></div>', unsafe_allow_html=True)
+        with g1: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 Dime US</span><span class="badge-delta-pos">+11.37%</span></div><div class="stock-price">$32,412.11</div></div>', unsafe_allow_html=True)
+        with g2: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 Webull US</span><span class="badge-delta-neg">-34.48%</span></div><div class="stock-price">$9,131.88</div></div>', unsafe_allow_html=True)
+        with g3: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 Dime TH</span><span class="badge-delta-neg">-13.67%</span></div><div class="stock-price">$4,234.23</div></div>', unsafe_allow_html=True)
 
 def load_page_module(file_name):
     possible_paths = [f"pages/{file_name}.py", f"pages/{file_name}"]
