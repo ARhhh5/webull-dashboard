@@ -230,25 +230,18 @@ inject_custom_css()
 # 2. GOOGLE SHEETS DATA PIPELINE
 # ==========================================
 def get_gspread_client():
-    """เชื่อมต่อ Google Sheets API โดยสแกนหา Credentials จาก Secrets ทุกตำแหน่งที่เป็นไปได้"""
+    """เชื่อมต่อ Google Sheets API รองรับ Base64 Credentials ตามมาตรฐานของระบบคุณ"""
     if not HAS_GSPREAD:
         return None
     try:
-        scopes = [
-            "https://www.googleapis.com/auth/spreadsheets",
-            "https://www.googleapis.com/auth/drive"
-        ]
-        
-        creds_dict = None
-        if "gcp_service_account" in st.secrets:
-            creds_dict = dict(st.secrets["gcp_service_account"])
-        elif "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-            creds_dict = dict(st.secrets["connections"]["gsheets"])
-        elif "type" in st.secrets and st.secrets["type"] == "service_account":
-            creds_dict = dict(st.secrets)
-
-        if creds_dict:
-            creds = Credentials.from_service_account_info(creds_dict, scopes=scopes)
+        google_secrets = st.secrets.get("Google", {})
+        cred_base64 = google_secrets.get("credentials_base64", "")
+        if cred_base64:
+            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
+            return gspread.service_account_from_dict(cred_dict)
+        elif "gcp_service_account" in st.secrets:
+            scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
+            creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
             return gspread.authorize(creds)
     except Exception:
         pass
@@ -304,7 +297,7 @@ def load_history_from_gsheet():
     return None
 
 def sync_portfolio_history(invested, market_value, pnl, pnl_pct):
-    """ฟังก์ชันสำหรับ Append ข้อมูลพอร์ตล่าสุดลงใน Google Sheets"""
+    """ฟังก์ชันสำหรับ Append ข้อมูลพอร์ตล่าสุดลงใน Google Sheets พร้อมรองรับการสร้างชีตใหม่"""
     client = get_gspread_client()
     if not client:
         return False
@@ -319,12 +312,14 @@ def sync_portfolio_history(invested, market_value, pnl, pnl_pct):
         except Exception:
             sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
 
-        worksheet = sh.worksheet("Portfolio_History")
+        try:
+            worksheet = sh.worksheet("Portfolio_History")
+        except Exception:
+            worksheet = sh.add_worksheet(title="Portfolio_History", rows="1000", cols="5")
+            worksheet.append_row(["วันที่", "มูลค่าตั้งต้น", "มูลค่าปัจจุบัน", "กำไรขาดทุน", "กำไรขาดทุน%"])
         
-        # ประทับเวลาปัจจุบัน ฟอร์แมตเป๊ะตามที่สั่ง
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         
-        # เรียง Data ให้ตรงคอลัมน์ [Timestamp, Invested, MarketValue, PnL, PnLPct]
         row_to_append = [
             now_str, 
             round(invested, 2), 
@@ -393,7 +388,7 @@ def render_dashboard():
         if st.button("🔄 Sync", type="primary", use_container_width=True):
             if sync_portfolio_history(tot_invested_usd, tot_market_usd, tot_pnl_usd, tot_pnl_pct):
                 st.toast("✅ บันทึก Snapshot ล่าสุดลงชีตเรียบร้อย!", icon="🚀")
-                time.sleep(1.5) # หน่วงเวลาให้ Google Sheets เขียนเสร็จและให้คนเห็น Toast
+                time.sleep(1.5)
                 st.rerun()
             else:
                 st.error("⚠️ บันทึกไม่สำเร็จ ตรวจสอบการเชื่อมต่อ Google Sheets")
@@ -490,7 +485,7 @@ def render_dashboard():
             if filtered_df.empty:
                 filtered_df = df_history.copy()
 
-            # ส่งค่า Date แบบตรงๆ ให้ Plotly จัดการสเกลเวลา (ไม่ต้องแปลงเป็น String Category แล้ว)
+            # ส่งค่า Date แบบตรงๆ ให้ Plotly จัดการสเกลเวลา
             x_axis = filtered_df["Parsed_Date"]
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
@@ -498,7 +493,7 @@ def render_dashboard():
             x_axis = pd.to_datetime(['2026-08-01 00:00', '2026-08-02 05:44', '2026-08-05 09:56', '2026-08-08 11:59'])
             y_axis = [15000.00, 48180.96, 45987.10, display_market]
         
-        # คำนวณ Dynamic Y-Axis Range (Auto-Zoom) ตามเว็บการเงินมาตรฐาน
+        # คำนวณ Dynamic Y-Axis Range (Auto-Zoom)
         min_y = min(y_axis) if y_axis else 0
         max_y = max(y_axis) if y_axis else 100
         padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
@@ -520,7 +515,6 @@ def render_dashboard():
             paper_bgcolor='rgba(0,0,0,0)', 
             plot_bgcolor='rgba(0,0,0,0)', 
             font=dict(color='#6b7280', family='Plus Jakarta Sans'), 
-            # เปลี่ยน type เป็น 'date' เพื่อให้แกน X คำนวณระยะห่างของวันให้ถูกต้องตามจริง
             xaxis=dict(showgrid=False, zeroline=False, type='date'), 
             yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False, range=y_range, autorange=False), 
             margin=dict(t=15, b=10, l=10, r=10), 
