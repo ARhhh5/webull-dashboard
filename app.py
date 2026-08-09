@@ -401,11 +401,12 @@ def render_dashboard():
         st.markdown(card_html, unsafe_allow_html=True)
 
     with col_right:
+        # Default เริ่มต้นเป็น MAX เสมอตามที่คุณต้องการ
         if "selected_tf" not in st.session_state:
             st.session_state["selected_tf"] = "MAX"
 
-        # แสดงปุ่มกดเลือกช่วงเวลา (Pills/Buttons)
-        tf_options = ["1D", "7D", "1M", "6M", "1Y", "MAX"]
+        # แสดงปุ่มกดเลือกช่วงเวลาแบบสากล
+        tf_options = ["1D", "1W", "1M", "3M", "6M", "YTD", "1Y", "MAX"]
         tf_cols = st.columns(len(tf_options))
         
         for idx, option in enumerate(tf_options):
@@ -422,35 +423,31 @@ def render_dashboard():
             
             if selected_tf == "1D":
                 start_dt = max_dt - timedelta(days=1)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
-                if len(filtered_df) < 2:
-                    filtered_df = df_history.tail(2)
-                    
-            elif selected_tf == "7D":
+            elif selected_tf == "1W":
                 start_dt = max_dt - timedelta(days=7)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
-                if filtered_df.empty:
-                    filtered_df = df_history.tail(3)
-                    
             elif selected_tf == "1M":
                 start_dt = max_dt - timedelta(days=30)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
+            elif selected_tf == "3M":
+                start_dt = max_dt - timedelta(days=90)
             elif selected_tf == "6M":
                 start_dt = max_dt - timedelta(days=180)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
+            elif selected_tf == "YTD":
+                start_dt = pd.to_datetime(f"{max_dt.year}-01-01")
             elif selected_tf == "1Y":
                 start_dt = max_dt - timedelta(days=365)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
-            else:  # MAX
-                filtered_df = df_history.copy()
+            else:  # MAX: แสดงตั้งแต่วันแรก
+                start_dt = df_history["Parsed_Date"].min()
 
+            filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
             if filtered_df.empty:
                 filtered_df = df_history.copy()
 
-            x_axis = filtered_df["Parsed_Date"].dt.strftime("%Y-%m-%d %H:%M").tolist()
+            # ส่งค่า Date แบบตรงๆ ให้ Plotly จัดการสเกลเวลา (ไม่ต้องแปลงเป็น String Category แล้ว)
+            x_axis = filtered_df["Parsed_Date"]
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            x_axis = ['2026-08-01 00:00', '2026-08-02 05:44', '2026-08-05 09:56', '2026-08-08 11:59']
+            # Fallback หากไม่มีข้อมูล
+            x_axis = pd.to_datetime(['2026-08-01 00:00', '2026-08-02 05:44', '2026-08-05 09:56', '2026-08-08 11:59'])
             y_axis = [15000.00, 48180.96, 45987.10, display_market]
         
         # คำนวณ Dynamic Y-Axis Range (Auto-Zoom) ตามเว็บการเงินมาตรฐาน
@@ -469,13 +466,14 @@ def render_dashboard():
             marker=dict(size=8, color='#38bdf8'),
             fill='tozeroy', 
             fillcolor='rgba(56, 189, 248, 0.05)',
-            hovertemplate="<b>วันที่: %{x}</b><br>มูลค่าพอร์ต: %{y:$,.2f}<extra></extra>"
+            hovertemplate="<b>วันที่: %{x|%Y-%m-%d %H:%M}</b><br>มูลค่าพอร์ต: %{y:$,.2f}<extra></extra>"
         ))
         fig.update_layout(
             paper_bgcolor='rgba(0,0,0,0)', 
             plot_bgcolor='rgba(0,0,0,0)', 
             font=dict(color='#6b7280', family='Plus Jakarta Sans'), 
-            xaxis=dict(showgrid=False, zeroline=False, type='category'), 
+            # เปลี่ยน type เป็น 'date' เพื่อให้แกน X คำนวณระยะห่างของวันให้ถูกต้องตามจริง
+            xaxis=dict(showgrid=False, zeroline=False, type='date'), 
             yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False, range=y_range, autorange=False), 
             margin=dict(t=15, b=10, l=10, r=10), 
             height=260
