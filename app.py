@@ -2,6 +2,7 @@ import os
 import json
 import re
 import base64
+import time
 import importlib.util
 from datetime import datetime, timedelta
 import streamlit as st
@@ -302,6 +303,42 @@ def load_history_from_gsheet():
         pass
     return None
 
+def sync_portfolio_history(invested, market_value, pnl, pnl_pct):
+    """ฟังก์ชันสำหรับ Append ข้อมูลพอร์ตล่าสุดลงใน Google Sheets"""
+    client = get_gspread_client()
+    if not client:
+        return False
+    
+    try:
+        sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
+        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
+            sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
+            
+        try:
+            sh = client.open(sheet_title)
+        except Exception:
+            sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
+
+        worksheet = sh.worksheet("Portfolio_History")
+        
+        # ประทับเวลาปัจจุบัน ฟอร์แมตเป๊ะตามที่สั่ง
+        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        
+        # เรียง Data ให้ตรงคอลัมน์ [Timestamp, Invested, MarketValue, PnL, PnLPct]
+        row_to_append = [
+            now_str, 
+            round(invested, 2), 
+            round(market_value, 2), 
+            round(pnl, 2), 
+            f"{round(pnl_pct, 2)}%"
+        ]
+        
+        worksheet.append_row(row_to_append)
+        return True
+    except Exception as e:
+        st.error(f"เกิดข้อผิดพลาดในการ Sync ข้อมูล: {e}")
+        return False
+
 # ==========================================
 # 3. DASHBOARD MAIN RENDER FUNCTION
 # ==========================================
@@ -320,22 +357,13 @@ def render_dashboard():
     full_track_html = f"""<div class="ticker-container"><div class="ticker-track">{ticker_cards_html}{ticker_cards_html}</div></div>"""
     st.markdown(full_track_html, unsafe_allow_html=True)
 
-    c_title, c_curr = st.columns([3, 1])
-    with c_title:
-        st.title("Executive Dashboard")
-    with c_curr:
-        currency_selected = st.radio("Display Currency", ("USD ($)", "THB (฿)"), horizontal=True, index=0)
-
-    usd_fx_rate = st.session_state.get("usd_thb_rate", 35.0)
-    is_usd = "USD" in currency_selected
-    symbol = "$" if is_usd else "฿"
-
     # 1. ดึงจาก Shared Session State ใน Portfolio
     df_shared = st.session_state.get("all_holdings_df", pd.DataFrame())
     
     # 2. ดึงข้อมูลประวัติจาก Portfolio_History
     df_history = load_history_from_gsheet()
 
+    # 3. คำนวณค่าปัจจุบัน
     if not df_shared.empty:
         tot_invested_usd = df_shared['Invested_USD'].sum()
         tot_market_usd = df_shared['Market_Value_USD'].sum()
@@ -352,6 +380,27 @@ def render_dashboard():
         tot_market_usd = 45778.22
         tot_pnl_usd = -2166.24
         tot_pnl_pct = -4.52
+
+    # สร้าง Header และปุ่ม Sync ข้อมูล
+    c_title, c_curr, c_sync = st.columns([2.2, 1.2, 0.6])
+    with c_title:
+        st.title("Executive Dashboard")
+    with c_curr:
+        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+        currency_selected = st.radio("Display Currency", ("USD ($)", "THB (฿)"), horizontal=True, index=0, label_visibility="collapsed")
+    with c_sync:
+        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
+        if st.button("🔄 Sync", type="primary", use_container_width=True):
+            if sync_portfolio_history(tot_invested_usd, tot_market_usd, tot_pnl_usd, tot_pnl_pct):
+                st.toast("✅ บันทึก Snapshot ล่าสุดลงชีตเรียบร้อย!", icon="🚀")
+                time.sleep(1.5) # หน่วงเวลาให้ Google Sheets เขียนเสร็จและให้คนเห็น Toast
+                st.rerun()
+            else:
+                st.error("⚠️ บันทึกไม่สำเร็จ ตรวจสอบการเชื่อมต่อ Google Sheets")
+
+    usd_fx_rate = st.session_state.get("usd_thb_rate", 35.0)
+    is_usd = "USD" in currency_selected
+    symbol = "$" if is_usd else "฿"
 
     display_market = tot_market_usd if is_usd else (tot_market_usd * usd_fx_rate)
     display_pnl = tot_pnl_usd if is_usd else (tot_pnl_usd * usd_fx_rate)
@@ -401,7 +450,6 @@ def render_dashboard():
         st.markdown(card_html, unsafe_allow_html=True)
 
     with col_right:
-        # Default เริ่มต้นเป็น MAX เสมอตามที่คุณต้องการ
         if "selected_tf" not in st.session_state:
             st.session_state["selected_tf"] = "MAX"
 
