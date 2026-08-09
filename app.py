@@ -258,35 +258,32 @@ def clean_num(val):
     try: return float(val_str)
     except: return 0.0
 
-@st.cache_data(ttl=1)
-def fetch_portfolio_history_clean_realtime():
-    """ดึงข้อมูลประวัติจาก Portfolio_History แบบ Real-time ไม่ค้าง Caching"""
+@st.cache_data(ttl=5)
+def load_history_from_gsheet():
+    """ดึงข้อมูลประวัติจาก Portfolio_History ด้วย Index (ป้องกันบั๊ก 0.00 จากชื่อคอลัมน์ไม่ตรง)"""
     client = get_gspread_client()
     if not client:
-        return pd.DataFrame()
+        return None
     try:
         sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
         if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
             sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
             
-        try: sh = client.open(sheet_title)
-        except: sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
+        try:
+            sh = client.open(sheet_title)
+        except Exception:
+            sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
 
-        ws = sh.worksheet("Portfolio_History")
-        data = ws.get_all_values()
+        worksheet = sh.worksheet("Portfolio_History")
+        data = worksheet.get_all_values()
         
         if len(data) > 1:
-            df = pd.DataFrame(data[1:], columns=data[0])
-            cols = [str(c).strip() for c in df.columns]
-            
-            time_c = next((c for c in cols if 'วัน' in c or 'date' in c.lower() or 'time' in c.lower() or 'timestamp' in c.lower()), cols[0])
-            mkt_c = next((c for c in cols if 'ปัจจุบัน' in c or 'market' in c.lower() or 'มูลค่า' in c), cols[2] if len(cols) > 2 else cols[0])
-            inv_c = next((c for c in cols if 'ตั้งต้น' in c or 'invested' in c.lower() or 'ต้นทุน' in c), cols[1] if len(cols) > 1 else cols[0])
-
+            df = pd.DataFrame(data[1:])
             df_res = pd.DataFrame()
-            df_res["Raw_Date"] = df[time_c].astype(str)
-            df_res["MarketValue"] = df[mkt_c].apply(clean_num)
-            df_res["Invested"] = df[inv_c].apply(clean_num)
+            # ใช้ Index: คอลัมน์ 0=วันที่, 1=เงินลงทุน, 2=มูลค่าปัจจุบัน
+            df_res["Raw_Date"] = df.iloc[:, 0].astype(str)
+            df_res["Invested"] = df.iloc[:, 1].apply(clean_num)
+            df_res["MarketValue"] = df.iloc[:, 2].apply(clean_num)
             
             df_res = df_res[df_res["MarketValue"] > 0].reset_index(drop=True)
             df_res["Parsed_Date"] = pd.to_datetime(df_res["Raw_Date"], errors='coerce')
@@ -294,13 +291,13 @@ def fetch_portfolio_history_clean_realtime():
             
             df_res["Date_Str"] = df_res["Parsed_Date"].dt.strftime("%Y-%m-%d")
             
-            # ยุบข้อมูลซ้ำในวันเดียวกัน เอาเฉพาะ Snapshot ล่าสุด
+            # ยุบแถววันเดียวกันให้เหลือเฉพาะ Snapshot ล่าสุด
             df_res = df_res.groupby("Date_Str", as_index=False).last()
-            df_res = df_res.sort_values("Date_Str").reset_index(drop=True)
+            df_res = df_res.sort_values("Parsed_Date").reset_index(drop=True)
             return df_res
     except Exception:
         pass
-    return pd.DataFrame()
+    return None
 
 # ==========================================
 # 3. DASHBOARD MAIN RENDER FUNCTION
@@ -330,28 +327,28 @@ def render_dashboard():
     is_usd = "USD" in currency_selected
     symbol = "$" if is_usd else "฿"
 
-    # 1. ดึงพอร์ตปัจจุบันสด
+    # 1. ดึงจาก Shared Session State ใน Portfolio
     df_shared = st.session_state.get("all_holdings_df", pd.DataFrame())
     
-    # 2. ดึงประวัติย้อนหลังจาก Portfolio_History แบบ Real-time สดๆ
-    df_history = fetch_portfolio_history_clean_realtime()
+    # 2. ดึงข้อมูลประวัติจาก Portfolio_History ด้วย Index
+    df_history = load_history_from_gsheet()
 
     if not df_shared.empty:
         tot_invested_usd = df_shared['Invested_USD'].sum()
         tot_market_usd = df_shared['Market_Value_USD'].sum()
         tot_pnl_usd = tot_market_usd - tot_invested_usd
         tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
-    elif not df_history.empty:
+    elif df_history is not None and not df_history.empty:
         latest_row = df_history.iloc[-1]
         tot_invested_usd = latest_row["Invested"]
         tot_market_usd = latest_row["MarketValue"]
         tot_pnl_usd = tot_market_usd - tot_invested_usd
         tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
     else:
-        tot_invested_usd = 47944.46
-        tot_market_usd = 45778.22
-        tot_pnl_usd = -2166.24
-        tot_pnl_pct = -4.52
+        tot_invested_usd = 0.0
+        tot_market_usd = 0.0
+        tot_pnl_usd = 0.0
+        tot_pnl_pct = 0.0
 
     display_market = tot_market_usd if is_usd else (tot_market_usd * usd_fx_rate)
     display_pnl = tot_pnl_usd if is_usd else (tot_pnl_usd * usd_fx_rate)
@@ -404,100 +401,102 @@ def render_dashboard():
         if "selected_tf" not in st.session_state:
             st.session_state["selected_tf"] = "MAX"
 
-        col_tf_btns, col_refresh = st.columns([5, 1])
-        with col_tf_btns:
-            tf_options = ["1D", "7D", "1M", "6M", "1Y", "MAX"]
-            tf_cols = st.columns(len(tf_options))
-            
-            for idx, option in enumerate(tf_options):
-                btn_type = "primary" if st.session_state["selected_tf"] == option else "secondary"
-                if tf_cols[idx].button(option, key=f"tf_btn_{option}", use_container_width=True, type=btn_type):
-                    st.session_state["selected_tf"] = option
-                    st.rerun()
-
-        with col_refresh:
-            if st.button("🔄", help="รีเฟรชข้อมูลจาก Sheet ทันที"):
-                st.cache_data.clear()
+        # แสดงปุ่มกดเลือกช่วงเวลา (Pills/Buttons) แบบเก่าที่บอสต้องการ
+        tf_options = ["1D", "7D", "1M", "6M", "1Y", "MAX"]
+        tf_cols = st.columns(len(tf_options))
+        
+        for idx, option in enumerate(tf_options):
+            btn_type = "primary" if st.session_state["selected_tf"] == option else "secondary"
+            if tf_cols[idx].button(option, key=f"tf_btn_{option}", use_container_width=True, type=btn_type):
+                st.session_state["selected_tf"] = option
                 st.rerun()
 
         selected_tf = st.session_state["selected_tf"]
 
         # ==========================================
-        # DYNAMIC HISTORICAL SLICING ENGINE (NEW)
+        # NEW CHART LOGIC: ALWAYS-MAX + HIGHLIGHT MARKER
         # ==========================================
-        if not df_history.empty:
+        if df_history is not None and not df_history.empty:
+            x_axis = df_history["Date_Str"].tolist()
+            y_axis = (df_history["MarketValue"] if is_usd else (df_history["MarketValue"] * usd_fx_rate)).tolist()
             max_dt = df_history["Parsed_Date"].max()
-            
-            if selected_tf == "1D":
-                # 1D: ดึงเฉพาะ 2 จุดล่าสุดเสมอ เพื่อดู Delta เคลื่อนไหว
-                filtered_df = df_history.tail(2).copy()
-            elif selected_tf == "7D":
-                start_dt = max_dt - timedelta(days=7)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
-                if len(filtered_df) < 2:
-                    filtered_df = df_history.tail(3).copy()
-            elif selected_tf == "1M":
-                start_dt = max_dt - timedelta(days=30)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
-                if len(filtered_df) < 2:
-                    filtered_df = df_history.tail(5).copy()
-            elif selected_tf == "6M":
-                start_dt = max_dt - timedelta(days=180)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
-            elif selected_tf == "1Y":
-                start_dt = max_dt - timedelta(days=365)
-                filtered_df = df_history[df_history["Parsed_Date"] >= start_dt].copy()
-            else:  # MAX
-                filtered_df = df_history.copy()
 
-            if filtered_df.empty:
-                filtered_df = df_history.copy()
+            # หาตำแหน่งวันที่เริ่มต้น (Start Date) ของ Timeframe ที่เลือก
+            if selected_tf == "1D": start_dt = max_dt - timedelta(days=1)
+            elif selected_tf == "7D": start_dt = max_dt - timedelta(days=7)
+            elif selected_tf == "1M": start_dt = max_dt - timedelta(days=30)
+            elif selected_tf == "6M": start_dt = max_dt - timedelta(days=180)
+            elif selected_tf == "1Y": start_dt = max_dt - timedelta(days=365)
+            else: start_dt = df_history["Parsed_Date"].min()
 
-            x_axis = filtered_df["Date_Str"].tolist()
-            y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
+            # หาจุดของแถว (Row) เพื่อปักหมุด
+            if selected_tf == "MAX":
+                base_row = df_history.iloc[0]
+            else:
+                past_df = df_history[df_history["Parsed_Date"] >= start_dt]
+                base_row = past_df.iloc[0] if not past_df.empty else df_history.iloc[0]
+
+            marker_date = base_row["Date_Str"]
+            marker_val = base_row["MarketValue"] if is_usd else (base_row["MarketValue"] * usd_fx_rate)
+
         else:
-            # Fallback Dynamic ล่าสุดตาม Session พอร์ต
-            x_axis = ['Latest']
+            # Fallback หากไม่มีข้อมูลใน Sheet
+            x_axis = [datetime.now().strftime("%Y-%m-%d")]
             y_axis = [display_market]
+            marker_date = x_axis[0]
+            marker_val = y_axis[0]
 
-        # คำนวณ Auto-Zoom แกน Y เพื่อให้เห็นความผันผวนพริ้วสวยงาม
+        # วาดกราฟ Plotly
+        fig = go.Figure()
+        
+        # 1. ลากเส้นกราฟเต็มจอ (MAX เสมอ)
+        fig.add_trace(go.Scatter(
+            x=x_axis, y=y_axis, mode='lines',
+            line=dict(color='#38bdf8', width=3, shape='spline'),
+            fill='tozeroy', fillcolor='rgba(56, 189, 248, 0.05)',
+            hovertemplate="<b>วันที่: %{x}</b><br>มูลค่า: %{y:$,.2f}<extra></extra>" if is_usd else "<b>วันที่: %{x}</b><br>มูลค่า: ฿%{y:,.2f}<extra></extra>"
+        ))
+        
+        # 2. ปักหมุด Marker ณ จุดเริ่มต้น Timeframe
+        if df_history is not None and not df_history.empty:
+            curr_sym = "$" if is_usd else "฿"
+            fig.add_trace(go.Scatter(
+                x=[marker_date], y=[marker_val], mode='markers+text',
+                marker=dict(color='#f43f5e', size=12, symbol='circle', line=dict(color='#ffffff', width=2)),
+                text=[f"ย้อนหลัง {selected_tf}<br>{curr_sym}{marker_val:,.2f}"],
+                textposition="top center",
+                textfont=dict(color='#f87171', size=12, weight='bold'),
+                hoverinfo='skip'
+            ))
+
+        # ปรับ Y-Axis Auto-Zoom ให้พอดีกับคลื่นกราฟ
         min_y = min(y_axis) if y_axis else 0
         max_y = max(y_axis) if y_axis else 100
         padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
         y_range = [max(0, min_y - padding), max_y + padding]
 
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=x_axis, 
-            y=y_axis, 
-            mode='lines+markers', 
-            line=dict(color='#38bdf8', width=3, shape='spline'), 
-            marker=dict(size=8, color='#38bdf8'),
-            fill='tozeroy', 
-            fillcolor='rgba(56, 189, 248, 0.05)',
-            hovertemplate="<b>วันที่: %{x}</b><br>มูลค่าพอร์ต: %{y:$,.2f}<extra></extra>"
-        ))
         fig.update_layout(
             paper_bgcolor='rgba(0,0,0,0)', 
             plot_bgcolor='rgba(0,0,0,0)', 
             font=dict(color='#6b7280', family='Plus Jakarta Sans'), 
             xaxis=dict(showgrid=False, zeroline=False, type='category'), 
             yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False, range=y_range, autorange=False), 
-            margin=dict(t=15, b=10, l=10, r=10), 
-            height=260
+            margin=dict(t=35, b=10, l=10, r=10), 
+            height=260,
+            showlegend=False
         )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"dash_v3_chart_{selected_tf}_{currency_selected}_{len(x_axis)}")
+        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False}, key=f"always_max_chart_{selected_tf}_{currency_selected}")
 
     # คำนวณ Broker Allocation จาก Shared DataFrame สด
     if not df_shared.empty:
         df_b_sum = df_shared.groupby("Broker")["Market_Value_USD"].sum().to_dict()
-        val_dime_us = df_b_sum.get("Dime US", 32412.11) * (1.0 if is_usd else usd_fx_rate)
-        val_webull = df_b_sum.get("Webull", 9131.88) * (1.0 if is_usd else usd_fx_rate)
-        val_dime_th = df_b_sum.get("Dime TH", 4234.23) * (1.0 if is_usd else usd_fx_rate)
+        val_dime_us = df_b_sum.get("Dime US", 0.0) * (1.0 if is_usd else usd_fx_rate)
+        val_webull = df_b_sum.get("Webull", 0.0) * (1.0 if is_usd else usd_fx_rate)
+        val_dime_th = df_b_sum.get("Dime TH", 0.0) * (1.0 if is_usd else usd_fx_rate)
     else:
-        val_dime_us = 32412.11 * (1.0 if is_usd else usd_fx_rate)
-        val_webull = 9131.88 * (1.0 if is_usd else usd_fx_rate)
-        val_dime_th = 4234.23 * (1.0 if is_usd else usd_fx_rate)
+        val_dime_us = 0.0
+        val_webull = 0.0
+        val_dime_th = 0.0
 
     c_btm_left, c_btm_right = st.columns([1.1, 1.9])
     with c_btm_left:
@@ -522,9 +521,9 @@ def render_dashboard():
     with c_btm_right:
         st.markdown('<div style="font-size: 0.85rem; font-weight: 600; color: #9ca3af; margin-bottom: 10px;">Top Holdings Performance</div>', unsafe_allow_html=True)
         g1, g2, g3 = st.columns(3)
-        with g1: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 Dime US</span><span class="badge-delta-pos">+11.37%</span></div><div class="stock-price">$32,412.11</div></div>', unsafe_allow_html=True)
-        with g2: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 Webull US</span><span class="badge-delta-neg">-34.48%</span></div><div class="stock-price">$9,131.88</div></div>', unsafe_allow_html=True)
-        with g3: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 Dime TH</span><span class="badge-delta-neg">-13.67%</span></div><div class="stock-price">$4,234.23</div></div>', unsafe_allow_html=True)
+        with g1: st.markdown(f'<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 Dime US</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">{symbol}{val_dime_us:,.2f}</div></div>', unsafe_allow_html=True)
+        with g2: st.markdown(f'<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔵 Webull US</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">{symbol}{val_webull:,.2f}</div></div>', unsafe_allow_html=True)
+        with g3: st.markdown(f'<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 Dime TH</span></div><div style="font-family:JetBrains Mono; font-size:1.1rem; font-weight:700; color:#fff; margin-top:6px;">{symbol}{val_dime_th:,.2f}</div></div>', unsafe_allow_html=True)
 
 def load_page_module(file_name):
     possible_paths = [f"pages/{file_name}.py", f"pages/{file_name}"]
