@@ -119,32 +119,39 @@ def get_gspread_client():
     except Exception:
         return None
 
-def normalize_sheet_values(data, expected_cols=7):
-    """ปรับขนาดความกว้างของทุกแถวให้เท่ากันเพื่อป้องกัน ValueError ใน Pandas"""
-    if not data:
-        return []
-    normalized = []
-    for row in data:
-        new_row = list(row)
-        if len(new_row) < expected_cols:
-            new_row.extend([""] * (expected_cols - len(new_row)))
-        elif len(new_row) > expected_cols:
-            new_row = new_row[:expected_cols]
-        normalized.append(new_row)
-    return normalized
-
-def load_sheet_to_df_safe(worksheet, expected_cols=7):
-    """อ่าน Worksheet และทำ Normalize แถว ป้องกัน ValueError"""
+def load_sheet_to_df_safe(worksheet):
+    """อ่าน Worksheet อย่างปลอดภัย ปรับให้อ่านโครงสร้างตารางได้อัจฉริยะขึ้น"""
     try:
         data = worksheet.get_all_values()
-        if len(data) > 1:
-            norm_data = normalize_sheet_values(data, expected_cols=expected_cols)
-            df = pd.DataFrame(norm_data[1:], columns=norm_data[0])
-            df.columns = [str(c).strip() for c in df.columns]
-            return df
+        if not data: return pd.DataFrame()
+        
+        # ค้นหาแถวที่เป็น Header จริงๆ (แถวที่มีคอลัมน์เกิน 2 คอลัมน์)
+        header_idx = 0
+        for i, row in enumerate(data[:5]):
+            if sum(1 for cell in row if str(cell).strip()) >= 2:
+                header_idx = i
+                break
+                
+        headers = [str(h).strip() for h in data[header_idx]]
+        
+        # แก้ปัญหาชื่อคอลัมน์ซ้ำหรือว่าง
+        seen = set()
+        new_headers = []
+        for h in headers:
+            if not h: h = "Unnamed"
+            new_h = h
+            count = 1
+            while new_h in seen:
+                new_h = f"{h}_{count}"
+                count += 1
+            seen.add(new_h)
+            new_headers.append(new_h)
+            
+        df = pd.DataFrame(data[header_idx+1:], columns=new_headers)
+        df = df.dropna(how='all') # ลบแถวที่ว่างเปล่าออกทั้งหมด
+        return df
     except Exception:
-        pass
-    return pd.DataFrame()
+        return pd.DataFrame()
 
 @st.cache_data(ttl=60)
 def load_all_history_sheets():
@@ -165,13 +172,13 @@ def load_all_history_sheets():
         try: sh = gc.open(sheet_title)
         except: sh = gc.open_by_key(sheet_title) if len(sheet_title) > 20 else gc.open_by_url(sheet_title)
 
-        try: df_webull_orders = load_sheet_to_df_safe(sh.worksheet("Webull_Order_History"), expected_cols=7)
+        try: df_webull_orders = load_sheet_to_df_safe(sh.worksheet("Webull_Order_History"))
         except: pass
-        try: df_dime_closed = load_sheet_to_df_safe(sh.worksheet("Dime_Closed_Orders"), expected_cols=7)
+        try: df_dime_closed = load_sheet_to_df_safe(sh.worksheet("Dime_Closed_Orders"))
         except: pass
-        try: df_dime_us_port = load_sheet_to_df_safe(sh.worksheet("Dime_Portfolio"), expected_cols=4)
+        try: df_dime_us_port = load_sheet_to_df_safe(sh.worksheet("Dime_Portfolio"))
         except: pass
-        try: df_dime_th_port = load_sheet_to_df_safe(sh.worksheet("Dime_TH_Portfolio"), expected_cols=4)
+        try: df_dime_th_port = load_sheet_to_df_safe(sh.worksheet("Dime_TH_Portfolio"))
         except: pass
     except Exception:
         pass
