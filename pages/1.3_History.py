@@ -1,16 +1,9 @@
 import os
 import json
 import base64
-import urllib.parse
-import http.client
-import uuid
-import hmac
-import hashlib
-import time
 import streamlit as st
 import pandas as pd
 import gspread
-from datetime import datetime, timezone
 
 # ==========================================
 # 1. PAGE CONFIG & MODERN DARK CSS
@@ -114,7 +107,7 @@ def color_pnl(val):
     return ''
 
 # ==========================================
-# 2. WEBULL API & GOOGLE SHEETS PIPELINE
+# 2. GOOGLE SHEETS PIPELINE (MANUAL SYNC FOCUS)
 # ==========================================
 def get_gspread_client():
     try:
@@ -139,205 +132,6 @@ def normalize_sheet_values(data, expected_cols=7):
             new_row = new_row[:expected_cols]
         normalized.append(new_row)
     return normalized
-
-def sync_webull_to_gsheet():
-    gc = get_gspread_client()
-    if not gc:
-        return False, "❌ ไม่สามารถเชื่อมต่อ Google Sheets API"
-
-    try:
-        sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
-        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-            sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
-            
-        try:
-            sh = gc.open(sheet_title)
-        except Exception:
-            sh = gc.open_by_key(sheet_title) if len(sheet_title) > 20 else gc.open_by_url(sheet_title)
-
-        try:
-            worksheet = sh.worksheet("Webull_Order_History")
-        except Exception:
-            worksheet = sh.add_worksheet(title="Webull_Order_History", rows="1000", cols="10")
-            worksheet.append_row(["Order ID", "Time", "Sym", "Side", "Qty", "Pr", "สถานะหุ้น"])
-    except Exception as e:
-        return False, f"❌ ไม่สามารถเปิด Google Sheet ได้: {str(e)}"
-
-    try:
-        raw_vals = worksheet.get_all_values()
-        if len(raw_vals) > 0:
-            norm_vals = normalize_sheet_values(raw_vals, expected_cols=7)
-            df_existing = pd.DataFrame(norm_vals[1:], columns=norm_vals[0]) if len(norm_vals) > 1 else pd.DataFrame()
-        else:
-            df_existing = pd.DataFrame()
-    except Exception:
-        df_existing = pd.DataFrame()
-
-    if df_existing.empty:
-        worksheet.clear()
-        worksheet.append_row(["Order ID", "Time", "Sym", "Side", "Qty", "Pr", "สถานะหุ้น"])
-
-    existing_ids = set()
-    existing_combos = set()
-    symbol_positions = {}
-
-    if not df_existing.empty:
-        cols = [str(c).strip() for c in df_existing.columns]
-        sym_col = next((c for c in cols if 'sym' in c.lower() or 'ticker' in c.lower() or 'หุ้น' in c), cols[2] if len(cols) > 2 else 'Sym')
-        side_col = next((c for c in cols if 'side' in c.lower() or 'ฝั่ง' in c), cols[3] if len(cols) > 3 else 'Side')
-        qty_col = next((c for c in cols if 'qty' in c.lower() or 'volume' in c.lower() or 'จำนวน' in c), cols[4] if len(cols) > 4 else 'Qty')
-        
-        for _, row in df_existing.iterrows():
-            oid = str(row.get("Order ID", "")).strip()
-            if oid:
-                existing_ids.add(oid)
-            combo = f"{str(row.get('Time',''))}_{str(row.get(sym_col,''))}_{str(row.get(side_col,''))}_{str(row.get(qty_col,''))}_{str(row.get('Pr', row.get('Price','')))}"
-            existing_combos.add(combo)
-            
-            s_name = str(row.get(sym_col, "")).strip().upper()
-            s_side = str(row.get(side_col, "BUY")).strip().upper()
-            try: s_qty = float(str(row.get(qty_col, 0)).replace(",", "").replace("$", ""))
-            except: s_qty = 0.0
-            
-            if s_name:
-                if "SELL" in s_side or "ขาย" in s_side:
-                    symbol_positions[s_name] = symbol_positions.get(s_name, 0.0) - s_qty
-                else:
-                    symbol_positions[s_name] = symbol_positions.get(s_name, 0.0) + s_qty
-
-    webull_config = st.secrets.get("Webull", {})
-    APP_KEY = webull_config.get("AppKey", "").strip() or webull_config.get("app_key", "").strip()
-    APP_SECRET = webull_config.get("AppSecret", "").strip() or webull_config.get("app_secret", "").strip()
-    ACCOUNT_ID = webull_config.get("AccountId", "").strip() or webull_config.get("account_id", "").strip()
-    HOST = "api.webull.co.th"
-
-    if not APP_KEY or not APP_SECRET or not ACCOUNT_ID:
-        return False, "❌ ไม่พบข้อมูล Webull API Key ใน Secrets"
-
-    try:
-        path = "/openapi/trade/orders"
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-        nonce = uuid.uuid4().hex
-        
-        # ถอดพารามิเตอร์เจ้าปัญหาออกเพื่อป้องกัน Signature Mismatch
-        signing_values = {
-            "host": HOST,
-            "x-app-key": APP_KEY,
-            "x-signature-algorithm": "HMAC-SHA1",
-            "x-signature-nonce": nonce,
-            "x-signature-version": "1.0",
-            "x-timestamp": timestamp,
-            "account_id": ACCOUNT_ID
-        }
-        string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
-        signature = base64.b64encode(
-            hmac.new(
-                f"{APP_SECRET}&".encode("utf-8"),
-                urllib.parse.quote(f"{path}&{string_1}", safe="").encode("utf-8"),
-                hashlib.sha1
-            ).digest()
-        ).decode("utf-8")
-
-        headers = {
-            "Accept": "application/json",
-            "x-app-key": APP_KEY,
-            "x-timestamp": timestamp,
-            "x-signature-version": "1.0",
-            "x-signature-algorithm": "HMAC-SHA1",
-            "x-signature-nonce": nonce,
-            "x-version": "v2",
-            "x-signature": signature,
-            "x-access-token": webull_config.get("AccessToken", "").strip()
-        }
-
-        # ยิง Request แบบ Basic ที่สุดเพื่อความเสถียร 100%
-        query_string = f"account_id={ACCOUNT_ID}"
-        conn = http.client.HTTPSConnection(HOST)
-        conn.request("GET", f"{path}?{query_string}", "", headers)
-        res = conn.getresponse()
-        data = res.read()
-        conn.close()
-        
-        # ถอดรหัสข้อความจาก API เพื่อดักจับ Error
-        raw_json_str = data.decode("utf-8")
-        orders_response = json.loads(raw_json_str)
-
-        # 🚨 เช็คด่านแรก: API ปฏิเสธการเข้าถึงหรือไม่?
-        if isinstance(orders_response, dict):
-            api_code = str(orders_response.get("code", ""))
-            # ถ้าโค้ดไม่ใช่รหัสแห่งความสำเร็จ (200 หรือ 0) ให้เตะออกและโชว์ Error ดิบๆ
-            if api_code and api_code not in ["200", "0", "20000", "00000"]:
-                error_msg = orders_response.get('msg', 'Unknown Error')
-                return False, f"⚠️ Webull API Reject! [Code: {api_code}] {error_msg}"
-
-        # 🚨 เช็คด่านสอง: แกะกล่องข้อมูล
-        orders = []
-        if isinstance(orders_response, dict):
-            if "data" in orders_response:
-                data_node = orders_response["data"]
-                if isinstance(data_node, list):
-                    orders = data_node
-                elif isinstance(data_node, dict) and "items" in data_node:
-                    orders = data_node["items"]
-            elif "items" in orders_response:
-                orders = orders_response["items"]
-        elif isinstance(orders_response, list):
-            orders = orders_response
-            
-        # ถ้าไม่มีออเดอร์กลับมาเลย ให้โชว์ Raw Data ให้ผู้ใช้เห็น
-        if not orders:
-            return True, f"ℹ️ เชื่อมต่อ Webull สำเร็จ แต่ API ไม่ส่งข้อมูลกลับมาเลย\nRaw Data: {raw_json_str[:200]}..."
-
-    except Exception as e:
-        return False, f"⚠️ ยิง Webull API ไม่สำเร็จ: {str(e)}"
-
-    new_rows = []
-    for order in orders:
-        # กรองข้อมูล: สนใจเฉพาะ Order ที่สำเร็จแล้วเท่านั้น (FILLED หรือ PARTIALLY FILLED)
-        status = str(order.get("status", "")).upper()
-        if status and status not in ["FILLED", "PARTIAL_FILLED", "PARTIALLYFILLED"]:
-            continue
-            
-        # กรองข้อมูล: จำนวนหุ้นที่จับคู่สำเร็จต้องมากกว่า 0
-        qty = float(order.get("filled_quantity", order.get("filledQuantity", order.get("quantity", 0))))
-        if qty <= 0:
-            continue
-
-        order_id = str(order.get("order_id", order.get("orderId", "")))
-        if not order_id: 
-            continue # ออเดอร์ของจริงต้องมี ID จากระบบเสมอ
-            
-        symbol = str(order.get("symbol", "")).upper()
-        
-        action = str(order.get("action", order.get("side", ""))).upper()
-        side_formatted = "BUY" if "BUY" in action else ("SELL" if "SELL" in action else action)
-        if side_formatted not in ["BUY", "SELL"]:
-            continue
-            
-        price = float(order.get("avg_filled_price", order.get("avgFilledPrice", order.get("price", 0))))
-        order_time = order.get("create_time", order.get("update_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
-
-        full_order_id = f"{order_id}_{symbol}_{side_formatted}"
-        combo_check = f"{order_time}_{symbol}_{side_formatted}_{qty}_{price}"
-
-        if full_order_id not in existing_ids and combo_check not in existing_combos:
-            current_net_qty = symbol_positions.get(symbol, 0.0)
-            if "SELL" in side_formatted:
-                current_net_qty -= qty
-            else:
-                current_net_qty += qty
-            
-            status_flag = "O" if current_net_qty > 0.0001 else "C"
-            new_rows.append([full_order_id, order_time, symbol, side_formatted, qty, price, status_flag])
-
-    if new_rows:
-        try:
-            worksheet.append_rows(new_rows, value_input_option='USER_ENTERED')
-            return True, f"✅ Auto Sync สำเร็จ! เพิ่มรายการใหม่ลง Google Sheet {len(new_rows)} รายการ"
-        except Exception as e:
-            return False, f"❌ เกิดข้อผิดพลาดขณะเขียนข้อมูลลง Sheet: {str(e)}"
-    else:
-        return True, "ℹ️ ข้อมูลล่าสุดตรงกันแล้ว หรือ API ไม่มีรายการใหม่ (0 รายการ)"
 
 def load_sheet_to_df_safe(worksheet, expected_cols=7):
     """อ่าน Worksheet และทำ Normalize แถว ป้องกัน ValueError"""
@@ -387,26 +181,17 @@ def load_all_history_sheets():
 df_webull, df_dime_closed, df_dime_us, df_dime_th = load_all_history_sheets()
 
 # ==========================================
-# 3. EXPANDER & CONTROL BUTTONS
+# 3. EXPANDER & CONTROL BUTTONS (MANUAL REFRESH)
 # ==========================================
-with st.expander("🔄 แผงควบคุม Auto Sync ข้อมูลจาก Webull API", expanded=False):
+with st.expander("🔄 แผงควบคุมโหลดข้อมูลใหม่จาก Google Sheets", expanded=False):
     col_sync1, col_sync2 = st.columns([3, 1])
     with col_sync1:
-        st.write("กดปุ่มเพื่อดึงออเดอร์ล่าสุดจาก Webull API บันทึกเติมลง Google Sheet พร้อมปั๊มสถานะ O=มีอยู่ / C=หมดแล้ว อัตโนมัติ")
+        st.write("💡 **ระบบเปลี่ยนเป็นการใช้ข้อมูลจากชีต (Manual Sync):** หลังจากที่คุณนำประวัติคำสั่งซื้อ/ขาย ไปวางใน Google Sheets เรียบร้อยแล้ว ให้กดปุ่มด้านขวาเพื่อโหลดข้อมูลเข้าสู่ระบบใหม่")
     with col_sync2:
-        if st.button("🚀 กด Sync ตอนนี้", type="primary", use_container_width=True):
-            with st.spinner("⏳ กำลัง Sync ออเดอร์..."):
-                success, msg = sync_webull_to_gsheet()
-                if success:
-                    if "✅" in msg:
-                        st.success(msg)
-                        time.sleep(1.5)
-                        st.cache_data.clear()
-                        st.rerun()
-                    else:
-                        st.info(msg) # โชว์ข้อความค้างไว้ ไม่สั่ง rerun เพื่อให้อ่าน Raw Message ได้
-                else:
-                    st.error(msg) # โชว์ Error ค้างไว้ให้ถ่ายรูป
+        if st.button("🔄 รีเฟรชข้อมูลล่าสุด", type="primary", use_container_width=True):
+            st.cache_data.clear()
+            st.toast("✅ โหลดข้อมูลจาก Google Sheets สำเร็จ!", icon="🚀")
+            st.rerun()
 
 st.markdown("<br>", unsafe_allow_html=True)
 
