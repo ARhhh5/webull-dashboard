@@ -265,10 +265,16 @@ def sync_webull_to_gsheet():
     for order in orders:
         order_id = str(order.get("order_id", order.get("orderId", uuid.uuid4().hex[:8])))
         symbol = str(order.get("symbol", "")).upper()
+        
+        # O-Lieng Fix: Fallback for empty side from positions endpoint
         action = str(order.get("action", order.get("side", ""))).upper()
+        qty = float(order.get("quantity", order.get("filledQuantity", 0)))
+        
+        if not action:
+            action = "BUY" if qty >= 0 else "SELL"
+            
         side_formatted = "BUY" if "BUY" in action else ("SELL" if "SELL" in action else action)
         
-        qty = float(order.get("quantity", order.get("filledQuantity", 0)))
         price = float(order.get("cost_price", order.get("avgFilledPrice", 0)))
         order_time = order.get("create_time", datetime.now().strftime("%Y-%m-%d"))
 
@@ -287,12 +293,12 @@ def sync_webull_to_gsheet():
                 new_rows.append([full_order_id, order_time, symbol, side_formatted, qty, price, status_flag])
 
     if new_rows:
-        for r in new_rows:
-            try:
-                worksheet.append_row(r)
-            except Exception:
-                pass
-        return True, f"✅ Auto Sync สำเร็จ! เพิ่มรายการใหม่ลง Google Sheet {len(new_rows)} รายการ"
+        try:
+            # O-Lieng Fix: Bulk insert to prevent diagonal shifting bug in Google Sheets API
+            worksheet.append_rows(new_rows, value_input_option='USER_ENTERED')
+            return True, f"✅ Auto Sync สำเร็จ! เพิ่มรายการใหม่ลง Google Sheet {len(new_rows)} รายการ"
+        except Exception as e:
+            return False, f"❌ เกิดข้อผิดพลาดขณะเขียนข้อมูลลง Sheet: {str(e)}"
     else:
         return True, "ℹ️ ข้อมูลล่าสุดตรงกันแล้ว ไม่มีรายการใหม่ต้องเพิ่ม"
 
