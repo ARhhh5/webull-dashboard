@@ -128,7 +128,7 @@ def get_gspread_client():
     return None
 
 def fetch_live_prices(symbols):
-    """ดึงราคาตลาดสด Real-time จาก yfinance โดยประมวลผลรายตัวแบบปลอดภัย"""
+    """ดึงราคาตลาดสด Real-time จาก yfinance"""
     price_map = {}
     if not symbols:
         return price_map
@@ -184,8 +184,57 @@ def clean_val(val):
     except:
         return 0.0
 
+def extract_dime_portfolio(sh, ws_name, broker_name):
+    """ตัวแยกวิเคราะห์ข้อมูลบัญชี Dime ที่ยืดหยุ่นต่อโครงสร้างคอลัมน์แบบสากล"""
+    records = []
+    try:
+        ws = sh.worksheet(ws_name)
+        data = ws.get_all_values()
+        if len(data) > 1:
+            # ค้นหาแถวที่เป็น Header จริงๆ (เผื่อผู้ใช้เว้นบรรทัดว่าง)
+            header_idx = 0
+            for i, row in enumerate(data[:5]):
+                if any("หุ้น" in str(cell) or "Ticker" in str(cell) or "Sym" in str(cell) for cell in row):
+                    header_idx = i
+                    break
+            
+            headers = [str(h).strip() for h in data[header_idx]]
+            df = pd.DataFrame(data[header_idx+1:], columns=headers)
+            
+            # สแกนหาคอลัมน์ที่ต้องการด้วย Keyword ที่ฉลาดขึ้น
+            sym_col = next((c for c in df.columns if "หุ้น" in c or "Ticker" in c or "Sym" in c), None)
+            qty_col = next((c for c in df.columns if "จำนวน" in c or "Volume" in c or "Qty" in c), None)
+            cost_col = next((c for c in df.columns if "ต้นทุน" in c or "Avg" in c or "Cost" in c), None)
+
+            if sym_col and qty_col and cost_col:
+                for sym, grp in df.groupby(sym_col):
+                    clean_sym = str(sym).strip().upper()
+                    if not clean_sym or clean_sym == 'NAN' or clean_sym == 'NONE':
+                        continue
+                    
+                    tot_qty = 0.0
+                    tot_cost_cash = 0.0
+                    
+                    for _, row in grp.iterrows():
+                        q = clean_val(row.get(qty_col, 0))
+                        c = clean_val(row.get(cost_col, 0))
+                        if q > 0:
+                            tot_qty += q
+                            tot_cost_cash += (q * c)
+
+                    if tot_qty > 0.0001:
+                        avg_cost = tot_cost_cash / tot_qty
+                        records.append({
+                            "Broker": broker_name,
+                            "Symbol": clean_sym,
+                            "Qty": tot_qty,
+                            "Cost": avg_cost
+                        })
+    except Exception:
+        pass
+    return records
+
 def load_master_holdings_from_sheets():
-    """ดึงข้อมูลพอร์ตทุกโบรกเกอร์ โดยคำนวณถัวเฉลี่ยน้ำหนักกรณีมีหลายบัญชี (Multiple Accounts Deduplication)"""
     gc = get_gspread_client()
     if not gc:
         return pd.DataFrame()
@@ -201,7 +250,7 @@ def load_master_holdings_from_sheets():
 
         raw_records = []
 
-        # 1. ดึงพอร์ต Webull จาก Webull_Order_History
+        # 1. ดึงพอร์ต Webull
         try:
             ws_w = sh.worksheet("Webull_Order_History")
             data_w = ws_w.get_all_values()
@@ -243,84 +292,19 @@ def load_master_holdings_from_sheets():
         except Exception:
             pass
 
-        # 2. ดึงพอร์ต Dime US จาก Dime_Portfolio (คำนวณถัวเฉลี่ยถ้านับรวมหลายบัญชี)
-        try:
-            ws_dus = sh.worksheet("Dime_Portfolio")
-            data_dus = ws_dus.get_all_values()
-            if len(data_dus) > 1:
-                df_dus = pd.DataFrame(data_dus[1:], columns=data_dus[0])
-                sym_col = next((c for c in df_dus.columns if "หุ้น" in c or "Ticker" in c or "Sym" in c), df_dus.columns[0])
-                qty_col = next((c for c in df_dus.columns if "จำนวน" in c or "Volume" in c or "Qty" in c), df_dus.columns[1])
-                cost_col = next((c for c in df_dus.columns if "ต้นทุน" in c or "Avg" in c or "Cost" in c), df_dus.columns[2])
-
-                for sym, grp in df_dus.groupby(sym_col):
-                    clean_sym = str(sym).strip().upper()
-                    if not clean_sym:
-                        continue
-                    
-                    tot_qty = 0.0
-                    tot_cost_cash = 0.0
-                    
-                    for _, row in grp.iterrows():
-                        q = clean_val(row.get(qty_col, 0))
-                        c = clean_val(row.get(cost_col, 0))
-                        if q > 0:
-                            tot_qty += q
-                            tot_cost_cash += (q * c)
-
-                    if tot_qty > 0.0001:
-                        avg_cost = tot_cost_cash / tot_qty
-                        raw_records.append({
-                            "Broker": "Dime US",
-                            "Symbol": clean_sym,
-                            "Qty": tot_qty,
-                            "Cost": avg_cost
-                        })
-        except Exception:
-            pass
-
-        # 3. ดึงพอร์ต Dime TH จาก Dime_TH_Portfolio (คำนวณถัวเฉลี่ยถ้านับรวมหลายบัญชี)
-        try:
-            ws_dth = sh.worksheet("Dime_TH_Portfolio")
-            data_dth = ws_dth.get_all_values()
-            if len(data_dth) > 1:
-                df_dth = pd.DataFrame(data_dth[1:], columns=data_dth[0])
-                sym_col = next((c for c in df_dth.columns if "หุ้น" in c or "Ticker" in c or "Sym" in c), df_dth.columns[0])
-                qty_col = next((c for c in df_dth.columns if "จำนวน" in c or "Volume" in c or "Qty" in c), df_dth.columns[1])
-                cost_col = next((c for c in df_dth.columns if "ต้นทุน" in c or "Avg" in c or "Cost" in c), df_dth.columns[2])
-
-                for sym, grp in df_dth.groupby(sym_col):
-                    clean_sym = str(sym).strip().upper()
-                    if not clean_sym:
-                        continue
-                    
-                    tot_qty = 0.0
-                    tot_cost_cash = 0.0
-                    
-                    for _, row in grp.iterrows():
-                        q = clean_val(row.get(qty_col, 0))
-                        c = clean_val(row.get(cost_col, 0))
-                        if q > 0:
-                            tot_qty += q
-                            tot_cost_cash += (q * c)
-
-                    if tot_qty > 0.0001:
-                        avg_cost = tot_cost_cash / tot_qty
-                        raw_records.append({
-                            "Broker": "Dime TH",
-                            "Symbol": clean_sym,
-                            "Qty": tot_qty,
-                            "Cost": avg_cost
-                        })
-        except Exception:
-            pass
+        # 2. ดึงพอร์ต Dime US & TH ผ่านฟังก์ชันแยกที่มีความยืดหยุ่นสูง
+        dime_us_records = extract_dime_portfolio(sh, "Dime_Portfolio", "Dime US")
+        raw_records.extend(dime_us_records)
+        
+        dime_th_records = extract_dime_portfolio(sh, "Dime_TH_Portfolio", "Dime TH")
+        raw_records.extend(dime_th_records)
 
         if not raw_records:
             return pd.DataFrame()
 
         df_holdings = pd.DataFrame(raw_records)
 
-        # 4. รวมรายการหุ้นเพื่อยิงดึงราคาตลาดสด yfinance
+        # 3. รวมรายการหุ้นเพื่อยิงดึงราคาตลาดสด yfinance
         us_symbols = df_holdings[df_holdings["Broker"].isin(["Webull", "Dime US"])]["Symbol"].unique().tolist()
         th_symbols = [f"{s}.BK" for s in df_holdings[df_holdings["Broker"] == "Dime TH"]["Symbol"].unique().tolist()]
         
@@ -329,7 +313,7 @@ def load_master_holdings_from_sheets():
 
         fx_rate = st.session_state.get("usd_thb_rate", 35.0)
 
-        # 5. คำนวณ Market Value / Unrealized PnL สด
+        # 4. คำนวณ Market Value / Unrealized PnL สด
         holdings_calculated = []
         for _, row in df_holdings.iterrows():
             broker = row["Broker"]
@@ -590,7 +574,6 @@ elif active_tab == "webull":
     st.subheader(f"🦅 พอร์ตการลงทุน Webull ({curr_text})")
     df_w = df_port[df_port["Broker"] == "Webull"] if not df_port.empty else pd.DataFrame()
     
-    # แสดงการ์ดสรุปยอดประจำแท็บ Webull
     render_tab_summary_metrics(df_w, "Webull US")
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -623,7 +606,6 @@ elif active_tab == "dime_us":
     st.subheader(f"💵 พอร์ตการลงทุน Dime US ({curr_text})")
     df_dus = df_port[df_port["Broker"] == "Dime US"] if not df_port.empty else pd.DataFrame()
     
-    # แสดงการ์ดสรุปยอดประจำแท็บ Dime US
     render_tab_summary_metrics(df_dus, "Dime US")
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -656,7 +638,6 @@ elif active_tab == "dime_th":
     st.subheader(f"🇹🇭 พอร์ตการลงทุน Dime TH (หุ้นไทย - {curr_text})")
     df_dth = df_port[df_port["Broker"] == "Dime TH"] if not df_port.empty else pd.DataFrame()
     
-    # แสดงการ์ดสรุปยอดประจำแท็บ Dime TH
     render_tab_summary_metrics(df_dth, "Dime TH")
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -695,7 +676,6 @@ elif active_tab == "consolidated":
     st.subheader(f"🧩 รวมหุ้นทุกตัวเฉพาะหุ้นสหรัฐฯ (US Consolidated Holdings - {curr_text})")
     df_us_only = df_port[df_port["Broker"].isin(["Webull", "Dime US"])] if not df_port.empty else pd.DataFrame()
     
-    # แสดงการ์ดสรุปยอดประจำแท็บ US Consolidated
     render_tab_summary_metrics(df_us_only, "US Consolidated")
     st.markdown("<br>", unsafe_allow_html=True)
 
