@@ -115,7 +115,7 @@ if "exec_action" not in st.session_state:
 
 # --- STEP 1: SELECT ACCOUNT ---
 st.markdown('<div class="section-label">1. เลือกบัญชีที่ต้องการทำรายการ</div>', unsafe_allow_html=True)
-col_acc1, col_acc2, col_acc_space = st.columns([1.5, 1.5, 3])
+col_acc1, col_acc2, col_acc3 = st.columns([1.5, 1.5, 1.5])
 
 with col_acc1:
     acc_th_type = "primary" if st.session_state["exec_account"] == "TH" else "secondary"
@@ -127,6 +127,12 @@ with col_acc2:
     acc_us_type = "primary" if st.session_state["exec_account"] == "US" else "secondary"
     if st.button("🇺🇸 หุ้นสหรัฐฯ (Dime US)", key="btn_acc_us", type=acc_us_type, use_container_width=True):
         st.session_state["exec_account"] = "US"
+        st.rerun()
+
+with col_acc3:
+    acc_wb_type = "primary" if st.session_state["exec_account"] == "WEBULL" else "secondary"
+    if st.button("🦅 หุ้นสหรัฐฯ (Webull US)", key="btn_acc_wb", type=acc_wb_type, use_container_width=True):
+        st.session_state["exec_account"] = "WEBULL"
         st.rerun()
 
 st.markdown("<br>", unsafe_allow_html=True)
@@ -156,8 +162,17 @@ with col_act3:
 # Active State Vars
 curr_acc = st.session_state["exec_account"]
 curr_act = st.session_state["exec_action"]
-target_sheet_name = "Dime_TH_Portfolio" if curr_acc == "TH" else "Dime_US_Portfolio"
-curr_symbol = "THB (฿)" if curr_acc == "TH" else "USD ($)"
+
+# Data Routing Logic
+if curr_acc == "TH":
+    target_sheet_name = "Dime_TH_Portfolio"
+    curr_symbol = "THB (฿)"
+elif curr_acc == "US":
+    target_sheet_name = "Dime_Portfolio"
+    curr_symbol = "USD ($)"
+else:
+    target_sheet_name = "Webull_Order_History"
+    curr_symbol = "USD ($)"
 
 st.markdown("---")
 
@@ -170,7 +185,7 @@ with st.form(key="trade_execution_form", clear_on_submit=True):
     
     # 🟢 BUY FORM
     if curr_act == "BUY":
-        st.markdown("### 🟢 บันทึกซื้อหุ้นเข้าพอร์ต")
+        st.markdown(f"### 🟢 บันทึกซื้อหุ้นเข้าพอร์ต ({'Webull' if curr_acc == 'WEBULL' else 'Dime'})")
         c1, c2 = st.columns(2)
         with c1:
             ticker = st.text_input("ชื่อหุ้น (Ticker Symbol):", placeholder="เช่น PTT, NVDA, AAPL").strip().upper()
@@ -191,13 +206,26 @@ with st.form(key="trade_execution_form", clear_on_submit=True):
                         sh = gc.open("หุ้นของเรา")
                         ws = sh.worksheet(target_sheet_name)
                         
-                        row_data = [
-                            trade_date.strftime("%d/%m/%Y"),
-                            ticker,
-                            cost_per_share,
-                            total_qty,
-                            cost_per_share * total_qty
-                        ]
+                        # แยก Format การบันทึกระหว่าง Webull กับ Dime
+                        if curr_acc == "WEBULL":
+                            order_id = f"MANUAL_BUY_{ticker}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                            row_data = [
+                                order_id,                                # Order ID
+                                trade_date.strftime("%Y-%m-%d"),         # Time
+                                ticker,                                  # Sym
+                                "BUY",                                   # Side
+                                total_qty,                               # Qty
+                                cost_per_share,                          # Pr
+                                "O"                                      # สถานะหุ้น
+                            ]
+                        else:
+                            row_data = [
+                                trade_date.strftime("%d/%m/%Y"),         # วันที่
+                                ticker,                                  # หุ้น
+                                cost_per_share,                          # ต้นทุน
+                                total_qty,                               # จำนวน
+                                cost_per_share * total_qty               # ต้นทุนรวม
+                            ]
                         
                         ws.append_row(row_data)
                         st.success(f"✅ บันทึกการซื้อ {ticker} จำนวน {total_qty:,.2f} หุ้น ลงใน `{target_sheet_name}` สำเร็จ!")
@@ -206,7 +234,7 @@ with st.form(key="trade_execution_form", clear_on_submit=True):
 
     # 🔴 SELL FORM
     elif curr_act == "SELL":
-        st.markdown("### 🔴 บันทึกตัดขายหุ้นออกจากพอร์ต")
+        st.markdown(f"### 🔴 บันทึกตัดขายหุ้นออกจากพอร์ต ({'Webull' if curr_acc == 'WEBULL' else 'Dime'})")
         c1, c2 = st.columns(2)
         with c1:
             ticker = st.text_input("ชื่อหุ้นที่ขาย (Ticker Symbol):", placeholder="เช่น PTT, NVDA").strip().upper()
@@ -227,13 +255,27 @@ with st.form(key="trade_execution_form", clear_on_submit=True):
                         sh = gc.open("หุ้นของเรา")
                         ws = sh.worksheet(target_sheet_name)
                         
-                        row_data = [
-                            trade_date.strftime("%d/%m/%Y"),
-                            f"SELL_{ticker}",
-                            sell_price,
-                            -abs(sell_qty),
-                            -(sell_price * sell_qty)
-                        ]
+                        # แยก Format การบันทึกระหว่าง Webull กับ Dime
+                        if curr_acc == "WEBULL":
+                            order_id = f"MANUAL_SELL_{ticker}_{datetime.now().strftime('%Y%m%d%H%M%S')}"
+                            row_data = [
+                                order_id,                                # Order ID
+                                trade_date.strftime("%Y-%m-%d"),         # Time
+                                ticker,                                  # Sym
+                                "SELL",                                  # Side
+                                sell_qty,                                # Qty
+                                sell_price,                              # Pr
+                                "O"                                      # สถานะหุ้น
+                            ]
+                        else:
+                            row_data = [
+                                trade_date.strftime("%d/%m/%Y"),
+                                f"SELL_{ticker}",
+                                sell_price,
+                                -abs(sell_qty),
+                                -(sell_price * sell_qty)
+                            ]
+                            
                         ws.append_row(row_data)
                         st.success(f"✅ บันทึกการขาย {ticker} จำนวน {sell_qty:,.2f} หุ้น สำเร็จ!")
                     except Exception as e:
@@ -246,8 +288,15 @@ with st.form(key="trade_execution_form", clear_on_submit=True):
         
         # รายชื่อโบรกเกอร์ให้เลือกได้อิสระ
         broker_options = ["WEBULL", "DIME", "INNOVESTX", "LIBERATOR", "K-X", "ระบุเอง (Custom)"]
-        default_broker_idx = 1 if curr_acc == "TH" else 0
         
+        # ตั้งค่า Default Broker ให้ตรงกับบัญชีที่เลือก
+        if curr_acc == "WEBULL":
+            default_broker_idx = 0
+        elif curr_acc == "TH" or curr_acc == "US":
+            default_broker_idx = 1
+        else:
+            default_broker_idx = 0
+            
         with c1:
             div_ticker = st.text_input("ชื่อหุ้นที่จ่ายปันผล (Ticker Symbol):", placeholder="เช่น QQQI, QLDY, PTT").strip().upper()
             div_amount = st.number_input(f"จำนวนเงินปันผลสุทธิที่ได้รับ ({curr_symbol}):", min_value=0.0, format="%.4f")
