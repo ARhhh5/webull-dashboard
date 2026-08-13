@@ -214,7 +214,9 @@ def sync_webull_to_gsheet():
         return False, "❌ ไม่พบข้อมูล Webull API Key ใน Secrets"
 
     try:
-        path = "/openapi/assets/positions"
+        # ⚠️ โอเลี้ยงแก้ไข: เปลี่ยนจาก /openapi/assets/positions เป็น /openapi/trade/orders
+        # เพื่อดึงข้อมูล "คำสั่งซื้อขายจริง" ไม่ใช่ดึงสถานะพอร์ตที่หลงเหลืออยู่
+        path = "/openapi/trade/orders"
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         nonce = uuid.uuid4().hex
         
@@ -254,7 +256,14 @@ def sync_webull_to_gsheet():
         data = res.read()
         conn.close()
 
-        orders = json.loads(data.decode("utf-8"))
+        orders_response = json.loads(data.decode("utf-8"))
+        
+        # จัดการกรณีที่ API ของ Webull เอา Array ไปซ่อนไว้ในคีย์ data หรือ items
+        if isinstance(orders_response, dict):
+            orders = orders_response.get("data", orders_response.get("items", []))
+        else:
+            orders = orders_response
+            
         if not isinstance(orders, list):
             orders = []
 
@@ -263,38 +272,45 @@ def sync_webull_to_gsheet():
 
     new_rows = []
     for order in orders:
-        order_id = str(order.get("order_id", order.get("orderId", uuid.uuid4().hex[:8])))
+        # กรองข้อมูล: สนใจเฉพาะ Order ที่สำเร็จแล้วเท่านั้น (FILLED หรือ PARTIALLY FILLED)
+        status = str(order.get("status", "")).upper()
+        if status and status not in ["FILLED", "PARTIAL_FILLED", "PARTIALLYFILLED"]:
+            continue
+            
+        # กรองข้อมูล: จำนวนหุ้นที่จับคู่สำเร็จต้องมากกว่า 0
+        qty = float(order.get("filled_quantity", order.get("filledQuantity", order.get("quantity", 0))))
+        if qty <= 0:
+            continue
+
+        order_id = str(order.get("order_id", order.get("orderId", "")))
+        if not order_id: 
+            continue # ออเดอร์ของจริงต้องมี ID จากระบบเสมอ
+            
         symbol = str(order.get("symbol", "")).upper()
         
-        # O-Lieng Fix: Fallback for empty side from positions endpoint
         action = str(order.get("action", order.get("side", ""))).upper()
-        qty = float(order.get("quantity", order.get("filledQuantity", 0)))
-        
-        if not action:
-            action = "BUY" if qty >= 0 else "SELL"
-            
         side_formatted = "BUY" if "BUY" in action else ("SELL" if "SELL" in action else action)
-        
-        price = float(order.get("cost_price", order.get("avgFilledPrice", 0)))
-        order_time = order.get("create_time", datetime.now().strftime("%Y-%m-%d"))
+        if side_formatted not in ["BUY", "SELL"]:
+            continue
+            
+        price = float(order.get("avg_filled_price", order.get("avgFilledPrice", order.get("price", 0))))
+        order_time = order.get("create_time", order.get("update_time", datetime.now().strftime("%Y-%m-%d %H:%M:%S")))
 
         full_order_id = f"{order_id}_{symbol}_{side_formatted}"
         combo_check = f"{order_time}_{symbol}_{side_formatted}_{qty}_{price}"
 
         if full_order_id not in existing_ids and combo_check not in existing_combos:
-            if qty > 0 and price > 0:
-                current_net_qty = symbol_positions.get(symbol, 0.0)
-                if "SELL" in side_formatted:
-                    current_net_qty -= qty
-                else:
-                    current_net_qty += qty
-                
-                status_flag = "O" if current_net_qty > 0.0001 else "C"
-                new_rows.append([full_order_id, order_time, symbol, side_formatted, qty, price, status_flag])
+            current_net_qty = symbol_positions.get(symbol, 0.0)
+            if "SELL" in side_formatted:
+                current_net_qty -= qty
+            else:
+                current_net_qty += qty
+            
+            status_flag = "O" if current_net_qty > 0.0001 else "C"
+            new_rows.append([full_order_id, order_time, symbol, side_formatted, qty, price, status_flag])
 
     if new_rows:
         try:
-            # O-Lieng Fix: Bulk insert to prevent diagonal shifting bug in Google Sheets API
             worksheet.append_rows(new_rows, value_input_option='USER_ENTERED')
             return True, f"✅ Auto Sync สำเร็จ! เพิ่มรายการใหม่ลง Google Sheet {len(new_rows)} รายการ"
         except Exception as e:
