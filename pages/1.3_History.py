@@ -214,11 +214,13 @@ def sync_webull_to_gsheet():
         return False, "❌ ไม่พบข้อมูล Webull API Key ใน Secrets"
 
     try:
-        # ⚠️ โอเลี้ยงแก้ไข: เปลี่ยนจาก /openapi/assets/positions เป็น /openapi/trade/orders
-        # เพื่อดึงข้อมูล "คำสั่งซื้อขายจริง" ไม่ใช่ดึงสถานะพอร์ตที่หลงเหลืออยู่
         path = "/openapi/trade/orders"
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         nonce = uuid.uuid4().hex
+        
+        # ⚠️ โอเลี้ยงแก้ไข: เพิ่ม Start Time และ Page Size เพื่อกวาดประวัติย้อนหลังทั้งหมด
+        start_time = "2020-01-01"
+        page_size = "1000"
         
         signing_values = {
             "host": HOST,
@@ -227,7 +229,9 @@ def sync_webull_to_gsheet():
             "x-signature-nonce": nonce,
             "x-signature-version": "1.0",
             "x-timestamp": timestamp,
-            "account_id": ACCOUNT_ID
+            "account_id": ACCOUNT_ID,
+            "start_time": start_time,
+            "page_size": page_size
         }
         string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
         signature = base64.b64encode(
@@ -250,22 +254,29 @@ def sync_webull_to_gsheet():
             "x-access-token": webull_config.get("AccessToken", "").strip()
         }
 
+        # ยิง Request พร้อมแนบ Query Params กวาดอดีต
+        query_string = f"account_id={ACCOUNT_ID}&page_size={page_size}&start_time={start_time}"
         conn = http.client.HTTPSConnection(HOST)
-        conn.request("GET", f"{path}?account_id={ACCOUNT_ID}", "", headers)
+        conn.request("GET", f"{path}?{query_string}", "", headers)
         res = conn.getresponse()
         data = res.read()
         conn.close()
 
         orders_response = json.loads(data.decode("utf-8"))
         
-        # จัดการกรณีที่ API ของ Webull เอา Array ไปซ่อนไว้ในคีย์ data หรือ items
+        # ⚠️ โอเลี้ยงแก้ไข: เพิ่มความฉลาดในการแกะ JSON เผื่อ Webull ซ่อน Data ไว้ลึก
+        orders = []
         if isinstance(orders_response, dict):
-            orders = orders_response.get("data", orders_response.get("items", []))
-        else:
+            if "data" in orders_response:
+                data_node = orders_response["data"]
+                if isinstance(data_node, list):
+                    orders = data_node
+                elif isinstance(data_node, dict) and "items" in data_node:
+                    orders = data_node["items"]
+            elif "items" in orders_response:
+                orders = orders_response["items"]
+        elif isinstance(orders_response, list):
             orders = orders_response
-            
-        if not isinstance(orders, list):
-            orders = []
 
     except Exception as e:
         return False, f"⚠️ ยิง Webull API ไม่สำเร็จ: {str(e)}"
