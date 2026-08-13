@@ -6,6 +6,7 @@ import http.client
 import uuid
 import hmac
 import hashlib
+import time
 import streamlit as st
 import pandas as pd
 import gspread
@@ -218,10 +219,7 @@ def sync_webull_to_gsheet():
         timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
         nonce = uuid.uuid4().hex
         
-        # ⚠️ โอเลี้ยงแก้ไข: เพิ่ม Start Time และ Page Size เพื่อกวาดประวัติย้อนหลังทั้งหมด
-        start_time = "2020-01-01"
-        page_size = "1000"
-        
+        # ถอดพารามิเตอร์เจ้าปัญหาออกเพื่อป้องกัน Signature Mismatch
         signing_values = {
             "host": HOST,
             "x-app-key": APP_KEY,
@@ -229,9 +227,7 @@ def sync_webull_to_gsheet():
             "x-signature-nonce": nonce,
             "x-signature-version": "1.0",
             "x-timestamp": timestamp,
-            "account_id": ACCOUNT_ID,
-            "start_time": start_time,
-            "page_size": page_size
+            "account_id": ACCOUNT_ID
         }
         string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
         signature = base64.b64encode(
@@ -254,17 +250,27 @@ def sync_webull_to_gsheet():
             "x-access-token": webull_config.get("AccessToken", "").strip()
         }
 
-        # ยิง Request พร้อมแนบ Query Params กวาดอดีต
-        query_string = f"account_id={ACCOUNT_ID}&page_size={page_size}&start_time={start_time}"
+        # ยิง Request แบบ Basic ที่สุดเพื่อความเสถียร 100%
+        query_string = f"account_id={ACCOUNT_ID}"
         conn = http.client.HTTPSConnection(HOST)
         conn.request("GET", f"{path}?{query_string}", "", headers)
         res = conn.getresponse()
         data = res.read()
         conn.close()
-
-        orders_response = json.loads(data.decode("utf-8"))
         
-        # ⚠️ โอเลี้ยงแก้ไข: เพิ่มความฉลาดในการแกะ JSON เผื่อ Webull ซ่อน Data ไว้ลึก
+        # ถอดรหัสข้อความจาก API เพื่อดักจับ Error
+        raw_json_str = data.decode("utf-8")
+        orders_response = json.loads(raw_json_str)
+
+        # 🚨 เช็คด่านแรก: API ปฏิเสธการเข้าถึงหรือไม่?
+        if isinstance(orders_response, dict):
+            api_code = str(orders_response.get("code", ""))
+            # ถ้าโค้ดไม่ใช่รหัสแห่งความสำเร็จ (200 หรือ 0) ให้เตะออกและโชว์ Error ดิบๆ
+            if api_code and api_code not in ["200", "0", "20000", "00000"]:
+                error_msg = orders_response.get('msg', 'Unknown Error')
+                return False, f"⚠️ Webull API Reject! [Code: {api_code}] {error_msg}"
+
+        # 🚨 เช็คด่านสอง: แกะกล่องข้อมูล
         orders = []
         if isinstance(orders_response, dict):
             if "data" in orders_response:
@@ -277,6 +283,10 @@ def sync_webull_to_gsheet():
                 orders = orders_response["items"]
         elif isinstance(orders_response, list):
             orders = orders_response
+            
+        # ถ้าไม่มีออเดอร์กลับมาเลย ให้โชว์ Raw Data ให้ผู้ใช้เห็น
+        if not orders:
+            return True, f"ℹ️ เชื่อมต่อ Webull สำเร็จ แต่ API ไม่ส่งข้อมูลกลับมาเลย\nRaw Data: {raw_json_str[:200]}..."
 
     except Exception as e:
         return False, f"⚠️ ยิง Webull API ไม่สำเร็จ: {str(e)}"
@@ -327,7 +337,7 @@ def sync_webull_to_gsheet():
         except Exception as e:
             return False, f"❌ เกิดข้อผิดพลาดขณะเขียนข้อมูลลง Sheet: {str(e)}"
     else:
-        return True, "ℹ️ ข้อมูลล่าสุดตรงกันแล้ว ไม่มีรายการใหม่ต้องเพิ่ม"
+        return True, "ℹ️ ข้อมูลล่าสุดตรงกันแล้ว หรือ API ไม่มีรายการใหม่ (0 รายการ)"
 
 def load_sheet_to_df_safe(worksheet, expected_cols=7):
     """อ่าน Worksheet และทำ Normalize แถว ป้องกัน ValueError"""
@@ -388,11 +398,15 @@ with st.expander("🔄 แผงควบคุม Auto Sync ข้อมูล�
             with st.spinner("⏳ กำลัง Sync ออเดอร์..."):
                 success, msg = sync_webull_to_gsheet()
                 if success:
-                    st.success(msg)
-                    st.cache_data.clear()
-                    st.rerun()
+                    if "✅" in msg:
+                        st.success(msg)
+                        time.sleep(1.5)
+                        st.cache_data.clear()
+                        st.rerun()
+                    else:
+                        st.info(msg) # โชว์ข้อความค้างไว้ ไม่สั่ง rerun เพื่อให้อ่าน Raw Message ได้
                 else:
-                    st.error(msg)
+                    st.error(msg) # โชว์ Error ค้างไว้ให้ถ่ายรูป
 
 st.markdown("<br>", unsafe_allow_html=True)
 
