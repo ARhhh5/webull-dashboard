@@ -132,7 +132,7 @@ def fetch_live_prices(symbols):
     price_map = {}
     if not symbols:
         return price_map
-
+    
     clean_symbols = [str(s).strip().upper() for s in symbols if str(s).strip()]
     for sym in clean_symbols:
         try:
@@ -167,7 +167,7 @@ def sync_portfolio_snapshot_to_gsheet(invested_val, market_val, pnl_val, pnl_pct
         except Exception:
             worksheet = sh.add_worksheet(title="Portfolio_History", rows="1000", cols="5")
             worksheet.append_row(["วันที่", "มูลค่าตั้งต้น", "มูลค่าปัจจุบัน", "กำไรขาดทุน", "กำไรขาดทุน%"])
-
+            
         now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         new_row = [now_str, round(invested_val, 2), round(market_val, 2), round(pnl_val, 2), f"{pnl_pct:.2f}%"]
         worksheet.append_row(new_row)
@@ -197,10 +197,10 @@ def extract_dime_portfolio(sh, ws_name, broker_name):
                 if any("หุ้น" in str(cell) or "Ticker" in str(cell) or "Sym" in str(cell) for cell in row):
                     header_idx = i
                     break
-
+            
             headers = [str(h).strip() for h in data[header_idx]]
             df = pd.DataFrame(data[header_idx+1:], columns=headers)
-
+            
             # สแกนหาคอลัมน์ที่ต้องการด้วย Keyword ที่ฉลาดขึ้น
             sym_col = next((c for c in df.columns if "หุ้น" in c or "Ticker" in c or "Sym" in c), None)
             qty_col = next((c for c in df.columns if "จำนวน" in c or "Volume" in c or "Qty" in c), None)
@@ -211,10 +211,10 @@ def extract_dime_portfolio(sh, ws_name, broker_name):
                     clean_sym = str(sym).strip().upper()
                     if not clean_sym or clean_sym == 'NAN' or clean_sym == 'NONE':
                         continue
-
+                    
                     tot_qty = 0.0
                     tot_cost_cash = 0.0
-
+                    
                     for _, row in grp.iterrows():
                         q = clean_val(row.get(qty_col, 0))
                         c = clean_val(row.get(cost_col, 0))
@@ -242,7 +242,7 @@ def load_master_holdings_from_sheets():
         sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
         if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
             sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
-
+            
         try:
             sh = gc.open(sheet_title)
         except Exception:
@@ -250,94 +250,52 @@ def load_master_holdings_from_sheets():
 
         raw_records = []
 
-        # ==========================================================
-        # 1. ดึงพอร์ต Webull  ***โหมด TRANSACTION LEDGER***
-        #    - อ่านทุกแถว (ไม่กรองเฉพาะวันล่าสุดอีกต่อไป)
-        #    - BUY = บวกจำนวน / SELL = หักจำนวน
-        #    - ต้นทุนเฉลี่ยแบบถ่วงน้ำหนัก (Weighted Average Cost)
-        # ==========================================================
+        # 1. ดึงพอร์ต Webull
         try:
             ws_w = sh.worksheet("Webull_Order_History")
             data_w = ws_w.get_all_values()
             if len(data_w) > 1:
                 df_w = pd.DataFrame(data_w[1:], columns=data_w[0])
                 cols = list(df_w.columns)
-
+                
                 time_col = next((c for c in cols if "Time" in c or "Date" in c or "วันที่" in c), cols[1] if len(cols) > 1 else None)
                 sym_col = next((c for c in cols if "Sym" in c or "Ticker" in c or "หุ้น" in c), cols[2] if len(cols) > 2 else cols[0])
                 qty_col = next((c for c in cols if "Qty" in c or "Volume" in c or "จำนวน" in c), cols[4] if len(cols) > 4 else cols[1])
                 cost_col = next((c for c in cols if "Pr" in c or "Cost" in c or "ต้นทุน" in c or "Avg" in c), cols[5] if len(cols) > 5 else cols[2])
                 status_col = next((c for c in cols if "สถานะ" in c or "Status" in c), cols[6] if len(cols) > 6 else None)
 
-                # หาคอลัมน์ฝั่งซื้อ/ขาย (ถ้าไม่มี จะถือว่าเป็น BUY ทั้งหมด หรือดูจากจำนวนติดลบ)
-                used_cols = {time_col, sym_col, qty_col, cost_col, status_col}
-                side_col = next(
-                    (c for c in cols if c not in used_cols and (
-                        "Side" in c or "Action" in c or "ประเภท" in c
-                        or "คำสั่ง" in c or "B/S" in c or "Buy" in c or "Type" in c
-                    )),
-                    None
-                )
-
-                # เรียงตามเวลาก่อน เพื่อให้คำนวณต้นทุนเฉลี่ยตามลำดับการซื้อขายจริง
                 if time_col and time_col in df_w.columns:
-                    df_w["_parsed_date"] = pd.to_datetime(df_w[time_col], errors="coerce")
-                else:
-                    df_w["_parsed_date"] = pd.NaT
-                df_w["_row_order"] = range(len(df_w))
-                df_w = df_w.sort_values(by=["_parsed_date", "_row_order"], na_position="last", kind="stable")
-
-                ledger = {}
-                for _, r in df_w.iterrows():
-                    clean_sym = str(r.get(sym_col, "")).strip().upper()
-                    if not clean_sym or clean_sym in ("NAN", "NONE"):
-                        continue
-
-                    status_val = str(r.get(status_col, "")).strip().upper() if status_col else ""
-                    if status_val in ("C", "CANCEL", "CANCELED", "CANCELLED", "ยกเลิก"):
-                        continue
-
-                    qty_raw = clean_val(r.get(qty_col, 0))
-                    price = clean_val(r.get(cost_col, 0))
-                    if qty_raw == 0:
-                        continue
-
-                    side_raw = str(r.get(side_col, "")).strip().upper() if side_col else ""
-                    is_sell = ("SELL" in side_raw) or (side_raw == "S") or ("ขาย" in side_raw) or (qty_raw < 0)
-
-                    qty = abs(qty_raw)
-
-                    if clean_sym not in ledger:
-                        ledger[clean_sym] = {"qty": 0.0, "cost_cash": 0.0}
-                    pos = ledger[clean_sym]
-
-                    if is_sell:
-                        avg_now = (pos["cost_cash"] / pos["qty"]) if pos["qty"] > 0 else 0.0
-                        sell_qty = min(qty, pos["qty"])
-                        pos["qty"] -= sell_qty
-                        pos["cost_cash"] -= sell_qty * avg_now
-                        if pos["qty"] <= 0.0000001:
-                            pos["qty"] = 0.0
-                            pos["cost_cash"] = 0.0
-                    else:
-                        pos["qty"] += qty
-                        pos["cost_cash"] += qty * price
-
-                for clean_sym, pos in ledger.items():
-                    if pos["qty"] > 0.0001:
-                        raw_records.append({
-                            "Broker": "Webull",
-                            "Symbol": clean_sym,
-                            "Qty": pos["qty"],
-                            "Cost": pos["cost_cash"] / pos["qty"]
-                        })
+                    df_w["parsed_date"] = pd.to_datetime(df_w[time_col], errors='coerce')
+                    valid_dates = df_w.dropna(subset=["parsed_date"])
+                    
+                    if not valid_dates.empty:
+                        max_date = valid_dates["parsed_date"].max()
+                        df_latest = df_w[df_w["parsed_date"] == max_date].copy()
+                        
+                        for sym, grp in df_latest.groupby(sym_col):
+                            clean_sym = str(sym).strip().upper()
+                            if not clean_sym:
+                                continue
+                                
+                            latest_r = grp.iloc[-1]
+                            qty = clean_val(latest_r.get(qty_col, 0))
+                            cost = clean_val(latest_r.get(cost_col, 0))
+                            status_val = str(latest_r.get(status_col, "")).strip().upper() if status_col else ""
+                            
+                            if qty > 0 and status_val != "C":
+                                raw_records.append({
+                                    "Broker": "Webull",
+                                    "Symbol": clean_sym,
+                                    "Qty": qty,
+                                    "Cost": cost
+                                })
         except Exception:
             pass
 
         # 2. ดึงพอร์ต Dime US & TH ผ่านฟังก์ชันแยกที่มีความยืดหยุ่นสูง
         dime_us_records = extract_dime_portfolio(sh, "Dime_Portfolio", "Dime US")
         raw_records.extend(dime_us_records)
-
+        
         dime_th_records = extract_dime_portfolio(sh, "Dime_TH_Portfolio", "Dime TH")
         raw_records.extend(dime_th_records)
 
@@ -349,7 +307,7 @@ def load_master_holdings_from_sheets():
         # 3. รวมรายการหุ้นเพื่อยิงดึงราคาตลาดสด yfinance
         us_symbols = df_holdings[df_holdings["Broker"].isin(["Webull", "Dime US"])]["Symbol"].unique().tolist()
         th_symbols = [f"{s}.BK" for s in df_holdings[df_holdings["Broker"] == "Dime TH"]["Symbol"].unique().tolist()]
-
+        
         all_symbols = us_symbols + th_symbols
         live_prices = fetch_live_prices(all_symbols)
 
@@ -377,12 +335,12 @@ def load_master_holdings_from_sheets():
                     "Price": price, "Invested_USD": inv_usd, "Market_Value_USD": mkt_usd,
                     "PnL_USD": pnl_usd, "PnL_Pct": pct
                 })
-            else:  # Dime TH
+            else: # Dime TH
                 th_sym = f"{sym}.BK"
                 price = live_prices.get(th_sym)
                 if price is None or price <= 0:
                     price = cost
-
+                
                 inv_thb = qty * cost
                 mkt_thb = qty * price
                 pnl_thb = mkt_thb - inv_thb
@@ -417,20 +375,7 @@ def highlight_pnl(val):
     s = str(val).strip()
     if s.startswith("+") or (not s.startswith("-") and not s.startswith("0") and any(char.isdigit() for char in s)):
         try:
-            val_num = float(s.replace('
-
----
-
-### วิธีทดสอบ (ทำตามลำดับ)
-1. เซฟไฟล์ทับ → รัน `streamlit run app.py`
-2. เข้าหน้า Portfolio → แท็บ **🦅 Webull US**
-3. ต้องเห็นครบ **12 ตัว** (RR, SOFI, SVCO, TLRY, TMDX, TRX, TSYY, UUUU, VIVO, WINT + NEE + VST)
-4. เช็ค "เงินลงทุนรวม" ว่าตรงกับผลรวม Qty × Pr ทุกแถวในชีท
-
-### ⚠️ 1 จุดที่ยังต้องยืนยัน
-ถ้าแถว 27–36 (วันที่ 2026-08-01) เป็น **"ยอดคงเหลือ ณ วันนั้น"** ไม่ใช่รายการซื้อขายทีละครั้ง → ยอดอาจเบิ้ลได้ ให้ดูง่าย ๆ ว่ามีหุ้นตัวเดียวกันขึ้นซ้ำ 2 แถวไหม ถ้าไม่ซ้ำเลยและตัวเลขตรงกับ Webull app → ใช้ได้เลยครับ
-
-รันแล้วเป็นยังไงบ้างครับ ตัวเลขตรงกับใน Webull ไหม? ถ้าเพี้ยนตรงไหน ส่งภาพหน้าจอ + ภาพชีทมาได้เลย 👍, '').replace('฿', '').replace(',', '').replace('%', '').replace('+', ''))
+            val_num = float(s.replace('$', '').replace('฿', '').replace(',', '').replace('%', '').replace('+', ''))
             if val_num > 0:
                 return 'background-color: rgba(34, 197, 94, 0.15); color: #4ade80; font-weight: bold;'
             elif val_num < 0:
@@ -533,7 +478,7 @@ if active_tab == "all":
                 g_mkt = df_port['Market_Value_USD'].sum()
                 g_pnl = g_mkt - g_inv
                 g_pct = (g_pnl / g_inv * 100) if g_inv > 0 else 0.0
-
+                
                 with st.spinner("⏳ กำลังบันทึกประวัติลง Portfolio_History..."):
                     success, msg = sync_portfolio_snapshot_to_gsheet(g_inv, g_mkt, g_pnl, g_pct)
                     if success:
@@ -548,7 +493,7 @@ if active_tab == "all":
         grand_market = df_port['Market_Value_USD'].sum() * multiplier
         grand_pnl = grand_market - grand_invested
         grand_pnl_pct = (grand_pnl / grand_invested * 100) if grand_invested > 0 else 0.0
-
+        
         c1, c2, c3 = st.columns(3)
         with c1:
             st.markdown(f'<div class="metric-card"><div class="metric-label">เงินลงทุนรวมทั้งสิ้น</div><div class="metric-value">{curr_symbol}{grand_invested:,.2f}</div></div>', unsafe_allow_html=True)
@@ -561,14 +506,14 @@ if active_tab == "all":
 
         st.caption(f"ℹ️ อัตราแลกเปลี่ยนอ้างอิง: 1 USD = {fx_rate:.2f} THB (อัปเดตราคาหุ้นสดผ่าน yfinance)")
         st.markdown("---")
-
+        
         col_g1, col_g2 = st.columns(2)
-
+        
         with col_g1:
             st.markdown('<div class="chart-card"><div class="chart-card-title">🏦 สัดส่วนพอร์ตแยกตามโบรกเกอร์</div>', unsafe_allow_html=True)
             df_broker = df_port.groupby("Broker")["Market_Value_USD"].sum().reset_index()
             df_broker["Value"] = df_broker["Market_Value_USD"] * multiplier
-
+            
             fig1 = go.Figure(data=[go.Pie(
                 labels=df_broker["Broker"],
                 values=df_broker["Value"],
@@ -594,7 +539,7 @@ if active_tab == "all":
             df_sym = df_port.groupby("Symbol")["Market_Value_USD"].sum().reset_index()
             df_sym["Value"] = df_sym["Market_Value_USD"] * multiplier
             df_sym = df_sym.sort_values(by="Value", ascending=False)
-
+            
             if len(df_sym) > 5:
                 top_5 = df_sym.iloc[:5].copy()
                 others_val = df_sym.iloc[5:]["Value"].sum()
@@ -621,14 +566,14 @@ if active_tab == "all":
             )
             st.plotly_chart(fig2, use_container_width=True, config={'displayModeBar': False})
             st.markdown('</div>', unsafe_allow_html=True)
-
+            
     else:
         st.info("ยังไม่มีข้อมูลหุ้นในพอร์ตโฟลิโอ")
 
 elif active_tab == "webull":
     st.subheader(f"🦅 พอร์ตการลงทุน Webull ({curr_text})")
     df_w = df_port[df_port["Broker"] == "Webull"] if not df_port.empty else pd.DataFrame()
-
+    
     render_tab_summary_metrics(df_w, "Webull US")
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -643,7 +588,7 @@ elif active_tab == "webull":
 
         df_w_disp = df_w_disp[["Symbol", "Qty", "Cost", "Price", "Invested_USD", "Market_Value_USD", "PnL_USD", "PnL_Pct"]].copy()
         df_w_disp.columns = ["Symbol", "Qty", f"Avg Cost ({curr_symbol})", f"Market Price ({curr_symbol})", f"Total Cost ({curr_symbol})", f"Market Value ({curr_symbol})", f"Unrealized P/L ({curr_symbol})", "P/L (%)"]
-
+        
         fmt_symbol = f"฿{{:,.2f}}" if is_thb else f"${{:,.2f}}"
         fmt_pnl_symbol = f"฿{{:+,.2f}}" if is_thb else f"${{:+,.2f}}"
 
@@ -652,7 +597,7 @@ elif active_tab == "webull":
             f"Total Cost ({curr_symbol})": fmt_symbol, f"Market Value ({curr_symbol})": fmt_symbol,
             f"Unrealized P/L ({curr_symbol})": fmt_pnl_symbol, "P/L (%)": "{:+.2f}%"
         }).map(highlight_pnl, subset=[f"Unrealized P/L ({curr_symbol})", "P/L (%)"])
-
+        
         st.dataframe(formatted_df, use_container_width=True)
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Webull")
@@ -660,7 +605,7 @@ elif active_tab == "webull":
 elif active_tab == "dime_us":
     st.subheader(f"💵 พอร์ตการลงทุน Dime US ({curr_text})")
     df_dus = df_port[df_port["Broker"] == "Dime US"] if not df_port.empty else pd.DataFrame()
-
+    
     render_tab_summary_metrics(df_dus, "Dime US")
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -675,7 +620,7 @@ elif active_tab == "dime_us":
 
         df_dus_disp = df_dus_disp[["Symbol", "Qty", "Cost", "Price", "Invested_USD", "Market_Value_USD", "PnL_USD", "PnL_Pct"]].copy()
         df_dus_disp.columns = ["Symbol", "Qty", f"Avg Cost ({curr_symbol})", f"Market Price ({curr_symbol})", f"Total Cost ({curr_symbol})", f"Market Value ({curr_symbol})", f"Unrealized P/L ({curr_symbol})", "P/L (%)"]
-
+        
         fmt_symbol = f"฿{{:,.2f}}" if is_thb else f"${{:,.2f}}"
         fmt_pnl_symbol = f"฿{{:+,.2f}}" if is_thb else f"${{:+,.2f}}"
 
@@ -684,7 +629,7 @@ elif active_tab == "dime_us":
             f"Total Cost ({curr_symbol})": fmt_symbol, f"Market Value ({curr_symbol})": fmt_symbol,
             f"Unrealized P/L ({curr_symbol})": fmt_pnl_symbol, "P/L (%)": "{:+.2f}%"
         }).map(highlight_pnl, subset=[f"Unrealized P/L ({curr_symbol})", "P/L (%)"])
-
+        
         st.dataframe(formatted_df, use_container_width=True)
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime US")
@@ -692,7 +637,7 @@ elif active_tab == "dime_us":
 elif active_tab == "dime_th":
     st.subheader(f"🇹🇭 พอร์ตการลงทุน Dime TH (หุ้นไทย - {curr_text})")
     df_dth = df_port[df_port["Broker"] == "Dime TH"] if not df_port.empty else pd.DataFrame()
-
+    
     render_tab_summary_metrics(df_dth, "Dime TH")
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -713,7 +658,7 @@ elif active_tab == "dime_th":
 
         df_dth_disp = df_dth_disp[["Symbol", "Qty", "Cost_Disp", "Price_Disp", "Total_Cost_Disp", "Market_Value_Disp", "PnL_Disp", "PnL_Pct"]]
         df_dth_disp.columns = ["Symbol", "Qty", f"Avg Cost ({curr_symbol})", f"Market Price ({curr_symbol})", f"Total Cost ({curr_symbol})", f"Market Value ({curr_symbol})", f"Unrealized P/L ({curr_symbol})", "P/L (%)"]
-
+        
         fmt_symbol = f"฿{{:,.2f}}" if is_thb else f"${{:,.2f}}"
         fmt_pnl_symbol = f"฿{{:+,.2f}}" if is_thb else f"${{:+,.2f}}"
 
@@ -722,7 +667,7 @@ elif active_tab == "dime_th":
             f"Total Cost ({curr_symbol})": fmt_symbol, f"Market Value ({curr_symbol})": fmt_symbol,
             f"Unrealized P/L ({curr_symbol})": fmt_pnl_symbol, "P/L (%)": "{:+.2f}%"
         }).map(highlight_pnl, subset=[f"Unrealized P/L ({curr_symbol})", "P/L (%)"])
-
+        
         st.dataframe(formatted_df, use_container_width=True)
     else:
         st.info("ไม่พบข้อมูลรายการถือครองในพอร์ต Dime TH")
@@ -730,7 +675,7 @@ elif active_tab == "dime_th":
 elif active_tab == "consolidated":
     st.subheader(f"🧩 รวมหุ้นทุกตัวเฉพาะหุ้นสหรัฐฯ (US Consolidated Holdings - {curr_text})")
     df_us_only = df_port[df_port["Broker"].isin(["Webull", "Dime US"])] if not df_port.empty else pd.DataFrame()
-
+    
     render_tab_summary_metrics(df_us_only, "US Consolidated")
     st.markdown("<br>", unsafe_allow_html=True)
 
@@ -745,7 +690,7 @@ elif active_tab == "consolidated":
             avg_cost = tot_cost / tot_qty if tot_qty > 0 else 0.0
             market_price = (group["Price"].iloc[0]) * multiplier
             sources = ", ".join(group["Broker"].unique())
-
+            
             grouped_rows.append({
                 "Symbol": sym,
                 "Total_Qty": tot_qty,
@@ -757,13 +702,13 @@ elif active_tab == "consolidated":
                 "Unrealized_PL_Pct": pnl_pct,
                 "Sources": sources
             })
-
+            
         df_grouped = pd.DataFrame(grouped_rows)
         st.session_state["us_consolidated_df"] = df_grouped
-
+        
         df_grouped_disp = df_grouped.copy()
         df_grouped_disp.columns = ["Symbol", "Total Qty", f"Avg Cost ({curr_symbol})", f"Market Price ({curr_symbol})", f"Total Cost ({curr_symbol})", f"Market Value ({curr_symbol})", f"Unrealized P/L ({curr_symbol})", "P/L (%)", "Sources"]
-
+        
         fmt_symbol = f"฿{{:,.2f}}" if is_thb else f"${{:,.2f}}"
         fmt_pnl_symbol = f"฿{{:+,.2f}}" if is_thb else f"${{:+,.2f}}"
 
@@ -772,7 +717,7 @@ elif active_tab == "consolidated":
             f"Total Cost ({curr_symbol})": fmt_symbol, f"Market Value ({curr_symbol})": fmt_symbol,
             f"Unrealized P/L ({curr_symbol})": fmt_pnl_symbol, "P/L (%)": "{:+.2f}%"
         }).map(highlight_pnl, subset=[f"Unrealized P/L ({curr_symbol})", "P/L (%)"])
-
+        
         st.dataframe(formatted_df, use_container_width=True)
     else:
         st.info("ไม่พบรายการถือครองหุ้นสหรัฐฯ ในระบบ")
