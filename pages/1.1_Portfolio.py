@@ -191,7 +191,6 @@ def extract_dime_portfolio(sh, ws_name, broker_name):
         ws = sh.worksheet(ws_name)
         data = ws.get_all_values()
         if len(data) > 1:
-            # ค้นหาแถวที่เป็น Header จริงๆ (เผื่อผู้ใช้เว้นบรรทัดว่าง)
             header_idx = 0
             for i, row in enumerate(data[:5]):
                 if any("หุ้น" in str(cell) or "Ticker" in str(cell) or "Sym" in str(cell) for cell in row):
@@ -201,7 +200,6 @@ def extract_dime_portfolio(sh, ws_name, broker_name):
             headers = [str(h).strip() for h in data[header_idx]]
             df = pd.DataFrame(data[header_idx+1:], columns=headers)
             
-            # สแกนหาคอลัมน์ที่ต้องการด้วย Keyword ที่ฉลาดขึ้น
             sym_col = next((c for c in df.columns if "หุ้น" in c or "Ticker" in c or "Sym" in c), None)
             qty_col = next((c for c in df.columns if "จำนวน" in c or "Volume" in c or "Qty" in c), None)
             cost_col = next((c for c in df.columns if "ต้นทุน" in c or "Avg" in c or "Cost" in c), None)
@@ -250,7 +248,7 @@ def load_master_holdings_from_sheets():
 
         raw_records = []
 
-        # 1. ดึงพอร์ต Webull
+        # 1. ดึงพอร์ต Webull (แก้ไขให้อ่านทุกวันและคำนวณ Net Position ตามจริง)
         try:
             ws_w = sh.worksheet("Webull_Order_History")
             data_w = ws_w.get_all_values()
@@ -258,41 +256,49 @@ def load_master_holdings_from_sheets():
                 df_w = pd.DataFrame(data_w[1:], columns=data_w[0])
                 cols = list(df_w.columns)
                 
-                time_col = next((c for c in cols if "Time" in c or "Date" in c or "วันที่" in c), cols[1] if len(cols) > 1 else None)
                 sym_col = next((c for c in cols if "Sym" in c or "Ticker" in c or "หุ้น" in c), cols[2] if len(cols) > 2 else cols[0])
+                side_col = next((c for c in cols if "Side" in c or "ประเภท" in c or "Action" in c), cols[3] if len(cols) > 3 else None)
                 qty_col = next((c for c in cols if "Qty" in c or "Volume" in c or "จำนวน" in c), cols[4] if len(cols) > 4 else cols[1])
                 cost_col = next((c for c in cols if "Pr" in c or "Cost" in c or "ต้นทุน" in c or "Avg" in c), cols[5] if len(cols) > 5 else cols[2])
                 status_col = next((c for c in cols if "สถานะ" in c or "Status" in c), cols[6] if len(cols) > 6 else None)
 
-                if time_col and time_col in df_w.columns:
-                    df_w["parsed_date"] = pd.to_datetime(df_w[time_col], errors='coerce')
-                    valid_dates = df_w.dropna(subset=["parsed_date"])
+                for sym, grp in df_w.groupby(sym_col):
+                    clean_sym = str(sym).strip().upper()
+                    if not clean_sym or clean_sym == 'NAN' or clean_sym == 'NONE':
+                        continue
                     
-                    if not valid_dates.empty:
-                        max_date = valid_dates["parsed_date"].max()
-                        df_latest = df_w[df_w["parsed_date"] == max_date].copy()
-                        
-                        for sym, grp in df_latest.groupby(sym_col):
-                            clean_sym = str(sym).strip().upper()
-                            if not clean_sym:
-                                continue
-                                
-                            latest_r = grp.iloc[-1]
-                            qty = clean_val(latest_r.get(qty_col, 0))
-                            cost = clean_val(latest_r.get(cost_col, 0))
-                            status_val = str(latest_r.get(status_col, "")).strip().upper() if status_col else ""
+                    net_qty = 0.0
+                    tot_buy_cost = 0.0
+                    tot_buy_qty = 0.0
+                    
+                    for _, r in grp.iterrows():
+                        status_val = str(r.get(status_col, "")).strip().upper() if status_col else ""
+                        if status_val == "C": # ข้ามรายการ Cancelled
+                            continue
                             
-                            if qty > 0 and status_val != "C":
-                                raw_records.append({
-                                    "Broker": "Webull",
-                                    "Symbol": clean_sym,
-                                    "Qty": qty,
-                                    "Cost": cost
-                                })
+                        q = clean_val(r.get(qty_col, 0))
+                        c = clean_val(r.get(cost_col, 0))
+                        side_val = str(r.get(side_col, "BUY")).strip().upper() if side_col else "BUY"
+
+                        if "BUY" in side_val or "ซื้อ" in side_val:
+                            net_qty += q
+                            tot_buy_qty += q
+                            tot_buy_cost += (q * c)
+                        elif "SELL" in side_val or "ขาย" in side_val:
+                            net_qty -= q
+
+                    if net_qty > 0.0001:
+                        avg_cost = (tot_buy_cost / tot_buy_qty) if tot_buy_qty > 0 else 0.0
+                        raw_records.append({
+                            "Broker": "Webull",
+                            "Symbol": clean_sym,
+                            "Qty": net_qty,
+                            "Cost": avg_cost
+                        })
         except Exception:
             pass
 
-        # 2. ดึงพอร์ต Dime US & TH ผ่านฟังก์ชันแยกที่มีความยืดหยุ่นสูง
+        # 2. ดึงพอร์ต Dime US & TH
         dime_us_records = extract_dime_portfolio(sh, "Dime_Portfolio", "Dime US")
         raw_records.extend(dime_us_records)
         
@@ -304,7 +310,7 @@ def load_master_holdings_from_sheets():
 
         df_holdings = pd.DataFrame(raw_records)
 
-        # 3. รวมรายการหุ้นเพื่อยิงดึงราคาตลาดสด yfinance
+        # 3. รวมรายการหุ้นเพื่อดึงราคาตลาดสด yfinance
         us_symbols = df_holdings[df_holdings["Broker"].isin(["Webull", "Dime US"])]["Symbol"].unique().tolist()
         th_symbols = [f"{s}.BK" for s in df_holdings[df_holdings["Broker"] == "Dime TH"]["Symbol"].unique().tolist()]
         
