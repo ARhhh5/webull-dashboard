@@ -352,13 +352,9 @@ def render_dashboard():
     full_track_html = f"""<div class="ticker-container"><div class="ticker-track">{ticker_cards_html}{ticker_cards_html}</div></div>"""
     st.markdown(full_track_html, unsafe_allow_html=True)
 
-    # 1. ดึงจาก Shared Session State ใน Portfolio
     df_shared = st.session_state.get("all_holdings_df", pd.DataFrame())
-    
-    # 2. ดึงข้อมูลประวัติจาก Portfolio_History
     df_history = load_history_from_gsheet()
 
-    # 3. คำนวณค่าปัจจุบัน
     if not df_shared.empty:
         tot_invested_usd = df_shared['Invested_USD'].sum()
         tot_market_usd = df_shared['Market_Value_USD'].sum()
@@ -376,7 +372,6 @@ def render_dashboard():
         tot_pnl_usd = -2166.24
         tot_pnl_pct = -4.52
 
-    # สร้าง Header และปุ่ม Sync ข้อมูล
     c_title, c_curr, c_sync = st.columns([2.2, 1.2, 0.6])
     with c_title:
         st.title("Executive Dashboard")
@@ -448,7 +443,6 @@ def render_dashboard():
         if "selected_tf" not in st.session_state:
             st.session_state["selected_tf"] = "MAX"
 
-        # แสดงปุ่มกดเลือกช่วงเวลาแบบสากล
         tf_options = ["1D", "1W", "1M", "3M", "6M", "YTD", "1Y", "MAX"]
         tf_cols = st.columns(len(tf_options))
         
@@ -460,46 +454,33 @@ def render_dashboard():
 
         selected_tf = st.session_state["selected_tf"]
 
-        # คำนวณช่วงเวลาด้วย Standard Rolling Window Formula
         if df_history is not None and not df_history.empty:
             max_dt = df_history["Parsed_Date"].max()
             
-            if selected_tf == "1D":
-                start_dt = max_dt - timedelta(days=1)
-            elif selected_tf == "1W":
-                start_dt = max_dt - timedelta(days=7)
-            elif selected_tf == "1M":
-                start_dt = max_dt - timedelta(days=30)
-            elif selected_tf == "3M":
-                start_dt = max_dt - timedelta(days=90)
-            elif selected_tf == "6M":
-                start_dt = max_dt - timedelta(days=180)
-            elif selected_tf == "YTD":
-                start_dt = pd.to_datetime(f"{max_dt.year}-01-01")
-            elif selected_tf == "1Y":
-                start_dt = max_dt - timedelta(days=365)
-            else:  # MAX: แสดงตั้งแต่วันแรก
-                start_dt = df_history["Parsed_Date"].min()
+            if selected_tf == "1D": start_dt = max_dt - timedelta(days=1)
+            elif selected_tf == "1W": start_dt = max_dt - timedelta(days=7)
+            elif selected_tf == "1M": start_dt = max_dt - timedelta(days=30)
+            elif selected_tf == "3M": start_dt = max_dt - timedelta(days=90)
+            elif selected_tf == "6M": start_dt = max_dt - timedelta(days=180)
+            elif selected_tf == "YTD": start_dt = pd.to_datetime(f"{max_dt.year}-01-01")
+            elif selected_tf == "1Y": start_dt = max_dt - timedelta(days=365)
+            else: start_dt = df_history["Parsed_Date"].min()
 
             filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
             if filtered_df.empty:
                 filtered_df = df_history.copy()
 
-            # ส่งค่า Date แบบตรงๆ ให้ Plotly จัดการสเกลเวลา
             x_axis = filtered_df["Parsed_Date"]
             y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
         else:
-            # Fallback หากไม่มีข้อมูล
             x_axis = pd.to_datetime(['2026-08-01 00:00', '2026-08-02 05:44', '2026-08-05 09:56', '2026-08-08 11:59'])
             y_axis = [15000.00, 48180.96, 45987.10, display_market]
         
-        # คำนวณ Dynamic Y-Axis Range (Auto-Zoom)
         min_y = min(y_axis) if y_axis else 0
         max_y = max(y_axis) if y_axis else 100
         padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
         y_range = [max(0, min_y - padding), max_y + padding]
 
-        # วาดกราฟ Plotly Standard Dynamic Zoom Line
         fig = go.Figure()
         fig.add_trace(go.Scatter(
             x=x_axis, 
@@ -522,7 +503,6 @@ def render_dashboard():
         )
         st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-    # คำนวณ Broker Allocation จาก Shared DataFrame สด
     if not df_shared.empty:
         df_b_sum = df_shared.groupby("Broker")["Market_Value_USD"].sum().to_dict()
         val_dime_us = df_b_sum.get("Dime US", 32412.11) * (1.0 if is_usd else usd_fx_rate)
@@ -609,6 +589,10 @@ with st.sidebar:
             st.rerun()
         if st.button("💰 Dividends", use_container_width=True):
             st.session_state["current_page"] = "1.4_Dividends"
+            st.rerun()
+        # เพิ่มปุ่มเมนู 1.5 ใหม่ตรงนี้
+        if st.button("📈 Daily US Comparison", use_container_width=True):
+            st.session_state["current_page"] = "1.5_Daily_Price_Comparison"
             st.rerun()
 
     # --- SECTION 2.0 PORTFOLIO MANAGEMENT TOOLS ---
