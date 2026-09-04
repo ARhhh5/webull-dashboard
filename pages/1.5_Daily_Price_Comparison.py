@@ -272,14 +272,26 @@ if not df_us.empty:
 
     st.markdown("---")
 
-    # ปรับแต่งสีในตาราง
+    # ฟังก์ชันตรวจจับและไฮไลต์สีเขียว/แดงอย่างแม่นยำ
     def highlight_change(val):
-        if val is None or pd.isna(val): return ''
+        if val is None or pd.isna(val):
+            return ''
         s = str(val).strip()
+        # ตรวจสอบจากเครื่องหมาย String นำหน้าโดยตรง
         if s.startswith("+"):
-            return 'background-color: rgba(34, 197, 94, 0.15); color: #4ade80; font-weight: bold;'
+            return 'background-color: rgba(34, 197, 94, 0.20); color: #4ade80; font-weight: 700;'
         elif s.startswith("-"):
-            return 'background-color: rgba(239, 68, 68, 0.15); color: #f87171; font-weight: bold;'
+            return 'background-color: rgba(239, 68, 68, 0.20); color: #f87171; font-weight: 700;'
+        
+        # กรณีแปลงเป็นตัวเลขเพื่อความชัวร์
+        try:
+            num = float(s.replace('$', '').replace('%', '').replace(',', '').replace('+', '').strip())
+            if num > 0.0001:
+                return 'background-color: rgba(34, 197, 94, 0.20); color: #4ade80; font-weight: 700;'
+            elif num < -0.0001:
+                return 'background-color: rgba(239, 68, 68, 0.20); color: #f87171; font-weight: 700;'
+        except:
+            pass
         return 'color: #9ca3af;'
 
     df_disp = df_comp.copy()
@@ -297,7 +309,7 @@ if not df_us.empty:
         "จำนวนหุ้นที่ถือ (Qty)": "{:,.4f}",
         "ราคาปิดเมื่อวาน ($)": "${:,.2f}",
         "ราคาปัจจุบัน ($)": "${:,.2f}",
-        "ส่วนต่างราคา ($)": "{:+,.2f}",
+        "ส่วนต่างราคา ($)": "${:+,.2f}",
         "เปลี่ยนแปลงวันนี้ (%)": "{:+.2f}%",
         "กำไร/ขาดทุนวันนี้ ($)": "${:+,.2f}"
     }).map(highlight_change, subset=["ส่วนต่างราคา ($)", "เปลี่ยนแปลงวันนี้ (%)", "กำไร/ขาดทุนวันนี้ ($)"])
