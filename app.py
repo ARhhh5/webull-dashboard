@@ -1,552 +1,192 @@
 import os
-import json
-import re
-import base64
-import time
 import importlib.util
-from datetime import datetime, timedelta
-import streamlit as st
-import pandas as pd
-import plotly.graph_objects as go
+from datetime import timedelta
 
-# ตรวจสอบการ Import gspread สำหรับจัดการ Google Sheets
-try:
-    import gspread
-    from google.oauth2.service_account import Credentials
-    HAS_GSPREAD = True
-except ImportError:
-    HAS_GSPREAD = False
+import pandas as pd
+import streamlit as st
+
+from core import market, ui
+from core import portfolio as pf
+from core.webull_api import to_float
 
 # ==========================================
 # 1. PAGE CONFIGURATION & GLOBAL STYLE
 # ==========================================
 st.set_page_config(
-    page_title="Executive Dashboard - Webull Desk",
+    page_title="Executive Dashboard - Webull & Dime Desk",
     page_icon="⚡",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
 )
+ui.inject_theme()
 
-def inject_custom_css():
-    st.markdown("""
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;500;700&family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+TIMEFRAMES = {"1D": 1, "1W": 7, "1M": 30, "3M": 90, "6M": 180, "YTD": None, "1Y": 365, "MAX": None}
+CHART_PERIODS = {"1M": ("1mo", "1d"), "3M": ("3mo", "1d"), "6M": ("6mo", "1d"), "1Y": ("1y", "1d"),
+                 "5Y": ("5y", "1wk")}
 
-        html, body, [class*="css"] {
-            font-family: 'Plus Jakarta Sans', sans-serif !important;
-            background-color: #08090b !important;
-            color: #d1d5db;
-        }
 
-        .stApp {
-            background-color: #08090b;
-        }
+def _money(value_usd, is_usd, fx, signed=False):
+    return ui.fmt_money(value_usd if is_usd else value_usd * fx, "$" if is_usd else "฿", signed)
 
-        /* HIDE STREAMLIT DEFAULT NAVIGATION */
-        [data-testid="stSidebarNav"] {
-            display: none !important;
-        }
-
-        /* Custom Sidebar Styling */
-        [data-testid="stSidebar"] {
-            background-color: #0d0e12 !important;
-            border-right: 1px solid #181a20 !important;
-        }
-
-        [data-testid="stSidebar"] > div:first-child {
-            padding-top: 1rem;
-        }
-
-        .sidebar-brand {
-            font-family: 'JetBrains Mono', monospace;
-            font-size: 1.1rem;
-            font-weight: 800;
-            color: #38bdf8;
-            padding: 10px 0px 15px 0px;
-            letter-spacing: 1px;
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            border-bottom: 1px solid #181a20;
-            margin-bottom: 15px;
-        }
-
-        div[data-testid="stSidebar"] .stButton > button {
-            background-color: #111318;
-            color: #9ca3af;
-            border: 1px solid #1f232d;
-            border-radius: 8px;
-            font-weight: 600;
-            font-size: 0.85rem;
-            transition: all 0.2s ease !important;
-            text-align: left;
-            padding: 8px 12px;
-            margin-bottom: 2px;
-        }
-
-        div[data-testid="stSidebar"] .stButton > button:hover {
-            border-color: #38bdf8;
-            color: #38bdf8;
-            background-color: #161a23;
-        }
-
-        div[data-testid="stSidebar"] .stButton > button[kind="primary"] {
-            background: linear-gradient(90deg, #0284c7 0%, #0369a1 100%) !important;
-            color: #ffffff !important;
-            border: 1px solid #38bdf8 !important;
-            box-shadow: 0 4px 12px rgba(56, 189, 248, 0.2);
-        }
-
-        div[data-testid="stSidebar"] .streamlit-expanderHeader {
-            background-color: #111318 !important;
-            border: 1px solid #1f232d !important;
-            border-radius: 8px !important;
-            color: #e2e8f0 !important;
-            font-size: 0.88rem !important;
-            font-weight: 700 !important;
-            padding: 8px 12px !important;
-        }
-
-        div[data-testid="stSidebar"] .streamlit-expanderContent {
-            background-color: transparent !important;
-            border: none !important;
-            padding: 8px 0px 0px 8px !important;
-        }
-
-        /* TICKER MARQUEE STYLING */
-        .ticker-container {
-            width: 100%;
-            overflow: hidden;
-            background-color: #0d0e12;
-            border: 1px solid #1f232d;
-            border-radius: 10px;
-            padding: 8px 0;
-            margin-bottom: 20px;
-            white-space: nowrap;
-        }
-
-        .ticker-track {
-            display: inline-flex;
-            gap: 12px;
-            animation: marquee 30s linear infinite;
-        }
-
-        .ticker-container:hover .ticker-track {
-            animation-play-state: paused;
-        }
-
-        @keyframes marquee {
-            0% { transform: translateX(0%); }
-            100% { transform: translateX(-50%); }
-        }
-
-        .ticker-card-pill {
-            background-color: #111318;
-            border: 1px solid #1f232d;
-            border-radius: 8px;
-            padding: 6px 14px;
-            font-size: 0.82rem;
-            font-family: 'JetBrains Mono', monospace;
-            display: inline-flex;
-            align-items: center;
-            gap: 10px;
-        }
-
-        .ticker-card-symbol { font-weight: 700; color: #ffffff; }
-        .ticker-card-price { color: #e2e8f0; font-weight: 600; }
-        .badge-mini-pos { background-color: rgba(34, 197, 94, 0.15); color: #4ade80; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; }
-        .badge-mini-neg { background-color: rgba(239, 68, 68, 0.15); color: #f87171; padding: 2px 6px; border-radius: 4px; font-size: 0.75rem; font-weight: 700; }
-
-        .dash-card {
-            background-color: #0f1115;
-            border: 1px solid #1a1d24;
-            border-radius: 12px;
-            padding: 20px;
-            margin-bottom: 15px;
-        }
-
-        .card-header-title {
-            color: #9ca3af;
-            font-size: 0.85rem;
-            font-weight: 600;
-            margin-bottom: 12px;
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-        }
-
-        .big-value {
-            font-family: 'Plus Jakarta Sans', sans-serif;
-            font-size: 2.2rem;
-            font-weight: 800;
-            color: #ffffff;
-            letter-spacing: -1px;
-            line-height: 1.1;
-        }
-
-        .badge-delta-neg { background-color: rgba(239, 68, 68, 0.12); color: #f87171; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
-        .badge-delta-pos { background-color: rgba(34, 197, 94, 0.12); color: #4ade80; padding: 4px 8px; border-radius: 6px; font-size: 0.78rem; font-weight: 700; font-family: 'JetBrains Mono', monospace; }
-
-        .allocation-bar-container {
-            display: flex;
-            height: 10px;
-            border-radius: 5px;
-            overflow: hidden;
-            margin: 14px 0px;
-            background-color: #1a1d24;
-        }
-        .bar-segment { height: 100%; }
-
-        .asset-row {
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            padding: 8px 0;
-            font-size: 0.85rem;
-            border-bottom: 1px solid #16181f;
-        }
-        .asset-label { display: flex; align-items: center; gap: 10px; color: #d1d5db; }
-        .dot { width: 8px; height: 8px; border-radius: 50%; }
-        .asset-val { font-family: 'JetBrains Mono', monospace; font-weight: 600; color: #ffffff; }
-
-        .stock-grid-card {
-            background-color: #111318;
-            border: 1px solid #1a1d24;
-            border-radius: 10px;
-            padding: 14px;
-            margin-bottom: 10px;
-        }
-        .stock-symbol { font-weight: 700; color: #ffffff; font-size: 0.9rem; }
-        .stock-price { font-family: 'JetBrains Mono', monospace; font-size: 1.1rem; font-weight: 700; color: #ffffff; margin-top: 6px; }
-
-        #MainMenu {visibility: hidden;}
-        footer {visibility: hidden;}
-    </style>
-    """, unsafe_allow_html=True)
-
-inject_custom_css()
 
 # ==========================================
-# 2. GOOGLE SHEETS DATA PIPELINE
-# ==========================================
-def get_gspread_client():
-    """เชื่อมต่อ Google Sheets API รองรับ Base64 Credentials ตามมาตรฐานของระบบคุณ"""
-    if not HAS_GSPREAD:
-        return None
-    try:
-        google_secrets = st.secrets.get("Google", {})
-        cred_base64 = google_secrets.get("credentials_base64", "")
-        if cred_base64:
-            cred_dict = json.loads(base64.b64decode(cred_base64).decode("utf-8"))
-            return gspread.service_account_from_dict(cred_dict)
-        elif "gcp_service_account" in st.secrets:
-            scopes = ["https://www.googleapis.com/auth/spreadsheets", "https://www.googleapis.com/auth/drive"]
-            creds = Credentials.from_service_account_info(dict(st.secrets["gcp_service_account"]), scopes=scopes)
-            return gspread.authorize(creds)
-    except Exception:
-        pass
-    return None
-
-def load_history_from_gsheet():
-    """ดึงข้อมูลประวัติย้อนหลังจาก Portfolio_History มาประมวลผล"""
-    client = get_gspread_client()
-    if not client:
-        return None
-    try:
-        sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
-        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-            sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
-            
-        try:
-            sh = client.open(sheet_title)
-        except Exception:
-            sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
-
-        worksheet = sh.worksheet("Portfolio_History")
-        data = worksheet.get_all_values()
-        
-        if len(data) > 0:
-            df = pd.DataFrame(data)
-            
-            first_val = str(df.iloc[0, 0]).strip()
-            if "วัน" in first_val or "Date" in first_val or "Timestamp" in first_val:
-                df = df.iloc[1:].reset_index(drop=True)
-                
-            cols = ["Timestamp", "Invested", "MarketValue", "PnL", "PnLPct"]
-            df = df.iloc[:, :len(cols)]
-            df.columns = cols[:len(df.columns)]
-            
-            def clean_num(val):
-                if pd.isna(val) or val == "": return 0.0
-                val_str = str(val).replace(",", "").replace("%", "").replace("$", "").replace("฿", "").strip()
-                try: return float(val_str)
-                except: return 0.0
-
-            df["MarketValue"] = df["MarketValue"].apply(clean_num)
-            df["Invested"] = df["Invested"].apply(clean_num)
-            df["PnL"] = df["PnL"].apply(clean_num)
-            df["PnLPct"] = df["PnLPct"].apply(clean_num)
-            
-            df = df[df["MarketValue"] > 0].reset_index(drop=True)
-            df["Parsed_Date"] = pd.to_datetime(df["Timestamp"], errors='coerce')
-            df = df.dropna(subset=["Parsed_Date"]).sort_values("Parsed_Date").reset_index(drop=True)
-
-            return df
-    except Exception:
-        pass
-    return None
-
-def sync_portfolio_history(invested, market_value, pnl, pnl_pct):
-    """ฟังก์ชันสำหรับ Append ข้อมูลพอร์ตล่าสุดลงใน Google Sheets พร้อมรองรับการสร้างชีตใหม่"""
-    client = get_gspread_client()
-    if not client:
-        return False
-    
-    try:
-        sheet_title = st.secrets.get("SPREADSHEET_NAME", "หุ้นของเรา")
-        if "connections" in st.secrets and "gsheets" in st.secrets["connections"]:
-            sheet_title = st.secrets["connections"]["gsheets"].get("spreadsheet", sheet_title)
-            
-        try:
-            sh = client.open(sheet_title)
-        except Exception:
-            sh = client.open_by_key(sheet_title) if len(sheet_title) > 20 else client.open_by_url(sheet_title)
-
-        try:
-            worksheet = sh.worksheet("Portfolio_History")
-        except Exception:
-            worksheet = sh.add_worksheet(title="Portfolio_History", rows="1000", cols="5")
-            worksheet.append_row(["วันที่", "มูลค่าตั้งต้น", "มูลค่าปัจจุบัน", "กำไรขาดทุน", "กำไรขาดทุน%"])
-        
-        now_str = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-        
-        row_to_append = [
-            now_str, 
-            round(invested, 2), 
-            round(market_value, 2), 
-            round(pnl, 2), 
-            f"{round(pnl_pct, 2)}%"
-        ]
-        
-        worksheet.append_row(row_to_append)
-        return True
-    except Exception as e:
-        st.error(f"เกิดข้อผิดพลาดในการ Sync ข้อมูล: {e}")
-        return False
-
-# ==========================================
-# 3. DASHBOARD MAIN RENDER FUNCTION
+# 2. DASHBOARD
 # ==========================================
 def render_dashboard():
-    sample_stocks = [
-        ("NU", 14.30, 18.48), ("SVCO", 7.93, 123.38), ("CV", 6.58, 31.60),
-        ("DVLT", 0.34, -86.67), ("SUSCO", 3.85, 5.00), ("YMAG", 15.80, -0.19)
-    ]
-    
-    ticker_cards_html = ""
-    for sym, price, pnl in sample_stocks:
-        badge_cls = "badge-mini-pos" if pnl >= 0 else "badge-mini-neg"
-        sign = "+" if pnl >= 0 else ""
-        ticker_cards_html += f"""<div class="ticker-card-pill"><span class="ticker-card-symbol">{sym}</span><span class="ticker-card-price">${price:,.2f}</span><span class="{badge_cls}">{sign}{pnl:.2f}%</span></div>"""
+    with st.spinner("กำลังโหลดข้อมูลพอร์ต..."):
+        df, status, is_demo = pf.load_holdings()
+    fx = market.get_usd_thb()
+    st.session_state["usd_thb_rate"] = fx
+    st.session_state["all_holdings_df"] = df
 
-    full_track_html = f"""<div class="ticker-container"><div class="ticker-track">{ticker_cards_html}{ticker_cards_html}</div></div>"""
-    st.markdown(full_track_html, unsafe_allow_html=True)
-
-    df_shared = st.session_state.get("all_holdings_df", pd.DataFrame())
-    df_history = load_history_from_gsheet()
-
-    if not df_shared.empty:
-        tot_invested_usd = df_shared['Invested_USD'].sum()
-        tot_market_usd = df_shared['Market_Value_USD'].sum()
-        tot_pnl_usd = tot_market_usd - tot_invested_usd
-        tot_pnl_pct = (tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0
-    elif df_history is not None and not df_history.empty:
-        latest_row = df_history.iloc[-1]
-        tot_invested_usd = latest_row["Invested"]
-        tot_market_usd = latest_row["MarketValue"]
-        tot_pnl_usd = latest_row["PnL"] if latest_row["PnL"] != 0 else (tot_market_usd - tot_invested_usd)
-        tot_pnl_pct = latest_row["PnLPct"] if latest_row["PnLPct"] != 0 else ((tot_pnl_usd / tot_invested_usd * 100) if tot_invested_usd > 0 else 0.0)
-    else:
-        tot_invested_usd = 47944.46
-        tot_market_usd = 45778.22
-        tot_pnl_usd = -2166.24
-        tot_pnl_pct = -4.52
-
-    c_title, c_curr, c_sync = st.columns([2.2, 1.2, 0.6])
+    # ---- Header ----
+    c_title, c_curr, c_sync = st.columns([2.4, 1.1, 0.7], vertical_alignment="center")
     with c_title:
-        st.title("Executive Dashboard")
+        ui.page_header("Executive Dashboard", "ภาพรวมพอร์ต Webull + Dime แบบเรียลไทม์")
+        chips = "".join(
+            ui.status_chip(f"{pf.BROKER_META[b]['icon']} {b} · {status[b]['source']}",
+                           ok=not status[b]["error"], detail=status[b]["error"] or "")
+            for b in pf.BROKERS
+        )
+        st.markdown(f"<div style='margin-top:8px'>{chips}</div>", unsafe_allow_html=True)
     with c_curr:
-        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-        currency_selected = st.radio("Display Currency", ("USD ($)", "THB (฿)"), horizontal=True, index=0, label_visibility="collapsed")
+        currency = st.segmented_control("Currency", ["USD", "THB"], default="USD", key="dash_currency",
+                                        label_visibility="collapsed")
     with c_sync:
-        st.markdown("<div style='margin-top: 15px;'></div>", unsafe_allow_html=True)
-        if st.button("🔄 Sync", type="primary", use_container_width=True):
-            if sync_portfolio_history(tot_invested_usd, tot_market_usd, tot_pnl_usd, tot_pnl_pct):
-                st.toast("✅ บันทึก Snapshot ล่าสุดลงชีตเรียบร้อย!", icon="🚀")
-                time.sleep(1.5)
-                st.rerun()
-            else:
-                st.error("⚠️ บันทึกไม่สำเร็จ ตรวจสอบการเชื่อมต่อ Google Sheets")
+        if st.button("🔄 Sync Snapshot", type="primary", width="stretch", disabled=is_demo):
+            ok, msg = pf.sync_snapshot(df)
+            (st.toast if ok else st.error)(("✅ " if ok else "⚠️ ") + msg)
+    is_usd = (currency or "USD") == "USD"
+    cur = "$" if is_usd else "฿"
 
-    usd_fx_rate = st.session_state.get("usd_thb_rate", 35.0)
-    is_usd = "USD" in currency_selected
-    symbol = "$" if is_usd else "฿"
+    if is_demo:
+        st.markdown('<div class="demo-banner">🧪 <b>DEMO MODE</b> — ยังไม่พบ secrets ของ Webull API / Google Sheets '
+                    'จึงแสดงพอร์ตตัวอย่าง (ราคาจริงจาก yfinance)</div>', unsafe_allow_html=True)
 
-    display_market = tot_market_usd if is_usd else (tot_market_usd * usd_fx_rate)
-    display_pnl = tot_pnl_usd if is_usd else (tot_pnl_usd * usd_fx_rate)
+    ui.ticker_tape(df.sort_values("Market_Value_USD", ascending=False).drop_duplicates("Symbol"))
 
-    pnl_badge = "badge-delta-pos" if display_pnl >= 0 else "badge-delta-neg"
-    pnl_sign = "+" if display_pnl >= 0 else ""
+    total = pf.summarize(df)
+    balance, _ = pf.get_webull_balance()
 
-    st.markdown("<br>", unsafe_allow_html=True)
-    col_left, col_right = st.columns([1.1, 1.9])
+    # ---- Key metrics ----
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("มูลค่าพอร์ตรวม", _money(total["market"], is_usd, fx),
+              f"{_money(total['day_pnl'], is_usd, fx, True)} ({total['day_pct']:+.2f}%) วันนี้")
+    k2.metric("เงินลงทุน (ต้นทุน)", _money(total["invested"], is_usd, fx), f"{total['count']} positions",
+              delta_color="off", delta_arrow="off")
+    k3.metric("กำไร/ขาดทุนสุทธิ", _money(total["pnl"], is_usd, fx, True), f"{total['pnl_pct']:+.2f}%")
+    if balance:
+        cash = to_float(balance.get("total_cash_balance"))
+        k4.metric("Webull Cash", _money(cash, is_usd, fx), "via Webull API", delta_color="off", delta_arrow="off")
+    else:
+        k4.metric("USD / THB", f"฿{fx:,.2f}", "yfinance · THB=X", delta_color="off", delta_arrow="off")
 
+    st.write("")
+    # ---- Portfolio value + allocation ----
+    col_left, col_right = st.columns([1.9, 1.1])
     with col_left:
-        card_html = f"""
-        <div class="dash-card">
-            <div class="card-header-title">
-                <span>Portfolio value</span>
-                <span class="{pnl_badge}">{pnl_sign}{tot_pnl_pct:.2f}%</span>
-            </div>
-            <div class="big-value">{symbol}{display_market:,.2f}</div>
-            <div style="color: {'#4ade80' if display_pnl >= 0 else '#f87171'}; font-size: 0.82rem; margin-top: 6px; font-family: 'JetBrains Mono', monospace;">
-                {pnl_sign}{symbol}{display_pnl:,.2f} total return
-            </div>
-            <div style="margin-top: 20px; font-size: 0.8rem; color: #6b7280; font-weight: 600;">Where your money is invested</div>
-            <div class="allocation-bar-container">
-                <div class="bar-segment" style="width: 65%; background-color: #3b82f6;"></div>
-                <div class="bar-segment" style="width: 20%; background-color: #a855f7;"></div>
-                <div class="bar-segment" style="width: 10%; background-color: #ec4899;"></div>
-                <div class="bar-segment" style="width: 5%; background-color: #f59e0b;"></div>
-            </div>
-            <div class="asset-row">
-                <div class="asset-label"><div class="dot" style="background-color: #3b82f6;"></div> Tech Stocks</div>
-                <div class="asset-val">{symbol}{display_market*0.65:,.2f}</div>
-            </div>
-            <div class="asset-row">
-                <div class="asset-label"><div class="dot" style="background-color: #a855f7;"></div> ETFs & Index</div>
-                <div class="asset-val">{symbol}{display_market*0.20:,.2f}</div>
-            </div>
-            <div class="asset-row">
-                <div class="asset-label"><div class="dot" style="background-color: #ec4899;"></div> Financials</div>
-                <div class="asset-val">{symbol}{display_market*0.10:,.2f}</div>
-            </div>
-            <div class="asset-row" style="border-bottom: none;">
-                <div class="asset-label"><div class="dot" style="background-color: #f59e0b;"></div> Cash & Other</div>
-                <div class="asset-val">{symbol}{display_market*0.05:,.2f}</div>
-            </div>
-        </div>
-        """
-        st.markdown(card_html, unsafe_allow_html=True)
+        with ui.card("value", "Portfolio value"):
+            tf = st.segmented_control("Timeframe", list(TIMEFRAMES), default="MAX", key="dash_tf",
+                                      label_visibility="collapsed") or "MAX"
+            history = pf.load_history()
+            if not history.empty:
+                max_dt = history["Parsed_Date"].max()
+                if tf == "YTD":
+                    start = pd.Timestamp(year=max_dt.year, month=1, day=1)
+                elif TIMEFRAMES[tf]:
+                    start = max_dt - timedelta(days=TIMEFRAMES[tf])
+                else:
+                    start = history["Parsed_Date"].min()
+                view = history[history["Parsed_Date"] >= start]
+                view = view if not view.empty else history
+                x = view["Parsed_Date"].tolist()
+                y = (view["MarketValue"] * (1 if is_usd else fx)).tolist()
+                y.append(total["market"] * (1 if is_usd else fx))
+                x.append(pd.Timestamp.now())
+                ui.show_chart(ui.area_chart(x, y, height=300, prefix=cur))
+            else:
+                st.caption("ยังไม่มีประวัติใน Portfolio_History — กด **Sync Snapshot** เพื่อเริ่มเก็บข้อมูล · "
+                           "แสดงมูลค่าตามหุ้นแทน")
+                top = df.groupby("Symbol")["Market_Value_USD"].sum().sort_values().tail(10)
+                ui.show_chart(ui.bar_chart(list(top.index), [v * (1 if is_usd else fx) for v in top.values],
+                                           height=300, prefix=cur))
 
     with col_right:
-        if "selected_tf" not in st.session_state:
-            st.session_state["selected_tf"] = "MAX"
+        with ui.card("alloc", "Broker allocation"):
+            by_broker = df.groupby("Broker")["Market_Value_USD"].sum().reindex(pf.BROKERS).fillna(0)
+            ui.show_chart(ui.donut_chart(
+                list(by_broker.index), [v * (1 if is_usd else fx) for v in by_broker.values],
+                [pf.BROKER_META[b]["color"] for b in by_broker.index], height=190, prefix=cur))
+            rows = ""
+            for b, v in by_broker.items():
+                share = (v / total["market"] * 100) if total["market"] else 0
+                meta = pf.BROKER_META[b]
+                rows += (f'<div class="row"><div class="lbl"><span class="dot" style="width:9px;height:9px;'
+                         f'border-radius:50%;background:{meta["color"]}"></span>{meta["icon"]} {b}</div>'
+                         f'<div class="val">{_money(v, is_usd, fx)}<div class="sub">{share:.1f}%</div></div></div>')
+            st.markdown(rows, unsafe_allow_html=True)
 
-        tf_options = ["1D", "1W", "1M", "3M", "6M", "YTD", "1Y", "MAX"]
-        tf_cols = st.columns(len(tf_options))
-        
-        for idx, option in enumerate(tf_options):
-            btn_type = "primary" if st.session_state["selected_tf"] == option else "secondary"
-            if tf_cols[idx].button(option, key=f"tf_btn_{option}", use_container_width=True, type=btn_type):
-                st.session_state["selected_tf"] = option
-                st.rerun()
+    # ---- TradingView-style chart + movers ----
+    col_chart, col_movers = st.columns([1.9, 1.1])
+    with col_chart:
+        with ui.card("chart", "Chart"):
+            options = df.sort_values("Market_Value_USD", ascending=False)[["Symbol", "Broker"]].drop_duplicates("Symbol")
+            if options.empty:
+                st.info("ยังไม่มีหุ้นในพอร์ต")
+            else:
+                labels = [f"{r.Symbol}  ·  {r.Broker}" for r in options.itertuples()]
+                c_sym, c_per = st.columns([1.3, 1.7], vertical_alignment="center")
+                pick = c_sym.selectbox("Symbol", labels, label_visibility="collapsed", key="dash_symbol")
+                period = c_per.segmented_control("Period", list(CHART_PERIODS), default="6M", key="dash_period",
+                                                 label_visibility="collapsed") or "6M"
+                row = options.iloc[labels.index(pick)]
+                yf_sym = market.yf_symbol(row["Symbol"], row["Broker"])
+                ohlc = market.get_ohlc(yf_sym, *CHART_PERIODS[period])
+                if ohlc.empty:
+                    st.warning(f"ดึงกราฟ {yf_sym} ไม่สำเร็จ")
+                else:
+                    last, prev = ohlc["Close"].iloc[-1], ohlc["Close"].iloc[-2] if len(ohlc) > 1 else ohlc["Close"].iloc[-1]
+                    sym_cur = "฿" if row["Broker"] == pf.DIME_TH else "$"
+                    st.markdown(f'<div style="display:flex;gap:12px;align-items:baseline">'
+                                f'<span class="big-value">{sym_cur}{last:,.2f}</span>{ui.pct_badge((last / prev - 1) * 100)}'
+                                f'<span class="page-sub">{yf_sym} · O/H/L/C · SMA20/50 · ลาก/scroll เพื่อซูม</span></div>',
+                                unsafe_allow_html=True)
+                    ui.show_chart(ui.candlestick_chart(ohlc, height=440, currency=sym_cur))
 
-        selected_tf = st.session_state["selected_tf"]
+    with col_movers:
+        with ui.card("movers", "Today's movers"):
+            movers = df.sort_values("DayChange_Pct", key=abs, ascending=False).head(8)
+            rows = ""
+            for r in movers.itertuples():
+                sym_cur = "฿" if r.Currency == "THB" else "$"
+                meta = pf.BROKER_META[r.Broker]
+                rows += (f'<div class="row"><div class="lbl"><b style="color:#fff">{r.Symbol}</b>'
+                         f'<span class="sub" style="color:{meta["color"]}">{r.Broker}</span></div>'
+                         f'<div class="val">{sym_cur}{r.Price:,.2f} {ui.pct_badge(r.DayChange_Pct)}</div></div>')
+            st.markdown(rows or "<div class='page-sub'>—</div>", unsafe_allow_html=True)
 
-        if df_history is not None and not df_history.empty:
-            max_dt = df_history["Parsed_Date"].max()
-            
-            if selected_tf == "1D": start_dt = max_dt - timedelta(days=1)
-            elif selected_tf == "1W": start_dt = max_dt - timedelta(days=7)
-            elif selected_tf == "1M": start_dt = max_dt - timedelta(days=30)
-            elif selected_tf == "3M": start_dt = max_dt - timedelta(days=90)
-            elif selected_tf == "6M": start_dt = max_dt - timedelta(days=180)
-            elif selected_tf == "YTD": start_dt = pd.to_datetime(f"{max_dt.year}-01-01")
-            elif selected_tf == "1Y": start_dt = max_dt - timedelta(days=365)
-            else: start_dt = df_history["Parsed_Date"].min()
+    # ---- Per-broker cards (Webull vs Dime) ----
+    cols = st.columns(3)
+    for col, broker in zip(cols, pf.BROKERS):
+        sub = pf.summarize(df[df["Broker"] == broker])
+        meta = pf.BROKER_META[broker]
+        with col, ui.card(f"broker-{meta['market']}-{meta['group']}"):
+            st.markdown(
+                f'<div class="card-title">{ui.broker_badge(broker, meta)}{ui.pct_badge(sub["pnl_pct"])}</div>'
+                f'<div class="big-value">{_money(sub["market"], is_usd, fx)}</div>'
+                f'<div class="row"><div class="lbl">P/L</div><div class="val {"pos" if sub["pnl"] >= 0 else "neg"}">'
+                f'{_money(sub["pnl"], is_usd, fx, True)}</div></div>'
+                f'<div class="row"><div class="lbl">Positions</div><div class="val">{sub["count"]}</div></div>'
+                f'<div class="row"><div class="lbl">Data source</div><div class="val sub">{status[broker]["source"]}</div></div>',
+                unsafe_allow_html=True)
 
-            filtered_df = df_history[df_history["Parsed_Date"] >= start_dt]
-            if filtered_df.empty:
-                filtered_df = df_history.copy()
 
-            x_axis = filtered_df["Parsed_Date"]
-            y_axis = (filtered_df["MarketValue"] if is_usd else (filtered_df["MarketValue"] * usd_fx_rate)).tolist()
-        else:
-            x_axis = pd.to_datetime(['2026-08-01 00:00', '2026-08-02 05:44', '2026-08-05 09:56', '2026-08-08 11:59'])
-            y_axis = [15000.00, 48180.96, 45987.10, display_market]
-        
-        min_y = min(y_axis) if y_axis else 0
-        max_y = max(y_axis) if y_axis else 100
-        padding = (max_y - min_y) * 0.15 if max_y != min_y else max_y * 0.1
-        y_range = [max(0, min_y - padding), max_y + padding]
-
-        fig = go.Figure()
-        fig.add_trace(go.Scatter(
-            x=x_axis, 
-            y=y_axis, 
-            mode='lines+markers', 
-            line=dict(color='#38bdf8', width=3, shape='spline'), 
-            marker=dict(size=8, color='#38bdf8'),
-            fill='tozeroy', 
-            fillcolor='rgba(56, 189, 248, 0.05)',
-            hovertemplate="<b>วันที่: %{x|%Y-%m-%d %H:%M}</b><br>มูลค่าพอร์ต: %{y:$,.2f}<extra></extra>"
-        ))
-        fig.update_layout(
-            paper_bgcolor='rgba(0,0,0,0)', 
-            plot_bgcolor='rgba(0,0,0,0)', 
-            font=dict(color='#6b7280', family='Plus Jakarta Sans'), 
-            xaxis=dict(showgrid=False, zeroline=False, type='date'), 
-            yaxis=dict(showgrid=True, gridcolor='#16181f', zeroline=False, range=y_range, autorange=False), 
-            margin=dict(t=15, b=10, l=10, r=10), 
-            height=260
-        )
-        st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
-
-    if not df_shared.empty:
-        df_b_sum = df_shared.groupby("Broker")["Market_Value_USD"].sum().to_dict()
-        val_dime_us = df_b_sum.get("Dime US", 32412.11) * (1.0 if is_usd else usd_fx_rate)
-        val_webull = df_b_sum.get("Webull", 9131.88) * (1.0 if is_usd else usd_fx_rate)
-        val_dime_th = df_b_sum.get("Dime TH", 4234.23) * (1.0 if is_usd else usd_fx_rate)
-    else:
-        val_dime_us = 32412.11 * (1.0 if is_usd else usd_fx_rate)
-        val_webull = 9131.88 * (1.0 if is_usd else usd_fx_rate)
-        val_dime_th = 4234.23 * (1.0 if is_usd else usd_fx_rate)
-
-    c_btm_left, c_btm_right = st.columns([1.1, 1.9])
-    with c_btm_left:
-        st.markdown(f"""
-        <div class="dash-card">
-            <div class="card-header-title">Broker Allocation Real-time</div>
-            <div class="asset-row">
-                <div class="asset-label">💵 Dime US</div>
-                <div class="asset-val">{symbol}{val_dime_us:,.2f}</div>
-            </div>
-            <div class="asset-row">
-                <div class="asset-label">⚡ Webull US</div>
-                <div class="asset-val">{symbol}{val_webull:,.2f}</div>
-            </div>
-            <div class="asset-row" style="border-bottom:none;">
-                <div class="asset-label">🇹🇭 Dime TH</div>
-                <div class="asset-val">{symbol}{val_dime_th:,.2f}</div>
-            </div>
-        </div>
-        """, unsafe_allow_html=True)
-
-    with c_btm_right:
-        st.markdown('<div style="font-size: 0.85rem; font-weight: 600; color: #9ca3af; margin-bottom: 10px;">Top Holdings Performance</div>', unsafe_allow_html=True)
-        g1, g2, g3 = st.columns(3)
-        with g1: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🟢 Dime US</span><span class="badge-delta-pos">+11.37%</span></div><div class="stock-price">$32,412.11</div></div>', unsafe_allow_html=True)
-        with g2: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 Webull US</span><span class="badge-delta-neg">-34.48%</span></div><div class="stock-price">$9,131.88</div></div>', unsafe_allow_html=True)
-        with g3: st.markdown('<div class="stock-grid-card"><div style="display:flex; justify-content:space-between; align-items:center;"><span class="stock-symbol">🔴 Dime TH</span><span class="badge-delta-neg">-13.67%</span></div><div class="stock-price">$4,234.23</div></div>', unsafe_allow_html=True)
-
+# ==========================================
+# 3. PAGE LOADER
+# ==========================================
 def load_page_module(file_name):
     possible_paths = [f"pages/{file_name}.py", f"pages/{file_name}"]
-    target_path = None
-    for path in possible_paths:
-        if os.path.exists(path):
-            target_path = path
-            break
+    target_path = next((p for p in possible_paths if os.path.exists(p)), None)
     if not target_path and os.path.exists("pages"):
         for f in os.listdir("pages"):
             if f.lower() == f"{file_name}.py".lower():
@@ -560,70 +200,55 @@ def load_page_module(file_name):
     else:
         st.warning(f"⚠️ ไม่พบไฟล์ระบบย่อยที่ตำแหน่ง: `pages/{file_name}.py`")
 
+
 # ==========================================
 # 4. SIDEBAR NAVIGATION
 # ==========================================
 if "current_page" not in st.session_state:
     st.session_state["current_page"] = "Dashboard"
 
-with st.sidebar:
-    st.markdown('<div class="sidebar-brand">♾️ WEBULL DESK</div>', unsafe_allow_html=True)
-    
-    is_dash_active = "primary" if st.session_state["current_page"] == "Dashboard" else "secondary"
-    if st.button("🏠 Executive Dashboard", use_container_width=True, type=is_dash_active):
-        st.session_state["current_page"] = "Dashboard"
+
+def nav_button(label, page):
+    active = st.session_state["current_page"] == page
+    if st.button(label, width="stretch", type="primary" if active else "secondary", key=f"nav_{page}"):
+        st.session_state["current_page"] = page
         st.rerun()
 
-    st.markdown("<div style='margin-top: 10px;'></div>", unsafe_allow_html=True)
 
-    # --- SECTION 1.0 PORTFOLIO ---
-    with st.expander("📁 Portfolio", expanded=True):
-        if st.button("📊 Portfolio Holdings", use_container_width=True):
-            st.session_state["current_page"] = "1.1_Portfolio"
-            st.rerun()
-        if st.button("⚡ Trade Execution", use_container_width=True):
-            st.session_state["current_page"] = "1.2_Trade_Execution"
-            st.rerun()
-        if st.button("📜 Trade History", use_container_width=True):
-            st.session_state["current_page"] = "1.3_History"
-            st.rerun()
-        if st.button("💰 Dividends", use_container_width=True):
-            st.session_state["current_page"] = "1.4_Dividends"
-            st.rerun()
-        # เพิ่มปุ่มเมนู 1.5 ใหม่ตรงนี้
-        if st.button("📈 Daily US Comparison", use_container_width=True):
-            st.session_state["current_page"] = "1.5_Daily_Price_Comparison"
-            st.rerun()
+NAV_SECTIONS = [
+    ("🏦 Brokers", [
+        ("⚡ Webull (API)", "0.1_Webull"),
+        ("💵 Dime US / TH", "0.2_Dime"),
+    ]),
+    ("📁 Portfolio", [
+        ("📊 Portfolio Holdings", "1.1_Portfolio"),
+        ("⚡ Trade Execution", "1.2_Trade_Execution"),
+        ("📜 Trade History", "1.3_History"),
+        ("💰 Dividends", "1.4_Dividends"),
+        ("📈 Daily US Comparison", "1.5_Daily_Price_Comparison"),
+    ]),
+    ("🛠️ Portfolio Management Tools", [
+        ("🎯 Winner Tilt", "2.1_Winner_Tilt"),
+        ("🛡️ Portfolio Risk Desk", "2.2_Portfolio_Risk_Desk"),
+        ("📐 MM Calculator", "2.3_MM_Calculator"),
+        ("📰 Market News", "2.4_News"),
+    ]),
+    ("🧠 AI Stock Selection", [
+        ("🎯 AI Fundamental (GOD MODE)", "3.1_AI_Fundamental"),
+        ("💎 Diamond Hunter OS (v3.0)", "3.2_Diamond_Hunter"),
+        ("🔍 Peer Comparison", "3.3_Peer_Comparison"),
+        ("🧠 Multi-Brain Guru AI", "3.4_Multi_Brain_AI"),
+    ]),
+]
 
-    # --- SECTION 2.0 PORTFOLIO MANAGEMENT TOOLS ---
-    with st.expander("🛠️ Portfolio Management Tools", expanded=True):
-        if st.button("🎯 Winner Tilt", use_container_width=True):
-            st.session_state["current_page"] = "2.1_Winner_Tilt"
-            st.rerun()
-        if st.button("🛡️ Portfolio Risk Desk", use_container_width=True):
-            st.session_state["current_page"] = "2.2_Portfolio_Risk_Desk"
-            st.rerun()
-        if st.button("📐 MM Calculator", use_container_width=True):
-            st.session_state["current_page"] = "2.3_MM_Calculator"
-            st.rerun()
-        if st.button("📰 Market News", use_container_width=True):
-            st.session_state["current_page"] = "2.4_News"
-            st.rerun()
-
-    # --- SECTION 3.0 AI STOCK SELECTION & BUYING DECISIONS ---
-    with st.expander("🧠 AI Stock Selection", expanded=True):
-        if st.button("🎯 AI Fundamental (GOD MODE)", use_container_width=True):
-            st.session_state["current_page"] = "3.1_AI_Fundamental"
-            st.rerun()
-        if st.button("💎 Diamond Hunter OS (v3.0)", use_container_width=True):
-            st.session_state["current_page"] = "3.2_Diamond_Hunter"
-            st.rerun()
-        if st.button("🔍 Peer Comparison", use_container_width=True):
-            st.session_state["current_page"] = "3.3_Peer_Comparison"
-            st.rerun()
-        if st.button("🧠 Multi-Brain Guru AI", use_container_width=True):
-            st.session_state["current_page"] = "3.4_Multi_Brain_AI"
-            st.rerun()
+with st.sidebar:
+    st.markdown('<div class="sidebar-brand">♾️ WEBULL · DIME DESK<small>Portfolio command center</small></div>',
+                unsafe_allow_html=True)
+    nav_button("🏠 Executive Dashboard", "Dashboard")
+    for section, items in NAV_SECTIONS:
+        with st.expander(section, expanded=True):
+            for label, page in items:
+                nav_button(label, page)
 
 # ==========================================
 # 5. PAGE SWITCHER ROUTER

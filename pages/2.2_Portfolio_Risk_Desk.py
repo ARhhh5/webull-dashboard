@@ -214,40 +214,19 @@ def fetch_all_portfolio_data():
     else:
         status_logs.append("⚠️ ไม่พบ Google Credentials ใน Secrets")
 
-    # 2. Fetch Webull API
-    webull_config = st.secrets.get("Webull", {})
-    APP_KEY = webull_config.get("AppKey", "").strip() or webull_config.get("app_key", "").strip()
-    APP_SECRET = webull_config.get("AppSecret", "").strip() or webull_config.get("app_secret", "").strip()
-    ACCESS_TOKEN = webull_config.get("AccessToken", "").strip()
-    ACCOUNT_ID = webull_config.get("AccountId", "").strip() or webull_config.get("account_id", "").strip()
-    HOST = "api.webull.co.th"
+    # 2. Fetch Webull API (shared client: core/webull_api.py)
+    from core import portfolio as pf
+    from core.webull_api import WebullAPIError, normalize_positions
 
-    if APP_KEY and ACCOUNT_ID:
+    client = pf.webull_client()
+    if client:
         try:
-            path = "/openapi/assets/positions"
-            timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
-            nonce = uuid.uuid4().hex
-            signing_values = {"host": HOST, "x-app-key": APP_KEY, "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-signature-version": "1.0", "x-timestamp": timestamp, "account_id": ACCOUNT_ID}
-            string_1 = "&".join(f"{key}={signing_values[key]}" for key in sorted(signing_values))
-            signature = base64.b64encode(hmac.new(f"{APP_SECRET}&".encode("utf-8"), urllib.parse.quote(f"{path}&{string_1}", safe="").encode("utf-8"), hashlib.sha1).digest()).decode("utf-8")
-            headers = {"Accept": "application/json", "x-app-key": APP_KEY, "x-timestamp": timestamp, "x-signature-version": "1.0", "x-signature-algorithm": "HMAC-SHA1", "x-signature-nonce": nonce, "x-version": "v2", "x-signature": signature, "x-access-token": ACCESS_TOKEN}
-            
-            conn = http.client.HTTPSConnection(HOST)
-            conn.request("GET", f"{path}?account_id={ACCOUNT_ID}", "", headers)
-            res = conn.getresponse()
-            data = json.loads(res.read().decode("utf-8"))
-            if isinstance(data, list):
-                wb_count = 0
-                for p in data:
-                    if p.get("instrument_type") == "EQUITY":
-                        sym = str(p.get("symbol", "")).strip().upper()
-                        qty = float(p.get("quantity", 0))
-                        mkt_p = float(p.get("last_price", p.get("cost_price", 0)))
-                        if sym and qty > 0:
-                            portfolio_items.append({"Source": "Webull", "Symbol": sym, "Qty": qty, "MarketValue": qty * mkt_p, "Currency": "USD"})
-                            wb_count += 1
-                status_logs.append(f"✅ โหลดข้อมูลจาก Webull API สำเร็จ ({wb_count} รายการ)")
-        except Exception as e:
+            positions = normalize_positions(client.get_positions())
+            for p in positions:
+                portfolio_items.append({"Source": "Webull", "Symbol": p["Symbol"], "Qty": p["Qty"],
+                                        "MarketValue": p["Qty"] * p["Price"], "Currency": p["Currency"]})
+            status_logs.append(f"✅ โหลดข้อมูลจาก Webull API สำเร็จ ({len(positions)} รายการ)")
+        except WebullAPIError as e:
             status_logs.append(f"⚠️ ยิง Webull API ไม่สำเร็จ: {str(e)}")
     else:
         status_logs.append("⚠️ ไม่พบ Webull API Credentials ใน Secrets")
