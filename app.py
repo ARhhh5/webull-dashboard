@@ -11,13 +11,10 @@ with st.sidebar:
     st.markdown('<div class="hero-title" style="font-size:1.15rem;color:#38bdf8">⚡ PORTFOLIO DESK</div>'
                 '<div class="hero-sub">Webull auto-sync · Dime manual</div>', unsafe_allow_html=True)
 
-nav = st.navigation({
-    "Overview": [
-        st.Page("pages/1_Executive_Dashboard.py", title="Executive Dashboard", icon="🏠", default=True),
-    ],
-    "Accounts": [
-        st.Page("pages/2_Webull_Auto.py", title="Webull Portfolio", icon="⚡"),
-        st.Page("pages/3_Dime_Manual_Desk.py", title="Dime Manual Desk", icon="✍️"),
-    ],
-})
+# Exactly three flat links; sub-sections live in st.tabs inside each page.
+nav = st.navigation([
+    st.Page("pages/1_Executive_Dashboard.py", title="Executive Dashboard", icon="🏠", default=True),
+    st.Page("pages/2_Webull.py", title="Webull Portfolio", icon="📈"),
+    st.Page("pages/3_Dime.py", title="Dime Desk", icon="🧠"),
+])
 nav.run()

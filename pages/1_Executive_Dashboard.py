@@ -112,5 +112,5 @@ with col_side, theme.card("breakdown", "Account Breakdown", "Share of net worth"
             unsafe_allow_html=True)
         st.progress(min(max(share / 100, 0.0), 1.0), text=f"{share:.1f}% of net worth")
     if dime.empty:
-        st.caption("No Dime holdings yet: record trades in **Dime Manual Desk**.")
-        st.page_link("pages/3_Dime_Manual_Desk.py", label="Open Dime Manual Desk", icon="✍️")
+        st.caption("No Dime holdings yet: record trades in **Dime Desk**.")
+        st.page_link("pages/3_Dime.py", label="Open Dime Desk", icon="🧠")

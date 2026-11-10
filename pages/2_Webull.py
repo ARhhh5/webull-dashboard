@@ -1,0 +1,232 @@
+import pandas as pd
+import plotly.express as px
+import streamlit as st
+
+from core import theme
+from core.theme import money, pct
+from core.webull_data import get_dividend_history, get_order_history, get_portfolio
+
+data = get_portfolio()
+df, m = data["positions"], data["metrics"]
+
+# ---- Header ----
+c_title, c_refresh = st.columns([5, 1], vertical_alignment="center")
+with c_title:
+    status = (theme.status_pill("DEMO DATA", "#facc15") if data["is_mock"]
+              else theme.status_pill("LIVE · Webull OpenAPI", "#22c55e"))
+    theme.page_header("📈 Webull Portfolio",
+                      f'{status}&nbsp; Auto-synced · Account {data["account_id"]} · '
+                      f'updated {data["fetched_at"]:%Y-%m-%d %H:%M:%S} · cached 15 min')
+with c_refresh:
+    if st.button("↻ Refresh", width="stretch"):
+        get_portfolio.clear()
+        get_order_history.clear()
+        st.rerun()
+
+if data["is_mock"]:
+    st.info("Showing mock Webull data: credentials were not found or the API call failed. "
+            "Add `[Webull]` AppKey / AppSecret / AccessToken / AccountId to `.streamlit/secrets.toml`.",
+            icon="🧪")
+    with st.expander("Error details"):
+        st.code(data["error"] or "-", language=None)
+
+st.write("")
+
+# ---- KPI cards (shared by all tabs) ----
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Total Account Value", money(m["total_value"]), f"Cash {money(m['cash'])}", delta_color="off",
+          delta_arrow="off")
+k2.metric("Day PnL", money(m["day_pnl"], signed=True), pct(m["day_pnl_pct"]) if m["day_pnl"] is not None else None)
+k3.metric("Open PnL", money(m["open_pnl"], signed=True), pct(m["open_pnl_pct"]))
+k4.metric("Positions", m["positions"], f"Invested {money(m['market_value'])}", delta_color="off", delta_arrow="off")
+
+st.write("")
+tab_hold, tab_perf, tab_div = st.tabs(["📊 Portfolio Holdings", "🚀 Performance", "💰 Dividends"])
+
+# ============ Holdings ============
+with tab_hold:
+    if df.empty:
+        st.info("No open positions in this Webull account.")
+    else:
+        col_alloc, col_pnl = st.columns([1, 1.35])
+        with col_alloc, theme.card("alloc", "Portfolio Allocation", "Market value by symbol"):
+            alloc = df[["Symbol", "Market Value"]].copy()
+            if len(alloc) > 10:  # fold the long tail so the donut stays readable
+                tail = alloc.iloc[10:]["Market Value"].sum()
+                alloc = pd.concat([alloc.iloc[:10], pd.DataFrame([{"Symbol": "Others", "Market Value": tail}])])
+            fig = px.pie(alloc, names="Symbol", values="Market Value", hole=0.62,
+                         color_discrete_sequence=theme.PALETTE)
+            fig.update_traces(textposition="inside", textinfo="percent+label", sort=False,
+                              marker=dict(line=dict(color="#131722", width=2)),
+                              hovertemplate="<b>%{label}</b><br>$%{value:,.2f}<br>%{percent}<extra></extra>")
+            theme.style_fig(fig, 380).update_layout(
+                showlegend=False,
+                annotations=[dict(text=f"<b>{money(m['market_value'])}</b><br>"
+                                       "<span style='font-size:11px'>market value</span>",
+                                  x=0.5, y=0.5, showarrow=False, font=dict(size=16, color="#f8fafc"))])
+            st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
+
+        with col_pnl, theme.card("pnl", "Open PnL by Position", "Unrealized gain / loss per symbol"):
+            pnl = df.sort_values("Open PnL")
+            pnl = pnl.assign(Result=["Gain" if v >= 0 else "Loss" for v in pnl["Open PnL"]])
+            fig = px.bar(pnl, x="Open PnL", y="Symbol", orientation="h", color="Result",
+                         color_discrete_map={"Gain": theme.UP, "Loss": theme.DOWN},
+                         custom_data=["Open PnL %", "Market Value"])
+            fig.update_traces(hovertemplate="<b>%{y}</b><br>Open PnL $%{x:,.2f} (%{customdata[0]:+.2f}%)"
+                                            "<br>Value $%{customdata[1]:,.2f}<extra></extra>")
+            theme.style_fig(fig, 380).update_layout(showlegend=False, bargap=0.25)
+            fig.update_xaxes(tickformat="$,.0f", title=None)
+            fig.update_yaxes(title=None, categoryorder="array", categoryarray=list(pnl["Symbol"]))
+            st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
+
+        with theme.card("table", "Positions", "Raw position data from Webull"):
+            st.dataframe(df, hide_index=True, width="stretch", column_config={
+                "Quantity": st.column_config.NumberColumn(format="%.4f"),
+                "Avg Cost": st.column_config.NumberColumn(format="$%.2f"),
+                "Last Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Market Value": st.column_config.NumberColumn(format="dollar"),
+                "Cost Basis": st.column_config.NumberColumn(format="dollar"),
+                "Open PnL": st.column_config.NumberColumn(format="dollar"),
+                "Open PnL %": st.column_config.NumberColumn(format="%+.2f%%"),
+                "Day Change %": st.column_config.NumberColumn(format="%+.2f%%"),
+                "Day PnL": st.column_config.NumberColumn(format="dollar"),
+                "Weight %": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
+            })
+
+# ============ Performance ============
+with tab_perf:
+    if not df.empty:
+        best, worst = df.loc[df["Open PnL %"].idxmax()], df.loc[df["Open PnL %"].idxmin()]
+        winners = int((df["Open PnL"] > 0).sum())
+        p1, p2, p3, p4 = st.columns(4)
+        p1.metric("🏆 Best Position", best["Symbol"], pct(best["Open PnL %"]))
+        p2.metric("📉 Worst Position", worst["Symbol"], pct(worst["Open PnL %"]))
+        p3.metric("Win Rate (open)", f"{winners / len(df) * 100:.0f}%", f"{winners} of {len(df)} in profit",
+                  delta_color="off", delta_arrow="off")
+        top = df.loc[df["Weight %"].idxmax()]
+        p4.metric("Largest Weight", top["Symbol"], f"{top['Weight %']:.1f}% of portfolio",
+                  delta_color="off", delta_arrow="off")
+        st.write("")
+
+        col_ret, col_day = st.columns(2)
+        with col_ret, theme.card("ret", "Return % by Position", "Open PnL relative to cost basis"):
+            ret = df.sort_values("Open PnL %")
+            fig = px.bar(ret, x="Symbol", y="Open PnL %",
+                         color=ret["Open PnL %"] >= 0, color_discrete_map={True: theme.UP, False: theme.DOWN})
+            fig.update_traces(hovertemplate="<b>%{x}</b><br>%{y:+.2f}%<extra></extra>")
+            theme.style_fig(fig, 320).update_layout(showlegend=False, bargap=0.3)
+            fig.update_yaxes(ticksuffix="%", title=None)
+            fig.update_xaxes(title=None)
+            st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
+        with col_day, theme.card("day", "Today's Movers", "Day change % from Webull market data"):
+            if df["Day Change %"].notna().any():
+                day = df.dropna(subset=["Day Change %"]).sort_values("Day Change %")
+                fig = px.bar(day, x="Day Change %", y="Symbol", orientation="h",
+                             color=day["Day Change %"] >= 0,
+                             color_discrete_map={True: theme.UP, False: theme.DOWN}, custom_data=["Day PnL"])
+                fig.update_traces(hovertemplate="<b>%{y}</b><br>%{x:+.2f}% · $%{customdata[0]:+,.2f}<extra></extra>")
+                theme.style_fig(fig, 320).update_layout(showlegend=False, bargap=0.3)
+                fig.update_xaxes(ticksuffix="%", title=None)
+                fig.update_yaxes(title=None, categoryorder="array", categoryarray=list(day["Symbol"]))
+                st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
+            else:
+                st.caption("Day change requires Webull market-data permission.")
+
+    hist = get_order_history()
+    orders = hist["orders"]
+    with theme.card("orders", "Trade Activity · last 6 months",
+                    "Order history from Webull (API look-back limit is 6 months)"
+                    + (" · DEMO" if hist["is_mock"] else "")):
+        filled = orders[orders["Status"].isin(["FILLED", "PARTIAL_FILLED"])] if not orders.empty else orders
+        if filled.empty:
+            st.caption("No filled orders in the last 6 months.")
+        else:
+            monthly = filled.assign(Month=filled["Time"].dt.tz_convert(None).dt.to_period("M").dt.to_timestamp())
+            monthly = monthly.groupby(["Month", "Side"], as_index=False)["Amount"].sum()
+            fig = px.bar(monthly, x="Month", y="Amount", color="Side", barmode="group",
+                         color_discrete_map={"BUY": theme.ACCENT, "SELL": "#f472b6"})
+            fig.update_traces(hovertemplate="%{x|%b %Y}<br>$%{y:,.2f}<extra></extra>")
+            theme.style_fig(fig, 280).update_layout(legend=dict(orientation="h", y=1.1, x=0, title=None))
+            fig.update_yaxes(tickformat="$,.0f", title=None)
+            fig.update_xaxes(title=None, dtick="M1", tickformat="%b %Y")
+            st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
+            o1, o2, o3 = st.columns(3)
+            o1.metric("Filled Orders", len(filled))
+            o2.metric("Bought", money(filled.loc[filled["Side"] == "BUY", "Amount"].sum()))
+            o3.metric("Sold", money(filled.loc[filled["Side"] == "SELL", "Amount"].sum()))
+        if not orders.empty:
+            show = orders.assign(Time=orders["Time"].dt.tz_convert("Asia/Bangkok").dt.strftime("%Y-%m-%d %H:%M"))
+            st.dataframe(show, hide_index=True, width="stretch", height=320, column_config={
+                "Quantity": st.column_config.NumberColumn(format="%.4f"),
+                "Filled Qty": st.column_config.NumberColumn(format="%.4f"),
+                "Filled Price": st.column_config.NumberColumn(format="$%.2f"),
+                "Amount": st.column_config.NumberColumn(format="dollar"),
+            })
+
+# ============ Dividends ============
+with tab_div:
+    st.caption("Webull TH OpenAPI has no dividend/cash-activity endpoint (US region only), so income is "
+               "**estimated** from Yahoo Finance dividend history × your current shares.")
+    if df.empty:
+        st.info("No positions to estimate dividends for.")
+    else:
+        divs = get_dividend_history(tuple(df["Symbol"]))
+        shares = df.set_index("Symbol")["Quantity"]
+        price = df.set_index("Symbol")["Last Price"]
+        cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=365)
+        last12 = divs[divs["Date"] >= cutoff].groupby("Symbol")["Dividend"].sum() if not divs.empty else pd.Series()
+        income = pd.DataFrame({
+            "Symbol": df["Symbol"], "Shares": df["Quantity"].values,
+            "Dividend / Share (TTM)": df["Symbol"].map(last12).fillna(0.0).values,
+        })
+        income["Est. Annual Income"] = income["Shares"] * income["Dividend / Share (TTM)"]
+        income["Yield %"] = income["Dividend / Share (TTM)"] / income["Symbol"].map(price) * 100
+        income["Yield on Cost %"] = income["Dividend / Share (TTM)"] / income["Symbol"].map(
+            df.set_index("Symbol")["Avg Cost"]) * 100
+        payers = income[income["Est. Annual Income"] > 0].sort_values("Est. Annual Income", ascending=False)
+
+        annual = payers["Est. Annual Income"].sum()
+        d1, d2, d3, d4 = st.columns(4)
+        d1.metric("Est. Annual Income", money(annual), f"{money(annual / 12)} / month", delta_color="off",
+                  delta_arrow="off")
+        d2.metric("Portfolio Yield", f"{annual / m['market_value'] * 100:.2f}%" if m["market_value"] else "—")
+        d3.metric("Dividend Payers", f"{len(payers)} / {len(df)}")
+        d4.metric("Top Payer", payers.iloc[0]["Symbol"] if not payers.empty else "—",
+                  money(payers.iloc[0]["Est. Annual Income"]) if not payers.empty else None,
+                  delta_color="off", delta_arrow="off")
+        st.write("")
+
+        if payers.empty:
+            st.info("None of the current holdings paid a dividend in the last 12 months.")
+        else:
+            col_bar, col_cal = st.columns([1, 1.3])
+            with col_bar, theme.card("div-income", "Income by Holding", "Estimated annual, USD"):
+                fig = px.bar(payers.sort_values("Est. Annual Income"), x="Est. Annual Income", y="Symbol",
+                             orientation="h", color_discrete_sequence=["#facc15"], custom_data=["Yield %"])
+                fig.update_traces(hovertemplate="<b>%{y}</b><br>$%{x:,.2f} / yr · yield %{customdata[0]:.2f}%"
+                                                "<extra></extra>")
+                theme.style_fig(fig, 320).update_layout(bargap=0.3)
+                fig.update_xaxes(tickformat="$,.0f", title=None)
+                fig.update_yaxes(title=None)
+                st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
+            with col_cal, theme.card("div-cal", "Dividend Payments · last 12 months",
+                                     "Ex-dividend events × current shares"):
+                events = divs[(divs["Date"] >= cutoff) & divs["Symbol"].isin(payers["Symbol"])].copy()
+                events["Amount"] = events["Dividend"] * events["Symbol"].map(shares)
+                events["Month"] = events["Date"].dt.tz_convert(None).dt.to_period("M").dt.to_timestamp()
+                cal = events.groupby(["Month", "Symbol"], as_index=False)["Amount"].sum()
+                fig = px.bar(cal, x="Month", y="Amount", color="Symbol", color_discrete_sequence=theme.PALETTE)
+                fig.update_traces(hovertemplate="%{x|%b %Y}<br>$%{y:,.2f}<extra></extra>")
+                theme.style_fig(fig, 320).update_layout(legend=dict(orientation="h", y=1.12, x=0, title=None))
+                fig.update_yaxes(tickformat="$,.0f", title=None)
+                fig.update_xaxes(title=None, dtick="M1", tickformat="%b")
+                st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
+
+            with theme.card("div-table", "Dividend Details", "Per holding, trailing 12 months"):
+                st.dataframe(payers, hide_index=True, width="stretch", column_config={
+                    "Shares": st.column_config.NumberColumn(format="%.4f"),
+                    "Dividend / Share (TTM)": st.column_config.NumberColumn(format="$%.4f"),
+                    "Est. Annual Income": st.column_config.NumberColumn(format="dollar"),
+                    "Yield %": st.column_config.NumberColumn(format="%.2f%%"),
+                    "Yield on Cost %": st.column_config.NumberColumn(format="%.2f%%"),
+                })

@@ -76,8 +76,8 @@ def _json_or_raise(response, what):
     return data
 
 
-def _fetch_live():
-    from webull.data.data_client import DataClient
+def _connect():
+    """Returns (api_client, trade_client, account_id). Raises on missing secrets or API errors."""
     from webull.trade.trade_client import TradeClient
 
     creds = _load_credentials()
@@ -91,6 +91,13 @@ def _fetch_live():
         if not accounts:
             raise RuntimeError("No Webull accounts returned for these credentials")
         account_id = str(accounts[0]["account_id"])
+    return api_client, trade, account_id
+
+
+def _fetch_live():
+    from webull.data.data_client import DataClient
+
+    api_client, trade, account_id = _connect()
 
     balance = _json_or_raise(trade.account_v2.get_account_balance(account_id), "Account balance") or {}
     positions = _json_or_raise(trade.account_v2.get_account_position(account_id), "Positions") or []
@@ -180,3 +187,103 @@ def get_portfolio():
     positions, metrics = _build(rows, day_change, cash)
     return {"positions": positions, "metrics": metrics, "is_mock": is_mock, "error": error,
             "account_id": account_id, "fetched_at": datetime.now()}
+
+
+ORDER_COLUMNS = ["Time", "Symbol", "Side", "Status", "Order Type", "Quantity", "Filled Qty", "Filled Price",
+                 "Amount", "Order ID"]
+MAX_ORDER_PAGES = 20  # API pages through history; cap to protect rate limits
+
+
+def _fetch_orders_live(days):
+    from datetime import timedelta, timezone
+
+    _, trade, account_id = _connect()
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(days=min(days, 180))  # API look-back limit is 6 months
+    fmt = "%Y-%m-%dT%H:%M:%S.000Z"
+    rows, key = [], None
+    for _ in range(MAX_ORDER_PAGES):
+        resp = trade.order_v3.list_order_history(account_id, start_time=start.strftime(fmt),
+                                                 end_time=end.strftime(fmt), pagination_key=key)
+        if resp.status_code != 200:
+            raise RuntimeError(f"Order history failed: HTTP {resp.status_code}")
+        payload = resp.json() or {}
+        groups = payload.get("data", payload) if isinstance(payload, dict) else payload
+        for group in groups or []:
+            for o in group.get("orders", []) or []:
+                if "OPTION" in str(o.get("instrument_type", "")).upper():
+                    continue
+                filled_qty = _num(o.get("filled_quantity"))
+                filled_price = _num(o.get("filled_price"))
+                rows.append({
+                    "Time": pd.to_datetime(o.get("filled_time") or o.get("place_time"), errors="coerce", utc=True),
+                    "Symbol": str(o.get("symbol", "")).upper(), "Side": str(o.get("side", "")).upper(),
+                    "Status": str(o.get("status", "")).upper(), "Order Type": o.get("order_type", ""),
+                    "Quantity": _num(o.get("total_quantity")), "Filled Qty": filled_qty,
+                    "Filled Price": filled_price, "Amount": filled_qty * filled_price,
+                    "Order ID": str(o.get("order_id", "")),
+                })
+        key = payload.get("pagination_key") if isinstance(payload, dict) else None
+        if not key:
+            break
+    return rows
+
+
+def _mock_orders(days):
+    from datetime import timedelta
+
+    rows, now = [], datetime.now()
+    rng = np.random.default_rng(7)
+    base = {s: c for s, _, c, _, _ in [
+        ("NVDA", 0, 98.50, 0, 0), ("AAPL", 0, 171.20, 0, 0), ("MSFT", 0, 389.00, 0, 0), ("TSLA", 0, 268.30, 0, 0),
+        ("AMZN", 0, 152.80, 0, 0), ("GOOGL", 0, 139.40, 0, 0), ("NU", 0, 12.10, 0, 0), ("PLTR", 0, 24.60, 0, 0),
+        ("VOO", 0, 455.00, 0, 0), ("SOFI", 0, 9.85, 0, 0)]}
+    for i in range(36):
+        sym = list(base)[i % len(base)]
+        side = "SELL" if i % 5 == 4 else "BUY"
+        qty = float(rng.integers(1, 25))
+        price = round(base[sym] * float(rng.uniform(0.85, 1.6)), 2)
+        status = "CANCELLED" if i % 11 == 10 else "FILLED"
+        filled = qty if status == "FILLED" else 0.0
+        rows.append({"Time": pd.Timestamp(now - timedelta(days=int(i * days / 36), hours=int(rng.integers(0, 6))),
+                                          tz="UTC"),
+                     "Symbol": sym, "Side": side, "Status": status, "Order Type": "LIMIT", "Quantity": qty,
+                     "Filled Qty": filled, "Filled Price": price if filled else 0.0, "Amount": filled * price,
+                     "Order ID": f"DEMO{1000 + i}"})
+    return rows
+
+
+@st.cache_data(ttl=900, show_spinner="Fetching Webull order history...")
+def get_order_history(days=180):
+    """Returns dict(orders DataFrame, is_mock, error)."""
+    try:
+        rows, is_mock, error = _fetch_orders_live(days), False, None
+    except Exception as exc:
+        rows, is_mock = _mock_orders(days), True
+        error = f"{type(exc).__name__}: {str(exc)[:300]}"
+    df = pd.DataFrame(rows, columns=ORDER_COLUMNS)
+    if not df.empty:
+        df = df.sort_values("Time", ascending=False).reset_index(drop=True)
+    return {"orders": df, "is_mock": is_mock, "error": error}
+
+
+@st.cache_data(ttl=86400, show_spinner="Loading dividend history...")
+def get_dividend_history(symbols):
+    """Per-share cash dividends from Yahoo Finance for the last 2 years. symbols: tuple."""
+    import yfinance as yf
+
+    frames = []
+    cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=730)
+    for sym in symbols:
+        try:
+            divs = yf.Ticker(sym).dividends
+        except Exception:
+            continue
+        if divs is None or divs.empty:
+            continue
+        divs.index = pd.to_datetime(divs.index, utc=True)
+        divs = divs[divs.index >= cutoff]
+        frames.append(pd.DataFrame({"Date": divs.index, "Symbol": sym, "Dividend": divs.values}))
+    if not frames:
+        return pd.DataFrame(columns=["Date", "Symbol", "Dividend"])
+    return pd.concat(frames, ignore_index=True).sort_values("Date", ascending=False)
