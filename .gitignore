@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.streamlit/secrets.toml
+webull_*_sdk.log
+conf/
+portfolio.db
+portfolio.db-journal

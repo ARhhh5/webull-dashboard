@@ -1,4 +1,5 @@
-google-generativeai
-gspread
-yfinance
+streamlit>=1.67
+pandas
 plotly
+webull-openapi-python-sdk
+yfinance
