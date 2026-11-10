@@ -1,4 +1,5 @@
-streamlit>=1.50
+streamlit>=1.67
 pandas
 plotly
 webull-openapi-python-sdk
+yfinance

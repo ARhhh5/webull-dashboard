@@ -55,6 +55,26 @@ def card(name, title, subtitle=""):
     return box
 
 
+def money(value, symbol="$", signed=False):
+    if value is None:
+        return "—"
+    sign = ("+" if value >= 0 else "-") if signed else ("-" if value < 0 else "")
+    return f"{sign}{symbol}{abs(value):,.2f}"
+
+
+def pct(value):
+    return "—" if value is None else f"{value:+.2f}%"
+
+
+def page_header(title, subtitle_html=""):
+    st.markdown(f'<div class="hero-title">{title}</div><div class="hero-sub">{subtitle_html}</div>',
+                unsafe_allow_html=True)
+
+
+def status_pill(text, color):
+    return f'<span class="pill"><span class="dot" style="background:{color}"></span>{text}</span>'
+
+
 def style_fig(fig, height=360):
     fig.update_layout(
         template="plotly_dark", height=height, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",

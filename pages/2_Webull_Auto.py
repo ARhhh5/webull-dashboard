@@ -3,19 +3,8 @@ import plotly.express as px
 import streamlit as st
 
 from core import theme
+from core.theme import money, pct
 from core.webull_data import get_portfolio
-
-
-def money(value, signed=False):
-    if value is None:
-        return "—"
-    sign = ("+" if value >= 0 else "-") if signed else ("-" if value < 0 else "")
-    return f"{sign}${abs(value):,.2f}"
-
-
-def pct(value):
-    return "—" if value is None else f"{value:+.2f}%"
-
 
 data = get_portfolio()
 df, m = data["positions"], data["metrics"]
@@ -23,14 +12,11 @@ df, m = data["positions"], data["metrics"]
 # ---- Header ----
 c_title, c_refresh = st.columns([5, 1], vertical_alignment="center")
 with c_title:
-    status = ('<span class="pill"><span class="dot" style="background:#facc15"></span>DEMO DATA</span>'
-              if data["is_mock"] else
-              '<span class="pill"><span class="dot" style="background:#22c55e"></span>LIVE · Webull OpenAPI</span>')
-    st.markdown(
-        f'<div class="hero-title">Webull Portfolio</div>'
-        f'<div class="hero-sub">{status}&nbsp; Account {data["account_id"]} · '
-        f'updated {data["fetched_at"]:%Y-%m-%d %H:%M:%S} · cached 15 min</div>',
-        unsafe_allow_html=True)
+    status = (theme.status_pill("DEMO DATA", "#facc15") if data["is_mock"]
+              else theme.status_pill("LIVE · Webull OpenAPI", "#22c55e"))
+    theme.page_header("⚡ Webull Portfolio",
+                      f'{status}&nbsp; Auto-synced · Account {data["account_id"]} · '
+                      f'updated {data["fetched_at"]:%Y-%m-%d %H:%M:%S} · cached 15 min')
 with c_refresh:
     if st.button("↻ Refresh", width="stretch"):
         get_portfolio.clear()
