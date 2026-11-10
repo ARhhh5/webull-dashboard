@@ -114,43 +114,63 @@ def _fetch_live():
                      "Last Price": _num(p.get("last_price"), cost),
                      "Currency": str(p.get("currency") or "USD").upper()})
 
-    # Day change needs market data permission; positions still render without it.
+    # Day change needs market-data permission; positions still render without it.
+    # ETFs (e.g. VOO) are only returned under the US_ETF category.
     day_change = {}
     if rows:
         try:
             data_client = DataClient(api_client)
-            snaps = _json_or_raise(data_client.market_data.get_snapshot(
-                ",".join(r["Symbol"] for r in rows), "US_STOCK"), "Snapshot")
-            for s in snaps or []:
-                day_change[str(s.get("symbol", "")).upper()] = _num(s.get("change_ratio")) * 100
+            wanted = {r["Symbol"] for r in rows}
+            for category in ("US_STOCK", "US_ETF"):
+                missing = sorted(wanted - set(day_change))
+                if not missing:
+                    break
+                try:
+                    snaps = _json_or_raise(data_client.market_data.get_snapshot(",".join(missing), category),
+                                           f"Snapshot {category}")
+                except Exception:
+                    continue
+                for s in snaps or []:
+                    day_change[str(s.get("symbol", "")).upper()] = {
+                        "pct": _num(s.get("change_ratio")) * 100, "change": _num(s.get("change"), None)}
         except Exception:
             day_change = {}
 
-    cash = _num(balance.get("total_cash_balance"))
-    return rows, day_change, cash, account_id
+    summary = {
+        "cash": _num(balance.get("total_cash_balance")),
+        "market_value": _num(balance.get("total_market_value"), None),
+        "open_pnl": _num(balance.get("total_unrealized_profit_loss"), None),
+        "currency": balance.get("total_asset_currency") or "USD",
+    }
+    return rows, day_change, summary, account_id
 
 
-def _build(rows, day_change, cash):
+def _build(rows, day_change, summary):
     df = pd.DataFrame(rows, columns=["Symbol", "Quantity", "Avg Cost", "Last Price", "Currency"])
     df["Market Value"] = df["Quantity"] * df["Last Price"]
     df["Cost Basis"] = df["Quantity"] * df["Avg Cost"]
     df["Open PnL"] = df["Market Value"] - df["Cost Basis"]
     df["Open PnL %"] = np.where(df["Cost Basis"] > 0, df["Open PnL"] / df["Cost Basis"] * 100, 0.0)
-    df["Day Change %"] = df["Symbol"].map(day_change).astype(float)
-    prev_value = df["Market Value"] / (1 + df["Day Change %"] / 100)
-    df["Day PnL"] = df["Market Value"] - prev_value
+    df["Day Change %"] = df["Symbol"].map(lambda s: day_change.get(s, {}).get("pct")).astype(float)
+    change = df["Symbol"].map(lambda s: day_change.get(s, {}).get("change")).astype(float)
+    # Prefer the absolute per-share change; derive it from change % when the API omits it.
+    derived = df["Market Value"] - df["Market Value"] / (1 + df["Day Change %"] / 100)
+    df["Day PnL"] = (df["Quantity"] * change).fillna(derived)
     total_mv = df["Market Value"].sum()
     df["Weight %"] = df["Market Value"] / total_mv * 100 if total_mv else 0.0
     df = df[POSITION_COLUMNS].sort_values("Market Value", ascending=False).reset_index(drop=True)
 
+    # Account Summary totals are authoritative when the API returns them.
+    market_value = summary["market_value"] if summary.get("market_value") is not None else total_mv
+    open_pnl = summary["open_pnl"] if summary.get("open_pnl") is not None else df["Open PnL"].sum()
+    cash = summary["cash"]
     cost = df["Cost Basis"].sum()
-    open_pnl = df["Open PnL"].sum()
-    has_day = df["Day Change %"].notna().any()
+    has_day = df["Day PnL"].notna().any()
     day_pnl = df["Day PnL"].sum() if has_day else None
-    prev_total = total_mv - (day_pnl or 0)
+    prev_total = market_value - (day_pnl or 0)
     metrics = {
-        "total_value": total_mv + cash,
-        "market_value": total_mv,
+        "total_value": market_value + cash,
+        "market_value": market_value,
         "cash": cash,
         "cost_basis": cost,
         "open_pnl": open_pnl,
@@ -171,20 +191,21 @@ def _mock():
         ("VOO", 12, 455.00, 548.90, 0.21), ("SOFI", 400, 9.85, 7.92, -1.95),
     ]
     data = [{"Symbol": s, "Quantity": q, "Avg Cost": c, "Last Price": p, "Currency": "USD"} for s, q, c, p, _ in rows]
-    return data, {s: d for s, _, _, _, d in rows}, 4_825.37
+    day = {s: {"pct": d, "change": None} for s, _, _, _, d in rows}
+    return data, day, {"cash": 4_825.37, "market_value": None, "open_pnl": None, "currency": "USD"}
 
 
 @st.cache_data(ttl=900, show_spinner="Fetching Webull portfolio...")
 def get_portfolio():
     """Returns dict(positions, metrics, is_mock, error, account_id, fetched_at)."""
     try:
-        rows, day_change, cash, account_id = _fetch_live()
+        rows, day_change, summary, account_id = _fetch_live()
         is_mock, error = False, None
     except Exception as exc:  # KeyError, missing secrets file, SDK/auth/network errors
-        rows, day_change, cash = _mock()
+        rows, day_change, summary = _mock()
         account_id, is_mock = "DEMO-ACCOUNT", True
         error = f"{type(exc).__name__}: {str(exc)[:300]}"
-    positions, metrics = _build(rows, day_change, cash)
+    positions, metrics = _build(rows, day_change, summary)
     return {"positions": positions, "metrics": metrics, "is_mock": is_mock, "error": error,
             "account_id": account_id, "fetched_at": datetime.now()}
 

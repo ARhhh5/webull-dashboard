@@ -34,11 +34,12 @@ st.write("")
 
 # ---- KPI cards (shared by all tabs) ----
 k1, k2, k3, k4 = st.columns(4)
-k1.metric("Total Account Value", money(m["total_value"]), f"Cash {money(m['cash'])}", delta_color="off",
+k1.metric("Total Account Value", money(m["total_value"]), f"{m['positions']} positions", delta_color="off",
           delta_arrow="off")
 k2.metric("Day PnL", money(m["day_pnl"], signed=True), pct(m["day_pnl_pct"]) if m["day_pnl"] is not None else None)
 k3.metric("Open PnL", money(m["open_pnl"], signed=True), pct(m["open_pnl_pct"]))
-k4.metric("Positions", m["positions"], f"Invested {money(m['market_value'])}", delta_color="off", delta_arrow="off")
+cash_share = m["cash"] / m["total_value"] * 100 if m["total_value"] else 0.0
+k4.metric("Cash Balance", money(m["cash"]), f"{cash_share:.1f}% of account", delta_color="off", delta_arrow="off")
 
 st.write("")
 tab_hold, tab_perf, tab_div = st.tabs(["📊 Portfolio Holdings", "🚀 Performance", "💰 Dividends"])
@@ -48,7 +49,7 @@ with tab_hold:
     if df.empty:
         st.info("No open positions in this Webull account.")
     else:
-        col_alloc, col_pnl = st.columns([1, 1.35])
+        col_alloc, col_pnl = st.columns(2)
         with col_alloc, theme.card("alloc", "Portfolio Allocation", "Market value by symbol"):
             alloc = df[["Symbol", "Market Value"]].copy()
             if len(alloc) > 10:  # fold the long tail so the donut stays readable
@@ -80,18 +81,17 @@ with tab_hold:
             st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
 
         with theme.card("table", "Positions", "Raw position data from Webull"):
-            st.dataframe(df, hide_index=True, width="stretch", column_config={
-                "Quantity": st.column_config.NumberColumn(format="%.4f"),
-                "Avg Cost": st.column_config.NumberColumn(format="$%.2f"),
-                "Last Price": st.column_config.NumberColumn(format="$%.2f"),
-                "Market Value": st.column_config.NumberColumn(format="dollar"),
-                "Cost Basis": st.column_config.NumberColumn(format="dollar"),
-                "Open PnL": st.column_config.NumberColumn(format="dollar"),
-                "Open PnL %": st.column_config.NumberColumn(format="%+.2f%%"),
-                "Day Change %": st.column_config.NumberColumn(format="%+.2f%%"),
-                "Day PnL": st.column_config.NumberColumn(format="dollar"),
-                "Weight %": st.column_config.ProgressColumn(format="%.1f%%", min_value=0, max_value=100),
-            })
+            table = df[["Symbol", "Quantity", "Avg Cost", "Last Price", "Market Value", "Open PnL"]].rename(
+                columns={"Avg Cost": "Cost Price", "Last Price": "Current Price", "Open PnL": "Unrealized PnL"})
+            st.dataframe(
+                table.style.map(theme.pnl_color, subset=["Unrealized PnL"]),
+                hide_index=True, width="stretch", column_config={
+                    "Quantity": st.column_config.NumberColumn(format="%.4f"),
+                    "Cost Price": st.column_config.NumberColumn(format="$%.2f"),
+                    "Current Price": st.column_config.NumberColumn(format="$%.2f"),
+                    "Market Value": st.column_config.NumberColumn(format="dollar"),
+                    "Unrealized PnL": st.column_config.NumberColumn(format="dollar"),
+                })
 
 # ============ Performance ============
 with tab_perf:
