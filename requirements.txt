@@ -1,8 +1,4 @@
 streamlit>=1.50
 pandas
-requests
-google-generativeai
-gspread
-google-auth
-yfinance
 plotly
+webull-openapi-python-sdk
