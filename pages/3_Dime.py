@@ -23,9 +23,36 @@ with c_filter:
 account = None if view == "All Dime" else view
 
 fx, fx_live = dime_data.get_usd_thb()
-holdings_all = dime_data.get_dime_portfolio()
-holdings = holdings_all if account is None or holdings_all.empty else (
-    holdings_all[holdings_all["account_type"] == account])
+
+
+def _prepare(df, usd_thb):
+    """Guarantee every column this page reads, derived from the base holding fields.
+
+    The page must not depend on optional columns from core.dime_data: Streamlit Cloud can keep an
+    older imported module in memory after a deploy, and empty frames may carry no columns at all.
+    """
+    df = df.copy() if df is not None else pd.DataFrame()
+    for col in ("account_type", "symbol", "currency", "price_source"):
+        if col not in df.columns:
+            df[col] = pd.Series(dtype="object")
+    for col in ("shares", "avg_cost", "cost_basis", "realized_pnl", "last_price", "market_value"):
+        if col not in df.columns:
+            df[col] = pd.Series(dtype="float64")
+    df["currency"] = df["currency"].fillna(df["account_type"].map(db_manager.ACCOUNT_CURRENCY))
+    df["last_price"] = df["last_price"].fillna(df["avg_cost"])
+    df["market_value"] = df["market_value"].fillna(df["shares"] * df["last_price"])
+    df["price_source"] = df["price_source"].fillna("Avg cost")
+    df["unrealized_pnl"] = df["market_value"] - df["cost_basis"]
+    df["unrealized_pct"] = (df["unrealized_pnl"] / df["cost_basis"] * 100).where(df["cost_basis"] > 0, 0.0)
+    to_usd = df["currency"].map({"USD": 1.0, "THB": 1 / usd_thb}).fillna(1.0)
+    df["market_value_usd"] = df["market_value"] * to_usd
+    df["cost_basis_usd"] = df["cost_basis"] * to_usd
+    df["unrealized_pnl_usd"] = df["unrealized_pnl"] * to_usd
+    return df
+
+
+holdings_all = _prepare(dime_data.get_dime_portfolio(), fx)
+holdings = holdings_all if account is None else holdings_all[holdings_all["account_type"] == account]
 
 # Mixed accounts are consolidated in USD; a single account stays in its own currency.
 if account is None:
@@ -83,8 +110,8 @@ with tab_entry:
 
 # ============ Dashboard ============
 with tab_dash:
-    total_value = float(holdings[value_col].sum()) if not holdings.empty else 0.0
-    total_cost = float(holdings[cost_col].sum()) if not holdings.empty else 0.0
+    total_value = float(holdings[value_col].sum())
+    total_cost = float(holdings[cost_col].sum())
     total_pnl = total_value - total_cost
     k1, k2, k3, k4 = st.columns(4)
     k1.metric("Total Value", money(total_value, cur), f"{len(holdings)} positions", delta_color="off",
@@ -92,7 +119,7 @@ with tab_dash:
     k2.metric("Total PnL (Unrealized)", money(total_pnl, cur, signed=True),
               pct(total_pnl / total_cost * 100 if total_cost else 0.0))
     k3.metric("Cost Basis", money(total_cost, cur), ccy_note.split(" · ")[0], delta_color="off", delta_arrow="off")
-    stale = int((holdings["price_source"] != "Market").sum()) if not holdings.empty else 0
+    stale = int((holdings["price_source"] != "Market").sum())
     k4.metric("Live Prices", f"{len(holdings) - stale} / {len(holdings)}",
               "Yahoo Finance" if not stale else f"{stale} using avg cost", delta_color="off", delta_arrow="off")
     st.caption(ccy_note)
