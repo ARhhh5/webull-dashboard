@@ -71,12 +71,18 @@ with tab_positions:
     if df.empty:
         st.info("No open positions in this Webull account.")
     else:
-        with theme.card("table", "Current Holdings", "Day and open PnL amounts in USD; day change versus previous close"):
+        with theme.card("table", "Current Holdings", "Daily price comparison versus previous trading close (not calendar yesterday); USD per share"):
             table = df[["Symbol", "Quantity", "Avg Cost", "Last Price", "Day PnL", "Day Change %",
                         "Open PnL", "Open PnL %"]].rename(columns={
                             "Avg Cost": "Average Cost", "Last Price": "Current Price", "Day Change %": "Day PnL %"})
+            # Day PnL is for the holding; divide by shares for the per-share price move.
+            table["Price Change (USD)"] = df["Day PnL"] / df["Quantity"].where(df["Quantity"] > 0)
+            table["Previous Close"] = table["Current Price"] - table["Price Change (USD)"]
+            table["Price Change (%)"] = df["Day Change %"]
+            table = table[[*table.columns[:8], "Previous Close", "Price Change (USD)", "Price Change (%)"]]
             st.dataframe(
-                table.style.map(theme.pnl_color, subset=["Day PnL", "Day PnL %", "Open PnL", "Open PnL %"]),
+                table.style.map(theme.pnl_color, subset=["Day PnL", "Day PnL %", "Open PnL", "Open PnL %",
+                                                         "Price Change (USD)", "Price Change (%)"]),
                 hide_index=True, width="stretch", column_config={
                     "Quantity": st.column_config.NumberColumn(format="%.4f"),
                     "Average Cost": st.column_config.NumberColumn(format="$%.2f"),
@@ -85,6 +91,11 @@ with tab_positions:
                     "Day PnL %": st.column_config.NumberColumn(format="%+.2f%%"),
                     "Open PnL": st.column_config.NumberColumn(format="dollar"),
                     "Open PnL %": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "Previous Close": st.column_config.NumberColumn(format="$%.2f"),
+                    "Price Change (USD)": st.column_config.NumberColumn(
+                        format="$%+.2f", help="Current price minus previous trading close, per share (USD)."),
+                    "Price Change (%)": st.column_config.NumberColumn(
+                        format="%+.2f%%", help="Price change versus previous trading close."),
                 })
 
         with theme.card("pnl", "Open PnL by Position", "Unrealized gain / loss per symbol"):
