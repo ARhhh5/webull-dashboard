@@ -24,6 +24,13 @@ CREATE TABLE IF NOT EXISTS dime_trades (
     price        REAL    NOT NULL CHECK (price >= 0)
 );
 CREATE INDEX IF NOT EXISTS idx_dime_trades_account_symbol ON dime_trades (account_type, symbol);
+CREATE TABLE IF NOT EXISTS dime_dividends (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    date         TEXT    NOT NULL,
+    account_type TEXT    NOT NULL CHECK (account_type IN ('Dime TH', 'Dime US')),
+    symbol       TEXT    NOT NULL,
+    amount       REAL    NOT NULL CHECK (amount > 0)
+);
 """
 
 HOLDING_COLUMNS = ["account_type", "symbol", "shares", "avg_cost", "cost_basis", "realized_pnl", "currency"]
@@ -141,3 +148,39 @@ def get_holdings(db_path=None):
         })
     return pd.DataFrame(rows, columns=HOLDING_COLUMNS).sort_values(
         ["account_type", "cost_basis"], ascending=[True, False]).reset_index(drop=True)
+
+
+def insert_dividend(account_type, symbol, amount, date=None, db_path=None):
+    """Record a received dividend (amount in the account's currency). Returns the new row id."""
+    if account_type not in ACCOUNTS:
+        raise ValueError(f"account_type must be one of {ACCOUNTS}")
+    symbol = _normalize_symbol(symbol, account_type)
+    if not symbol:
+        raise ValueError("Symbol is required")
+    amount = float(amount)
+    if amount <= 0:
+        raise ValueError("Amount must be greater than 0")
+    day = (date or datetime.now()).strftime("%Y-%m-%d")
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn, conn:
+        return conn.execute(
+            "INSERT INTO dime_dividends (date, account_type, symbol, amount) VALUES (?, ?, ?, ?)",
+            (day, account_type, symbol, amount),
+        ).lastrowid
+
+
+def delete_dividend(dividend_id, db_path=None):
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn, conn:
+        return conn.execute("DELETE FROM dime_dividends WHERE id = ?", (int(dividend_id),)).rowcount
+
+
+def fetch_dividends(account_type=None, db_path=None):
+    init_db(db_path)
+    query, params = "SELECT * FROM dime_dividends", ()
+    if account_type:
+        query, params = query + " WHERE account_type = ?", (account_type,)
+    with closing(_connect(db_path)) as conn:
+        df = pd.read_sql_query(query + " ORDER BY date DESC, id DESC", conn, params=params)
+    df["currency"] = df["account_type"].map(ACCOUNT_CURRENCY)
+    return df

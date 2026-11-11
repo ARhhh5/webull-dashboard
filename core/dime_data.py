@@ -22,9 +22,10 @@ def get_prices(yf_symbols):
 
         data = yf.download(list(yf_symbols), period="5d", interval="1d", progress=False,
                            auto_adjust=False, group_by="ticker", threads=True)
+        tickers = set(data.columns.get_level_values(0)) if isinstance(data.columns, pd.MultiIndex) else set()
         for sym in yf_symbols:
             try:
-                closes = data[sym]["Close"].dropna()
+                closes = (data[sym] if sym in tickers else data)["Close"].squeeze().dropna()
             except Exception:
                 continue
             if not closes.empty:
@@ -53,7 +54,7 @@ def get_dime_portfolio():
     fx, _ = get_usd_thb()
     if holdings.empty:
         return holdings.assign(last_price=[], market_value=[], unrealized_pnl=[], unrealized_pct=[],
-                               market_value_usd=[], price_source=[])
+                               market_value_usd=[], cost_basis_usd=[], unrealized_pnl_usd=[], price_source=[])
 
     yf_syms = [_yf_symbol(s, a) for s, a in zip(holdings["symbol"], holdings["account_type"])]
     prices = get_prices(tuple(sorted(set(yf_syms))))
@@ -65,6 +66,8 @@ def get_dime_portfolio():
         holdings["cost_basis"] > 0, 0.0)
     to_usd = holdings["currency"].map({"USD": 1.0, "THB": 1 / fx})
     holdings["market_value_usd"] = holdings["market_value"] * to_usd
+    holdings["cost_basis_usd"] = holdings["cost_basis"] * to_usd
+    holdings["unrealized_pnl_usd"] = holdings["unrealized_pnl"] * to_usd
     return holdings
 
 
