@@ -3,6 +3,7 @@ import tempfile
 import unittest
 from unittest.mock import patch
 
+import pandas as pd
 from streamlit.testing.v1 import AppTest
 
 from core import db_manager, dime_data
@@ -75,6 +76,30 @@ class DimePageTest(unittest.TestCase):
         self.assertEqual(list(app.tabs[2].dataframe[0].value["Account"]), ["Dime TH"])
         self.assertEqual(app.tabs[1].metric[0].value, "฿30,000.00")
         self.assertEqual(list(app.tabs[3].dataframe[0].value["account_type"]), ["Dime TH"])
+
+    def test_survives_holdings_without_derived_columns(self):
+        # Mirrors the production KeyError: an older core.dime_data returned no *_usd columns.
+        db_manager.insert_trade("Dime US", "Buy", "AAPL", 10, 150)
+        db_manager.insert_trade("Dime TH", "Buy", "PTT", 1000, 33)
+        legacy = db_manager.get_holdings().assign(last_price=[30.0, 200.0])
+        with patch.object(dime_data, "get_dime_portfolio", lambda: legacy):
+            app = self.app()
+            self.assertEqual(app.tabs[1].metric[0].value, "$2,857.14")  # 10*200 + 1000*30/35
+            self.assertEqual(app.tabs[1].metric[2].value, "$2,442.86")  # 1500 + 33000/35
+            perf = app.tabs[2].dataframe[0].value.set_index("Symbol")
+            self.assertEqual(perf.loc["AAPL", "Unrealized PnL"], 500.0)
+
+    def test_empty_database_and_empty_filtered_view(self):
+        for frame in (pd.DataFrame(), None):
+            with patch.object(dime_data, "get_dime_portfolio", lambda f=frame: f):
+                app = self.app()
+                self.assertEqual(app.tabs[1].metric[0].value, "$0.00")
+        db_manager.insert_trade("Dime TH", "Buy", "PTT", 100, 33)
+        app = self.app()
+        app.pills(key="dime_view").set_value("Dime US").run(timeout=30)
+        self.assertEqual(len(app.exception), 0, [e.value for e in app.exception])
+        self.assertEqual(app.tabs[1].metric[0].value, "$0.00")
+        self.assertTrue(any("No open positions" in i.value for i in app.tabs[2].info))
 
     def test_history_delete_requires_confirmation(self):
         db_manager.insert_trade("Dime US", "Buy", "AAPL", 1, 100)
