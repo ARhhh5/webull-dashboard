@@ -32,25 +32,24 @@ if data["is_mock"]:
 
 st.write("")
 
-# ---- KPI cards (shared by all tabs) ----
-k1, k2, k3, k4 = st.columns(4)
-k1.metric("Total Account Value", money(m["total_value"]), f"{m['positions']} positions", delta_color="off",
-          delta_arrow="off")
-k2.metric("Day PnL", money(m["day_pnl"], signed=True), pct(m["day_pnl_pct"]) if m["day_pnl"] is not None else None)
-k3.metric("Open PnL", money(m["open_pnl"], signed=True), pct(m["open_pnl_pct"]))
-cash_share = m["cash"] / m["total_value"] * 100 if m["total_value"] else 0.0
-k4.metric("Cash Balance", money(m["cash"]), f"{cash_share:.1f}% of account", delta_color="off", delta_arrow="off")
+tab_overview, tab_positions, tab_history, tab_div = st.tabs([
+    "📊 Dashboard Overview", "📈 Position Performance", "📝 Trade History", "💰 Dividends",
+])
 
-st.write("")
-tab_hold, tab_perf, tab_div = st.tabs(["📊 Portfolio Holdings", "🚀 Performance", "💰 Dividends"])
+with tab_overview:
+    k1, k2, k3, k4 = st.columns(4)
+    k1.metric("Total Account Value", money(m["total_value"]), f"{m['positions']} positions", delta_color="off",
+              delta_arrow="off")
+    k2.metric("Day PnL", money(m["day_pnl"], signed=True), pct(m["day_pnl_pct"]) if m["day_pnl"] is not None else None)
+    k3.metric("Open PnL", money(m["open_pnl"], signed=True), pct(m["open_pnl_pct"]))
+    cash_share = m["cash"] / m["total_value"] * 100 if m["total_value"] else 0.0
+    k4.metric("Cash Balance", money(m["cash"]), f"{cash_share:.1f}% of account", delta_color="off", delta_arrow="off")
 
-# ============ Holdings ============
-with tab_hold:
+    st.write("")
     if df.empty:
         st.info("No open positions in this Webull account.")
     else:
-        col_alloc, col_pnl = st.columns(2)
-        with col_alloc, theme.card("alloc", "Portfolio Allocation", "Market value by symbol"):
+        with theme.card("alloc", "Portfolio Allocation", "Market value by symbol"):
             alloc = df[["Symbol", "Market Value"]].copy()
             if len(alloc) > 10:  # fold the long tail so the donut stays readable
                 tail = alloc.iloc[10:]["Market Value"].sum()
@@ -67,7 +66,28 @@ with tab_hold:
                                   x=0.5, y=0.5, showarrow=False, font=dict(size=16, color="#f8fafc"))])
             st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
 
-        with col_pnl, theme.card("pnl", "Open PnL by Position", "Unrealized gain / loss per symbol"):
+
+with tab_positions:
+    if df.empty:
+        st.info("No open positions in this Webull account.")
+    else:
+        with theme.card("table", "Current Holdings", "Day and open PnL amounts in USD; day change versus previous close"):
+            table = df[["Symbol", "Quantity", "Avg Cost", "Last Price", "Day PnL", "Day Change %",
+                        "Open PnL", "Open PnL %"]].rename(columns={
+                            "Avg Cost": "Average Cost", "Last Price": "Current Price", "Day Change %": "Day PnL %"})
+            st.dataframe(
+                table.style.map(theme.pnl_color, subset=["Day PnL", "Day PnL %", "Open PnL", "Open PnL %"]),
+                hide_index=True, width="stretch", column_config={
+                    "Quantity": st.column_config.NumberColumn(format="%.4f"),
+                    "Average Cost": st.column_config.NumberColumn(format="$%.2f"),
+                    "Current Price": st.column_config.NumberColumn(format="$%.2f"),
+                    "Day PnL": st.column_config.NumberColumn(format="dollar"),
+                    "Day PnL %": st.column_config.NumberColumn(format="%+.2f%%"),
+                    "Open PnL": st.column_config.NumberColumn(format="dollar"),
+                    "Open PnL %": st.column_config.NumberColumn(format="%+.2f%%"),
+                })
+
+        with theme.card("pnl", "Open PnL by Position", "Unrealized gain / loss per symbol"):
             pnl = df.sort_values("Open PnL")
             pnl = pnl.assign(Result=["Gain" if v >= 0 else "Loss" for v in pnl["Open PnL"]])
             fig = px.bar(pnl, x="Open PnL", y="Symbol", orientation="h", color="Result",
@@ -80,22 +100,7 @@ with tab_hold:
             fig.update_yaxes(title=None, categoryorder="array", categoryarray=list(pnl["Symbol"]))
             st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
 
-        with theme.card("table", "Positions", "Raw position data from Webull"):
-            table = df[["Symbol", "Quantity", "Avg Cost", "Last Price", "Market Value", "Open PnL"]].rename(
-                columns={"Avg Cost": "Cost Price", "Last Price": "Current Price", "Open PnL": "Unrealized PnL"})
-            st.dataframe(
-                table.style.map(theme.pnl_color, subset=["Unrealized PnL"]),
-                hide_index=True, width="stretch", column_config={
-                    "Quantity": st.column_config.NumberColumn(format="%.4f"),
-                    "Cost Price": st.column_config.NumberColumn(format="$%.2f"),
-                    "Current Price": st.column_config.NumberColumn(format="$%.2f"),
-                    "Market Value": st.column_config.NumberColumn(format="dollar"),
-                    "Unrealized PnL": st.column_config.NumberColumn(format="dollar"),
-                })
 
-# ============ Performance ============
-with tab_perf:
-    if not df.empty:
         best, worst = df.loc[df["Open PnL %"].idxmax()], df.loc[df["Open PnL %"].idxmin()]
         winners = int((df["Open PnL"] > 0).sum())
         p1, p2, p3, p4 = st.columns(4)
@@ -132,35 +137,27 @@ with tab_perf:
             else:
                 st.caption("Day change requires Webull market-data permission.")
 
+
+with tab_history:
     hist = get_order_history()
     orders = hist["orders"]
-    with theme.card("orders", "Trade Activity · last 6 months",
-                    "Order history from Webull (API look-back limit is 6 months)"
-                    + (" · DEMO" if hist["is_mock"] else "")):
-        filled = orders[orders["Status"].isin(["FILLED", "PARTIAL_FILLED"])] if not orders.empty else orders
-        if filled.empty:
-            st.caption("No filled orders in the last 6 months.")
+    if hist["is_mock"]:
+        st.info("🧪 DEMO Trade History — API history is unavailable; the orders below are sample data.")
+        with st.expander("Order history error details"):
+            st.code(hist["error"] or "-", language=None)
+    with theme.card("orders", "Trade History · last 6 months", "Webull SDK · dates in Asia/Bangkok"):
+        st.caption("Quantity is the requested order size. Price is the executed price; unfilled orders show —.")
+        if orders.empty:
+            st.info("No orders in the last 6 months.")
         else:
-            monthly = filled.assign(Month=filled["Time"].dt.tz_convert(None).dt.to_period("M").dt.to_timestamp())
-            monthly = monthly.groupby(["Month", "Side"], as_index=False)["Amount"].sum()
-            fig = px.bar(monthly, x="Month", y="Amount", color="Side", barmode="group",
-                         color_discrete_map={"BUY": theme.ACCENT, "SELL": "#f472b6"})
-            fig.update_traces(hovertemplate="%{x|%b %Y}<br>$%{y:,.2f}<extra></extra>")
-            theme.style_fig(fig, 280).update_layout(legend=dict(orientation="h", y=1.1, x=0, title=None))
-            fig.update_yaxes(tickformat="$,.0f", title=None)
-            fig.update_xaxes(title=None, dtick="M1", tickformat="%b %Y")
-            st.plotly_chart(fig, width="stretch", theme=None, config=theme.PLOTLY_CONFIG)
-            o1, o2, o3 = st.columns(3)
-            o1.metric("Filled Orders", len(filled))
-            o2.metric("Bought", money(filled.loc[filled["Side"] == "BUY", "Amount"].sum()))
-            o3.metric("Sold", money(filled.loc[filled["Side"] == "SELL", "Amount"].sum()))
-        if not orders.empty:
-            show = orders.assign(Time=orders["Time"].dt.tz_convert("Asia/Bangkok").dt.strftime("%Y-%m-%d %H:%M"))
-            st.dataframe(show, hide_index=True, width="stretch", height=320, column_config={
+            history = orders[["Symbol", "Side", "Quantity", "Filled Price", "Time"]].copy()
+            history["Side"] = history["Side"].str.title()
+            history["Filled Price"] = history["Filled Price"].where(orders["Filled Qty"] > 0)
+            history["Time"] = history["Time"].dt.tz_convert("Asia/Bangkok").dt.strftime("%Y-%m-%d %H:%M")
+            history = history.rename(columns={"Filled Price": "Price", "Time": "Date"})
+            st.dataframe(history, hide_index=True, width="stretch", column_config={
                 "Quantity": st.column_config.NumberColumn(format="%.4f"),
-                "Filled Qty": st.column_config.NumberColumn(format="%.4f"),
-                "Filled Price": st.column_config.NumberColumn(format="$%.2f"),
-                "Amount": st.column_config.NumberColumn(format="dollar"),
+                "Price": st.column_config.NumberColumn(format="$%.2f"),
             })
 
 # ============ Dividends ============
