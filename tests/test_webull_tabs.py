@@ -9,9 +9,9 @@ from core import webull_data
 
 
 class WebullTabsTest(unittest.TestCase):
-    def render(self, empty=False):
+    def render(self, empty=False, missing_prices=False):
         rows, day, summary = webull_data._mock()
-        positions, metrics = webull_data._build([] if empty else rows, day, summary)
+        positions, metrics = webull_data._build([] if empty else rows, {} if missing_prices else day, summary)
         portfolio = dict(positions=positions, metrics=metrics, is_mock=True, error="Missing secrets",
                          account_id="DEMO-ACCOUNT", fetched_at=datetime.now())
         orders = pd.DataFrame(webull_data._mock_orders(180), columns=webull_data.ORDER_COLUMNS)
@@ -35,7 +35,15 @@ class WebullTabsTest(unittest.TestCase):
                          ["Total Account Value", "Day PnL", "Open PnL", "Cash Balance"])
         self.assertEqual(list(positions.dataframe[0].value.columns), [
             "Symbol", "Quantity", "Average Cost", "Current Price", "Day PnL", "Day PnL %",
-            "Open PnL", "Open PnL %"])
+            "Open PnL", "Open PnL %", "Previous Close", "Price Change (USD)", "Price Change (%)"])
+        table = positions.dataframe[0].value
+        for row in table.to_dict("records"):
+            change = row["Price Change (USD)"]
+            self.assertAlmostEqual(change * row["Quantity"], row["Day PnL"])
+            self.assertAlmostEqual(row["Previous Close"] + change, row["Current Price"])
+            self.assertAlmostEqual(change / row["Previous Close"] * 100, row["Price Change (%)"])
+        self.assertTrue((table["Price Change (USD)"] > 0).any())
+        self.assertTrue((table["Price Change (USD)"] < 0).any())
         orders = history.dataframe[0].value
         self.assertEqual(list(orders.columns), ["Symbol", "Side", "Quantity", "Price", "Date"])
         self.assertEqual(set(orders.Side), {"Buy", "Sell"})
@@ -44,6 +52,10 @@ class WebullTabsTest(unittest.TestCase):
         self.assertTrue(any("estimated" in text.value for text in dividends.caption))
         self.assertEqual(len(overview.dataframe), 0)
         self.assertEqual(len(history.metric), 0)
+
+    def test_missing_market_data_stays_blank(self):
+        table = self.render(missing_prices=True).tabs[1].dataframe[0].value
+        self.assertTrue(table[["Previous Close", "Price Change (USD)", "Price Change (%)"]].isna().all().all())
 
     def test_empty_positions_and_orders(self):
         app = self.render(empty=True)
