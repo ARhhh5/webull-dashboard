@@ -75,6 +75,19 @@ def status_pill(text, color):
     return f'<span class="pill"><span class="dot" style="background:{color}"></span>{text}</span>'
 
 
+def pnl_color(value):
+    """pandas Styler cell style: green for profit, red for loss."""
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return ""
+    if value > 0:
+        return f"color: {UP}; font-weight: 600"
+    if value < 0:
+        return f"color: {DOWN}; font-weight: 600"
+    return ""
+
+
 def style_fig(fig, height=360):
     fig.update_layout(
         template="plotly_dark", height=height, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
