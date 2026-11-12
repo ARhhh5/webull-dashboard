@@ -7,7 +7,7 @@ import streamlit as st
 
 from core import theme
 from core.theme import money, pct
-from core.webull_data import get_dividend_history, get_order_history, get_portfolio, sync_from_webull
+from core.webull_data import fx_from_metrics, get_dividend_history, get_order_history, get_portfolio, sync_from_webull
 
 BANGKOK = ZoneInfo("Asia/Bangkok")
 
@@ -67,11 +67,23 @@ if sync_result:
     orders_note = "" if sync_result["orders"] is None else f", {sync_result['orders']} orders"
     st.success(f"Synced {sync_result['positions']} positions{orders_note} from Webull.", icon="✅")
     for warning in sync_result["warnings"]:
-        st.warning(warning)
+        if warning not in (m.get("warnings") or []):  # snapshot warnings are shown below
+            st.warning(warning)
 
 if data["is_mock"]:
     st.info("No Webull data saved yet: the figures below are sample data. Press **🔄 Sync Live Data from Webull** "
             "to fetch your account, then approve the request in the Webull app.", icon="🧪")
+
+# Currency audit trail: everything below is USD; show how it got there and anything unverified.
+for warning in m.get("warnings") or []:
+    st.warning(warning, icon="⚠️")
+if not data["is_mock"]:
+    snapshot_fx = fx_from_metrics(m)
+    parts = [f"Base currency **{m.get('base_currency') or 'USD'}**",
+             f"Webull account currency **{m.get('account_currency') or 'not reported'}**",
+             f"Cash: {m.get('cash_detail') or '—'}"]
+    parts.append(f"FX: {snapshot_fx.label(BANGKOK)}" if snapshot_fx else "FX: not needed (all amounts in USD)")
+    st.caption(" · ".join(parts))
 
 st.write("")
 
@@ -85,8 +97,12 @@ with tab_overview:
               delta_arrow="off")
     k2.metric("Day PnL", money(m["day_pnl"], signed=True), pct(m["day_pnl_pct"]) if m["day_pnl"] is not None else None)
     k3.metric("Open PnL", money(m["open_pnl"], signed=True), pct(m["open_pnl_pct"]))
-    cash_share = m["cash"] / m["total_value"] * 100 if m["total_value"] else 0.0
-    k4.metric("Cash Balance", money(m["cash"]), f"{cash_share:.1f}% of account", delta_color="off", delta_arrow="off")
+    if m["cash"] is None:
+        k4.metric("Cash Balance", "—", "Unverified · excluded from total", delta_color="off", delta_arrow="off")
+    else:
+        cash_share = m["cash"] / m["total_value"] * 100 if m["total_value"] else 0.0
+        k4.metric("Cash Balance", money(m["cash"]), f"{cash_share:.1f}% of account", delta_color="off",
+                  delta_arrow="off")
 
     st.write("")
     if df.empty:

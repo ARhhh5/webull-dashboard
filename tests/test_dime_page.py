@@ -1,12 +1,15 @@
 import os
 import tempfile
 import unittest
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
-from core import db_manager, dime_data
+from core import db_manager, dime_data, fx
+
+FX = fx.FxRate(rate=35.0, source="test", as_of=datetime(2026, 11, 12, tzinfo=timezone.utc))
 
 PRICES = {"AAPL": 200.0, "PTT.BK": 30.0}
 TABS = ["✍️ Trade Entry", "📊 Dashboard", "📈 Performance", "📝 History", "💰 Dividends"]
@@ -21,7 +24,7 @@ class DimePageTest(unittest.TestCase):
             patch.object(db_manager, "DB_PATH", self.db),
             # Unknown symbols are omitted, like a Yahoo miss, so they fall back to avg cost.
             patch.object(dime_data, "get_prices", lambda syms: {s: PRICES[s] for s in syms if s in PRICES}),
-            patch.object(dime_data, "get_usd_thb", lambda: (35.0, True)),
+            patch.object(dime_data, "get_usd_thb", lambda: FX),
         ]
         for p in self.patches:
             p.start()
