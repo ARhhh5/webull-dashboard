@@ -67,7 +67,7 @@ class WebullSyncTest(unittest.TestCase):
         return app
 
     def test_sync_saves_snapshot_and_reads_it_back(self):
-        expected_positions, expected_metrics = webull_data._build(*live_rows())
+        expected_positions, expected_metrics = webull_data.compute_snapshot(*live_rows())
         result = self.sync()
         self.assertEqual(result, {"account_id": "ACC-1", "positions": 2, "orders": 2, "warnings": []})
 
@@ -107,7 +107,7 @@ class WebullSyncTest(unittest.TestCase):
         self.assertTrue(any("never synced" in i.value.lower() or "No Webull data saved" in i.value for i in app.info))
         self.run_page("../app.py")  # Executive Dashboard is the default page
 
-        positions, metrics = webull_data._build(*live_rows())
+        positions, metrics = webull_data.compute_snapshot(*live_rows())
         db_manager.save_webull_data({**metrics, "account_id": "ACC-9"}, positions.rename(columns=webull_data.POSITION_DB),
                                     pd.DataFrame(columns=db_manager.WEBULL_ORDER_FIELDS),
                                     synced_at=datetime.now(timezone.utc) - timedelta(hours=3))
@@ -135,11 +135,11 @@ class WebullSyncTest(unittest.TestCase):
                 p.stop()
         self.assertEqual(self.connect.call_count, 1)
         self.assertTrue(any("Synced 2 positions, 2 orders" in s.value for s in app.success))
-        self.assertEqual(app.tabs[0].metric[0].value, money(webull_data._build(*live_rows())[1]["total_value"]))
+        self.assertEqual(app.tabs[0].metric[0].value, money(webull_data.compute_snapshot(*live_rows())[1]["total_value"]))
         self.assertIsNotNone(db_manager.get_webull_data()["summary"])
 
     def test_sync_failure_keeps_cached_data(self):
-        positions, metrics = webull_data._build(*live_rows())
+        positions, metrics = webull_data.compute_snapshot(*live_rows())
         db_manager.save_webull_data({**metrics, "account_id": "ACC-1"}, positions.rename(columns=webull_data.POSITION_DB),
                                     pd.DataFrame(columns=db_manager.WEBULL_ORDER_FIELDS))
         before = db_manager.get_webull_data()["summary"]

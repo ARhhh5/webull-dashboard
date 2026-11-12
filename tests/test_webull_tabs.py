@@ -11,7 +11,7 @@ from core import webull_data
 class WebullTabsTest(unittest.TestCase):
     def render(self, empty=False, missing_prices=False):
         rows, day, summary = webull_data._mock()
-        positions, metrics = webull_data._build([] if empty else rows, {} if missing_prices else day, summary)
+        positions, metrics = webull_data.compute_snapshot([] if empty else rows, {} if missing_prices else day, summary)
         portfolio = dict(positions=positions, metrics=metrics, is_mock=True, error="Missing secrets",
                          account_id="DEMO-ACCOUNT", fetched_at=datetime.now())
         orders = pd.DataFrame(webull_data._mock_orders(180), columns=webull_data.ORDER_COLUMNS)
