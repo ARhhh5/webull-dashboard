@@ -36,7 +36,8 @@ def main(argv=None):
     if args.cmd != "restore" and not db_manager._path(db).exists():
         parser.error(f"database not found: {db_manager._path(db)}")
     if args.cmd == "status":
-        result = {"db": str(db_manager._path(db)), "schema_version": db_manager.schema_version(db),
+        result = {"db": str(db_manager._path(db)), "sqlite_runtime": db_manager.sqlite3.sqlite_version,
+                  "schema_version": db_manager.schema_version(db),
                   "latest_version": db_manager.SCHEMA_VERSION, "row_counts": db_manager.row_counts(db)}
     elif args.cmd == "backup":
         result = {"backup": db_manager.backup_db("manual", db)}

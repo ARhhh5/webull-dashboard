@@ -69,13 +69,20 @@ class MigrationTest(unittest.TestCase):
             self.assertEqual(len(webull_data.get_order_history()["orders"]), 1)
 
     def test_rollback_keeps_data_and_restore_returns_exact_copy(self):
+        def dump(table):
+            with closing(sqlite3.connect(self.db)) as conn:
+                return sorted(conn.execute(f"SELECT * FROM {table}").fetchall())
+
+        before = {t: dump(t) for t in self.before}
+        v0_columns = {t: columns(self.db, t) for t in self.before}
         db_manager.init_db(self.db)
         result = db_manager.rollback(0, self.db)
         self.assertEqual((result["from_version"], result["to_version"]), (1, 0))
         self.assertTrue(result["backup"].exists())
-        self.assertNotIn("fx_rate", columns(self.db, "webull_summary"))
+        self.assertEqual({t: columns(self.db, t) for t in self.before}, v0_columns)
         self.assertNotIn("webull_sync_log", db_manager.row_counts(self.db))
         self.assertEqual(db_manager.row_counts(self.db), self.before)
+        self.assertEqual({t: dump(t) for t in self.before}, before)
 
         db_manager.migrate(self.db)
         pre_migrate = next(b for b in self.backups() if "pre-migrate" in b.name)
