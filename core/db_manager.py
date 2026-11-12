@@ -101,7 +101,19 @@ _SUMMARY_CURRENCY_DDL = [
 _SYNC_LOG_FIELDS = ["synced_at", "account_id", "total_value", "market_value", "cash", "open_pnl", "open_pnl_pct",
                     "day_pnl", "positions", *WEBULL_CURRENCY_FIELDS]
 
+def _rebuild_without_new_columns(table, keep_columns):
+    """Down-migration that drops columns by rebuilding the table, since ALTER TABLE DROP COLUMN needs
+    SQLite >= 3.35 and Streamlit Community Cloud has shipped 3.34.1. Rows in kept columns are copied as is."""
+    ddl = _SCHEMA.split(f"CREATE TABLE IF NOT EXISTS {table} (", 1)[1].split("\n);", 1)[0]
+    cols = ", ".join(keep_columns)
+    return [f"CREATE TABLE {table}__rollback ({ddl}\n)",
+            f"INSERT INTO {table}__rollback ({cols}) SELECT {cols} FROM {table}",
+            f"DROP TABLE {table}",
+            f"ALTER TABLE {table}__rollback RENAME TO {table}"]
+
+
 # (version, name, up statements, down statements). Downs only drop what the matching up added.
+# Only SQL supported by SQLite 3.34 (Streamlit Community Cloud) may be used here.
 MIGRATIONS = [
     (1, "usd_base_currency",
      [f"ALTER TABLE webull_summary ADD COLUMN {name} {kind}" for name, kind in _SUMMARY_CURRENCY_DDL]
@@ -113,8 +125,9 @@ MIGRATIONS = [
             fx_rate REAL, fx_source TEXT, fx_as_of TEXT, fx_estimated INTEGER, reported_market_value REAL,
             reported_open_pnl REAL, reported_cash REAL, reconciliation_diff_pct REAL, warnings TEXT,
             raw_balance TEXT)"""],
-     ["DROP TABLE IF EXISTS webull_sync_log", "ALTER TABLE webull_positions DROP COLUMN fx_to_usd"]
-     + [f"ALTER TABLE webull_summary DROP COLUMN {name}" for name, _ in reversed(_SUMMARY_CURRENCY_DDL)]),
+     ["DROP TABLE IF EXISTS webull_sync_log"]
+     + _rebuild_without_new_columns("webull_positions", WEBULL_POSITION_FIELDS)
+     + _rebuild_without_new_columns("webull_summary", ["id", *WEBULL_SUMMARY_FIELDS, "last_synced"])),
 ]
 SCHEMA_VERSION = MIGRATIONS[-1][0]
 _USER_TABLES = ("dime_trades", "dime_dividends", "webull_summary", "webull_positions", "webull_orders")
