@@ -172,39 +172,112 @@ def backup_db(label="manual", db_path=None):
     src_path = _path(db_path)
     dest = backup_dir(db_path) / f"{src_path.stem}-{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}-{label}.db"
     dest.parent.mkdir(parents=True, exist_ok=True)
-    with closing(sqlite3.connect(src_path)) as src, closing(sqlite3.connect(dest)) as dst:
+    with closing(_connect_ro(src_path)) as src, closing(sqlite3.connect(dest)) as dst:
         src.backup(dst)
     return dest
 
 
-def backup_bytes(db_path=None):
-    """Consistent snapshot of the database as bytes (for the in-app download button)."""
+def _connect_ro(path):
+    """Read-only connection: never creates or modifies the file."""
+    return sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+
+
+def inspect_db(path):
+    """dict(integrity, schema_version, tables={name: rows}) read through a read-only connection."""
+    with closing(_connect_ro(path)) as conn:
+        names = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        return {"integrity": conn.execute("PRAGMA integrity_check").fetchone()[0],
+                "schema_version": conn.execute("PRAGMA user_version").fetchone()[0],
+                "tables": {t: conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in names}}
+
+
+def backup_bytes(db_path=None, source=None):
+    """Whole-database snapshot as bytes via the SQLite backup API (consistent even during a write).
+
+    The source is opened read-only. The copy is re-opened and must pass integrity_check and contain
+    every source table, otherwise ValueError is raised instead of handing out a bad file.
+    """
     import tempfile
 
+    src_path = Path(source) if source else _path(db_path)
     with tempfile.TemporaryDirectory() as tmp:
         dest = Path(tmp) / "portfolio.db"
-        with closing(sqlite3.connect(_path(db_path))) as src, closing(sqlite3.connect(dest)) as dst:
+        with closing(_connect_ro(src_path)) as src, closing(sqlite3.connect(dest)) as dst:
             src.backup(dst)
+        copy, original = inspect_db(dest), inspect_db(src_path)
+        if copy["integrity"] != "ok" or set(copy["tables"]) != set(original["tables"]):
+            raise ValueError(f"Backup verification failed: {copy}")
         return dest.read_bytes()
+
+
+def pre_migration_backups(db_path=None):
+    """Backups written automatically before a migration, newest first."""
+    folder = backup_dir(db_path)
+    return sorted(folder.glob("*-pre-migrate-*.db"), reverse=True) if folder.exists() else []
+
+
+class DataCheckError(RuntimeError):
+    """A schema change would have altered existing rows; the transaction was rolled back."""
+
+
+def _baseline_columns():
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.executescript(_SCHEMA)
+        return {t: [r[1] for r in conn.execute(f'PRAGMA table_info("{t}")')] for t in _USER_TABLES}
+
+
+def _data_digest(conn):
+    """{table: (rows, sha256)} of every core table over its baseline (v0) columns, which no migration may
+    drop. Order-independent, so a table rebuild that keeps the data gives the same digest."""
+    import hashlib
+
+    present = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    out = {}
+    for table, cols in _baseline_columns().items():
+        if table not in present:
+            continue
+        quoted = ", ".join(f'"{c}"' for c in cols)
+        rows = sorted(repr(r) for r in conn.execute(f'SELECT {quoted} FROM "{table}"'))
+        out[table] = (len(rows), hashlib.sha256("\n".join(rows).encode()).hexdigest())
+    return out
+
+
+def _verify_unchanged(before, after):
+    """Raise DataCheckError unless every core table has the same row count and row contents."""
+    report = {}
+    for table, (rows, digest) in before.items():
+        if table not in after:
+            raise DataCheckError(f"{table} disappeared")
+        report[table] = {"rows_before": rows, "rows_after": after[table][0]}
+        if after[table][0] != rows:
+            raise DataCheckError(f"{table}: {rows} rows before, {after[table][0]} after")
+        if after[table][1] != digest:
+            raise DataCheckError(f"{table}: row contents changed")
+    return report
 
 
 def _apply(db_path, steps, target, expected_current):
     """Run (version, statements) steps in one IMMEDIATE transaction, then set user_version = target.
 
     The version is re-read under the write lock; if another session already moved it, nothing runs.
+    Row counts and contents of every core table are compared before COMMIT; any difference rolls the
+    whole change back (DataCheckError). Returns the per-table check, or None when nothing ran.
     """
     conn = sqlite3.connect(_path(db_path), isolation_level=None)
     try:
         conn.execute("BEGIN IMMEDIATE")
         if conn.execute("PRAGMA user_version").fetchone()[0] != expected_current:
             conn.execute("ROLLBACK")
-            return False
+            return None
+        before = _data_digest(conn)
         for _, statements in steps:
             for sql in statements:
                 conn.execute(sql)
+        check = _verify_unchanged(before, _data_digest(conn))
         conn.execute(f"PRAGMA user_version = {int(target)}")
         conn.execute("COMMIT")
-        return True
+        return check
     except Exception:
         conn.execute("ROLLBACK")
         raise
@@ -224,8 +297,8 @@ def migrate(db_path=None, target=SCHEMA_VERSION):
     with closing(sqlite3.connect(_path(db_path))) as conn, conn:
         conn.executescript(_SCHEMA)  # migrations alter baseline tables, so make sure they exist (non-destructive)
     pending = [(v, up) for v, _, up, _ in MIGRATIONS if current < v <= target]
-    _apply(db_path, pending, target, current)
-    return {"from_version": current, "to_version": schema_version(db_path), "backup": backup}
+    check = _apply(db_path, pending, target, current)
+    return {"from_version": current, "to_version": schema_version(db_path), "backup": backup, "data_check": check}
 
 
 def rollback(target, db_path=None):
@@ -236,21 +309,25 @@ def rollback(target, db_path=None):
         return {"from_version": current, "to_version": current, "backup": None}
     backup = backup_db(f"pre-rollback-v{current}-to-v{target}", db_path)
     steps = [(v, down) for v, _, _, down in sorted(MIGRATIONS, reverse=True) if target < v <= current]
-    _apply(db_path, steps, target, current)
+    check = _apply(db_path, steps, target, current)
     _migrated.discard(str(_path(db_path)))
-    return {"from_version": current, "to_version": schema_version(db_path), "backup": backup}
+    return {"from_version": current, "to_version": schema_version(db_path), "backup": backup, "data_check": check}
 
 
 def restore(backup_path, db_path=None):
-    """Replace the database with a backup. The current database is backed up first."""
+    """Replace the database with a backup. The backup is checked first and opened read-only; the
+    current database is backed up before it is replaced."""
     backup_path = Path(backup_path)
     if not backup_path.exists():
         raise FileNotFoundError(backup_path)
+    checked = inspect_db(backup_path)
+    if checked["integrity"] != "ok":
+        raise ValueError(f"Backup failed integrity_check: {checked['integrity']}")
     safety = backup_db("pre-restore", db_path) if _path(db_path).exists() else None
-    with closing(sqlite3.connect(backup_path)) as src, closing(sqlite3.connect(_path(db_path))) as dst:
+    with closing(_connect_ro(backup_path)) as src, closing(sqlite3.connect(_path(db_path))) as dst:
         src.backup(dst)
     _migrated.discard(str(_path(db_path)))
-    return {"restored_from": backup_path, "backup": safety}
+    return {"restored_from": backup_path, "backup": safety, "restored": inspect_db(_path(db_path))}
 
 
 def init_db(db_path=None):

@@ -188,20 +188,35 @@ def main(argv=None):
 
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
+        # A backup downloaded after the app already migrated is at the latest version: roll a copy back
+        # first (checking the data survives) so the full migration path is still exercised.
+        received = db_manager.inspect_db(original)
+        report.facts.update(received_schema_version=received["schema_version"], received_tables=received["tables"],
+                            received_integrity=received["integrity"])
+        report.check("Received file passes integrity_check", received["integrity"] == "ok", received["integrity"])
+        base = copy(original, tmp / "base.db")
+        if received["schema_version"] == db_manager.SCHEMA_VERSION and db_manager.SCHEMA_VERSION > 0:
+            prints_v1 = fingerprints(base)
+            rb0 = db_manager.rollback(db_manager.SCHEMA_VERSION - 1, base)
+            report.check("Received file is already migrated: rollback of a copy keeps every row",
+                         fingerprints(base) == prints_v1 and all(
+                             v["rows_before"] == v["rows_after"] for v in rb0["data_check"].values()),
+                         f"v{rb0['from_version']} → v{rb0['to_version']}")
+        original_for_run = base
         work, pristine = tmp / "portfolio.db", tmp / "pristine.db"
-        copy(original, work)
-        copy(original, pristine)
+        copy(original_for_run, work)
+        copy(original_for_run, pristine)
         version0 = db_manager.schema_version(work)
         counts0, prints0 = all_row_counts(work), fingerprints(work)
         report.facts.update(schema_version_before=version0, row_counts_before=counts0)
         print(f"Before: schema v{version0}, rows {counts0}")
         main_dbm = load_main_db_manager(tmp)
-        dime0 = dime_snapshot(main_dbm or db_manager, copy(original, tmp / "baseline.db"))
+        dime0 = dime_snapshot(main_dbm or db_manager, copy(original_for_run, tmp / "baseline.db"))
         report.facts["dime_baseline_code"] = "origin/main" if main_dbm else "current (git unavailable)"
 
         # 0. a migration that fails half-way must leave the copy exactly as it was
         broken = tmp / "broken.db"
-        copy(original, broken)
+        copy(original_for_run, broken)
         cols_before = {t: [r[1] for r in sqlite3.connect(broken).execute(f'PRAGMA table_info("{t}")')]
                        for t in tables(broken)}
         version, name, up, down = db_manager.MIGRATIONS[-1]
