@@ -1,34 +1,77 @@
+from datetime import datetime, timezone
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
 
 from core import theme
 from core.theme import money, pct
-from core.webull_data import get_dividend_history, get_order_history, get_portfolio
+from core.webull_data import get_dividend_history, get_order_history, get_portfolio, sync_from_webull
 
+BANGKOK = ZoneInfo("Asia/Bangkok")
+
+
+def _age(ts):
+    minutes = int((datetime.now(timezone.utc) - ts).total_seconds() // 60)
+    if minutes < 1:
+        return "just now"
+    if minutes < 60:
+        return f"{minutes} min ago"
+    if minutes < 48 * 60:
+        return f"{minutes // 60} h ago"
+    return f"{minutes // 1440} days ago"
+
+
+def _sync_error(exc):
+    # Missing secrets surface as KeyError or Streamlit's secrets-not-found error.
+    if isinstance(exc, KeyError) or "Secret" in type(exc).__name__:
+        return "Webull credentials not found. Add `[Webull]` AppKey / AppSecret / AccessToken / AccountId to secrets."
+    return f"{type(exc).__name__}: {str(exc)[:300]}"
+
+
+# Page load reads the SQLite cache only; the Webull SDK runs solely from the Sync button below.
 data = get_portfolio()
 df, m = data["positions"], data["metrics"]
+last_synced = data.get("last_synced")
 
 # ---- Header ----
-c_title, c_refresh = st.columns([5, 1], vertical_alignment="center")
+c_title, c_sync = st.columns([3.2, 1.4], vertical_alignment="center")
 with c_title:
-    status = (theme.status_pill("DEMO DATA", "#facc15") if data["is_mock"]
-              else theme.status_pill("LIVE · Webull OpenAPI", "#22c55e"))
-    theme.page_header("📈 Webull Portfolio",
-                      f'{status}&nbsp; Auto-synced · Account {data["account_id"]} · '
-                      f'updated {data["fetched_at"]:%Y-%m-%d %H:%M:%S} · cached 15 min')
-with c_refresh:
-    if st.button("↻ Refresh", width="stretch"):
-        get_portfolio.clear()
-        get_order_history.clear()
+    if last_synced:
+        stale = datetime.now(timezone.utc) - last_synced > pd.Timedelta(days=1)
+        status = theme.status_pill("CACHED · SQLite", "#facc15" if stale else "#22c55e")
+        sub = (f"{status}&nbsp; Account {data['account_id']} · Last synced "
+               f"{last_synced.astimezone(BANGKOK):%Y-%m-%d %H:%M} (Bangkok) · {_age(last_synced)}")
+    else:
+        sub = f"{theme.status_pill('DEMO DATA', '#facc15')}&nbsp; Never synced · showing sample data"
+    theme.page_header("📈 Webull Portfolio", sub)
+with c_sync:
+    sync_clicked = st.button("🔄 Sync Live Data from Webull", type="primary", width="stretch", key="webull_sync",
+                             help="Fetch the latest data from Webull. You may need to approve on the Webull app.")
+
+if sync_clicked:
+    result, error = None, None
+    with st.spinner("Connecting to Webull and waiting for approval..."):
+        try:
+            result = sync_from_webull()
+        except Exception as exc:  # credentials, 2FA timeout, network or API errors
+            error = _sync_error(exc)
+    if result:
+        st.session_state["webull_sync_result"] = result
         st.rerun()
+    st.error(f"Sync failed: {error}" + (" · Previously synced data is kept." if last_synced else ""), icon="⚠️")
+
+sync_result = st.session_state.pop("webull_sync_result", None)
+if sync_result:
+    orders_note = "" if sync_result["orders"] is None else f", {sync_result['orders']} orders"
+    st.success(f"Synced {sync_result['positions']} positions{orders_note} from Webull.", icon="✅")
+    for warning in sync_result["warnings"]:
+        st.warning(warning)
 
 if data["is_mock"]:
-    st.info("Showing mock Webull data: credentials were not found or the API call failed. "
-            "Add `[Webull]` AppKey / AppSecret / AccessToken / AccountId to `.streamlit/secrets.toml`.",
-            icon="🧪")
-    with st.expander("Error details"):
-        st.code(data["error"] or "-", language=None)
+    st.info("No Webull data saved yet: the figures below are sample data. Press **🔄 Sync Live Data from Webull** "
+            "to fetch your account, then approve the request in the Webull app.", icon="🧪")
 
 st.write("")
 
@@ -153,10 +196,9 @@ with tab_history:
     hist = get_order_history()
     orders = hist["orders"]
     if hist["is_mock"]:
-        st.info("🧪 DEMO Trade History — API history is unavailable; the orders below are sample data.")
-        with st.expander("Order history error details"):
-            st.code(hist["error"] or "-", language=None)
-    with theme.card("orders", "Trade History · last 6 months", "Webull SDK · dates in Asia/Bangkok"):
+        st.info("🧪 DEMO Trade History: never synced, so the orders below are sample data.")
+    with theme.card("orders", "Trade History · last 6 months",
+                    "Saved at the last Webull sync · dates in Asia/Bangkok"):
         st.caption("Quantity is the requested order size. Price is the executed price; unfilled orders show —.")
         if orders.empty:
             st.info("No orders in the last 6 months.")

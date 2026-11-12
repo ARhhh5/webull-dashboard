@@ -1,3 +1,5 @@
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 import plotly.express as px
 import streamlit as st
@@ -22,8 +24,10 @@ net_worth_usd = wm["total_value"] + d_us["market_value_usd"] + d_th["market_valu
 # ---- Header ----
 c_title, c_ccy = st.columns([4, 1], vertical_alignment="center")
 with c_title:
-    pills = (theme.status_pill("Webull · DEMO", "#facc15") if wb["is_mock"]
-             else theme.status_pill("Webull · LIVE", "#22c55e"))
+    synced = wb.get("last_synced")
+    pills = (theme.status_pill("Webull · DEMO (not synced)", "#facc15") if wb["is_mock"] else
+             theme.status_pill(f"Webull · synced {synced.astimezone(ZoneInfo('Asia/Bangkok')):%d %b %H:%M}"
+                               if synced else "Webull · cached", "#22c55e"))
     pills += " " + theme.status_pill(f"Dime · {int(len(dime))} holdings (SQLite)",
                                      "#22c55e" if len(dime) else "#64748b")
     pills += " " + theme.status_pill(f"USD/THB {fx:,.2f}" + ("" if fx_live else " (fallback)"),
@@ -49,7 +53,9 @@ k4.metric("🇹🇭 Dime TH", money(d_th["market_value_usd"] * rate, sym),
           f"฿{d_th['market_value']:,.0f} · {pct(d_th['unrealized_pct'])}", delta_color="off", delta_arrow="off")
 
 if wb["is_mock"]:
-    st.caption("🧪 Webull figures are mock data (no credentials in this environment).")
+    st.caption("🧪 Webull figures are sample data until the first sync on the Webull Portfolio page.")
+else:
+    st.caption("Webull figures are from the last sync (SQLite cache). Sync on the Webull Portfolio page to refresh.")
 
 st.write("")
 
