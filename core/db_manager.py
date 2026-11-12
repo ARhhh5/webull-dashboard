@@ -1,4 +1,10 @@
-"""SQLite storage for manually recorded Dime trades (built-in sqlite3, no external services)."""
+"""SQLite storage: manual Dime trades/dividends and the Webull sync cache (built-in sqlite3).
+
+Schema changes are versioned migrations (PRAGMA user_version). Pending migrations run automatically
+inside init_db(), after a backup of the existing database is written to backups/. See
+scripts/db_tool.py for status / backup / migrate / rollback / restore.
+"""
+import json
 import os
 import sqlite3
 from contextlib import closing
@@ -13,6 +19,7 @@ ACCOUNTS = ("Dime TH", "Dime US")
 TRADE_TYPES = ("Buy", "Sell")
 ACCOUNT_CURRENCY = {"Dime TH": "THB", "Dime US": "USD"}
 
+# Baseline (schema version 0). Never edit: later changes must be added as MIGRATIONS.
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS dime_trades (
     id           INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -81,6 +88,51 @@ WEBULL_POSITION_FIELDS = ["symbol", "quantity", "avg_cost", "last_price", "marke
 WEBULL_ORDER_FIELDS = ["order_id", "time", "symbol", "side", "status", "order_type", "quantity", "filled_qty",
                        "filled_price", "amount"]
 
+# Columns added by migration 1. A NULL base_currency marks a snapshot synced before the USD fix.
+WEBULL_CURRENCY_FIELDS = ["base_currency", "account_currency", "cash_status", "cash_detail", "fx_rate", "fx_source",
+                          "fx_as_of", "fx_estimated", "reported_market_value", "reported_open_pnl", "reported_cash",
+                          "reconciliation_diff_pct", "warnings", "raw_balance"]
+_SUMMARY_CURRENCY_DDL = [
+    ("base_currency", "TEXT"), ("account_currency", "TEXT"), ("cash_status", "TEXT"), ("cash_detail", "TEXT"),
+    ("fx_rate", "REAL"), ("fx_source", "TEXT"), ("fx_as_of", "TEXT"), ("fx_estimated", "INTEGER"),
+    ("reported_market_value", "REAL"), ("reported_open_pnl", "REAL"), ("reported_cash", "REAL"),
+    ("reconciliation_diff_pct", "REAL"), ("warnings", "TEXT"), ("raw_balance", "TEXT"),
+]
+_SYNC_LOG_FIELDS = ["synced_at", "account_id", "total_value", "market_value", "cash", "open_pnl", "open_pnl_pct",
+                    "day_pnl", "positions", *WEBULL_CURRENCY_FIELDS]
+
+def _rebuild_without_new_columns(table, keep_columns):
+    """Down-migration that removes added columns by rebuilding the table: dropping a column in place needs
+    SQLite >= 3.35 and Streamlit Community Cloud has shipped 3.34.1. Rows in kept columns are copied as is."""
+    ddl = _SCHEMA.split(f"CREATE TABLE IF NOT EXISTS {table} (", 1)[1].split("\n);", 1)[0]
+    cols = ", ".join(keep_columns)
+    return [f"CREATE TABLE {table}__rollback ({ddl}\n)",
+            f"INSERT INTO {table}__rollback ({cols}) SELECT {cols} FROM {table}",
+            f"DROP TABLE {table}",
+            f"ALTER TABLE {table}__rollback RENAME TO {table}"]
+
+
+# (version, name, up statements, down statements). Downs only drop what the matching up added.
+# Only SQL supported by SQLite 3.34 (Streamlit Community Cloud) may be used here.
+MIGRATIONS = [
+    (1, "usd_base_currency",
+     [f"ALTER TABLE webull_summary ADD COLUMN {name} {kind}" for name, kind in _SUMMARY_CURRENCY_DDL]
+     + ["ALTER TABLE webull_positions ADD COLUMN fx_to_usd REAL",
+        """CREATE TABLE IF NOT EXISTS webull_sync_log (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, synced_at TEXT NOT NULL, account_id TEXT,
+            total_value REAL, market_value REAL, cash REAL, open_pnl REAL, open_pnl_pct REAL, day_pnl REAL,
+            positions INTEGER, base_currency TEXT, account_currency TEXT, cash_status TEXT, cash_detail TEXT,
+            fx_rate REAL, fx_source TEXT, fx_as_of TEXT, fx_estimated INTEGER, reported_market_value REAL,
+            reported_open_pnl REAL, reported_cash REAL, reconciliation_diff_pct REAL, warnings TEXT,
+            raw_balance TEXT)"""],
+     ["DROP TABLE IF EXISTS webull_sync_log"]
+     + _rebuild_without_new_columns("webull_positions", WEBULL_POSITION_FIELDS)
+     + _rebuild_without_new_columns("webull_summary", ["id", *WEBULL_SUMMARY_FIELDS, "last_synced"])),
+]
+SCHEMA_VERSION = MIGRATIONS[-1][0]
+_USER_TABLES = ("dime_trades", "dime_dividends", "webull_summary", "webull_positions", "webull_orders")
+_migrated = set()  # db paths already verified at SCHEMA_VERSION in this process
+
 HOLDING_COLUMNS = ["account_type", "symbol", "shares", "avg_cost", "cost_basis", "realized_pnl", "currency"]
 # Tolerance for float leftovers from fractional shares.
 _EPS = 1e-9
@@ -92,10 +144,201 @@ def _connect(db_path=None):
     return conn
 
 
+def _path(db_path=None):
+    return Path(db_path or DB_PATH)
+
+
+def schema_version(db_path=None):
+    with closing(sqlite3.connect(_path(db_path))) as conn:
+        return conn.execute("PRAGMA user_version").fetchone()[0]
+
+
+def _row_counts(conn):
+    tables = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    return {t: conn.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0] for t in _USER_TABLES if t in tables}
+
+
+def row_counts(db_path=None):
+    with closing(sqlite3.connect(_path(db_path))) as conn:
+        return _row_counts(conn)
+
+
+def backup_dir(db_path=None):
+    return _path(db_path).parent / "backups"
+
+
+def backup_db(label="manual", db_path=None):
+    """Consistent online copy (sqlite backup API) into backups/. Returns the backup path."""
+    src_path = _path(db_path)
+    dest = backup_dir(db_path) / f"{src_path.stem}-{datetime.now(timezone.utc):%Y%m%dT%H%M%S%fZ}-{label}.db"
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    with closing(_connect_ro(src_path)) as src, closing(sqlite3.connect(dest)) as dst:
+        src.backup(dst)
+    return dest
+
+
+def _connect_ro(path):
+    """Read-only connection: never creates or modifies the file."""
+    return sqlite3.connect(f"{Path(path).resolve().as_uri()}?mode=ro", uri=True)
+
+
+def inspect_db(path):
+    """dict(integrity, schema_version, tables={name: rows}) read through a read-only connection."""
+    with closing(_connect_ro(path)) as conn:
+        names = [r[0] for r in conn.execute(
+            "SELECT name FROM sqlite_master WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name")]
+        return {"integrity": conn.execute("PRAGMA integrity_check").fetchone()[0],
+                "schema_version": conn.execute("PRAGMA user_version").fetchone()[0],
+                "tables": {t: conn.execute(f'SELECT COUNT(*) FROM "{t}"').fetchone()[0] for t in names}}
+
+
+def backup_bytes(db_path=None, source=None):
+    """Whole-database snapshot as bytes via the SQLite backup API (consistent even during a write).
+
+    The source is opened read-only. The copy is re-opened and must pass integrity_check and contain
+    every source table, otherwise ValueError is raised instead of handing out a bad file.
+    """
+    import tempfile
+
+    src_path = Path(source) if source else _path(db_path)
+    with tempfile.TemporaryDirectory() as tmp:
+        dest = Path(tmp) / "portfolio.db"
+        with closing(_connect_ro(src_path)) as src, closing(sqlite3.connect(dest)) as dst:
+            src.backup(dst)
+        copy, original = inspect_db(dest), inspect_db(src_path)
+        if copy["integrity"] != "ok" or set(copy["tables"]) != set(original["tables"]):
+            raise ValueError(f"Backup verification failed: {copy}")
+        return dest.read_bytes()
+
+
+def pre_migration_backups(db_path=None):
+    """Backups written automatically before a migration, newest first."""
+    folder = backup_dir(db_path)
+    return sorted(folder.glob("*-pre-migrate-*.db"), reverse=True) if folder.exists() else []
+
+
+class DataCheckError(RuntimeError):
+    """A schema change would have altered existing rows; the transaction was rolled back."""
+
+
+def _baseline_columns():
+    with closing(sqlite3.connect(":memory:")) as conn:
+        conn.executescript(_SCHEMA)
+        return {t: [r[1] for r in conn.execute(f'PRAGMA table_info("{t}")')] for t in _USER_TABLES}
+
+
+def _data_digest(conn):
+    """{table: (rows, sha256)} of every core table over its baseline (v0) columns, which no migration may
+    drop. Order-independent, so a table rebuild that keeps the data gives the same digest."""
+    import hashlib
+
+    present = {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'")}
+    out = {}
+    for table, cols in _baseline_columns().items():
+        if table not in present:
+            continue
+        quoted = ", ".join(f'"{c}"' for c in cols)
+        rows = sorted(repr(r) for r in conn.execute(f'SELECT {quoted} FROM "{table}"'))
+        out[table] = (len(rows), hashlib.sha256("\n".join(rows).encode()).hexdigest())
+    return out
+
+
+def _verify_unchanged(before, after):
+    """Raise DataCheckError unless every core table has the same row count and row contents."""
+    report = {}
+    for table, (rows, digest) in before.items():
+        if table not in after:
+            raise DataCheckError(f"{table} disappeared")
+        report[table] = {"rows_before": rows, "rows_after": after[table][0]}
+        if after[table][0] != rows:
+            raise DataCheckError(f"{table}: {rows} rows before, {after[table][0]} after")
+        if after[table][1] != digest:
+            raise DataCheckError(f"{table}: row contents changed")
+    return report
+
+
+def _apply(db_path, steps, target, expected_current):
+    """Run (version, statements) steps in one IMMEDIATE transaction, then set user_version = target.
+
+    The version is re-read under the write lock; if another session already moved it, nothing runs.
+    Row counts and contents of every core table are compared before COMMIT; any difference rolls the
+    whole change back (DataCheckError). Returns the per-table check, or None when nothing ran.
+    """
+    conn = sqlite3.connect(_path(db_path), isolation_level=None)
+    try:
+        conn.execute("BEGIN IMMEDIATE")
+        if conn.execute("PRAGMA user_version").fetchone()[0] != expected_current:
+            conn.execute("ROLLBACK")
+            return None
+        before = _data_digest(conn)
+        for _, statements in steps:
+            for sql in statements:
+                conn.execute(sql)
+        check = _verify_unchanged(before, _data_digest(conn))
+        conn.execute(f"PRAGMA user_version = {int(target)}")
+        conn.execute("COMMIT")
+        return check
+    except Exception:
+        conn.execute("ROLLBACK")
+        raise
+    finally:
+        conn.close()
+
+
+def migrate(db_path=None, target=SCHEMA_VERSION):
+    """Apply pending migrations up to `target`. Backs up first when the DB holds data.
+
+    Returns dict(from_version, to_version, backup) — backup is None when nothing ran or the DB was empty.
+    """
+    current = schema_version(db_path)
+    if current >= target:
+        return {"from_version": current, "to_version": current, "backup": None}
+    backup = backup_db(f"pre-migrate-v{current}-to-v{target}", db_path) if sum(row_counts(db_path).values()) else None
+    with closing(sqlite3.connect(_path(db_path))) as conn, conn:
+        conn.executescript(_SCHEMA)  # migrations alter baseline tables, so make sure they exist (non-destructive)
+    pending = [(v, up) for v, _, up, _ in MIGRATIONS if current < v <= target]
+    check = _apply(db_path, pending, target, current)
+    return {"from_version": current, "to_version": schema_version(db_path), "backup": backup, "data_check": check}
+
+
+def rollback(target, db_path=None):
+    """Revert migrations above `target` (down statements). Always backs up first. Data in earlier
+    columns/tables is preserved; columns added by the reverted migrations are dropped."""
+    current = schema_version(db_path)
+    if target >= current:
+        return {"from_version": current, "to_version": current, "backup": None}
+    backup = backup_db(f"pre-rollback-v{current}-to-v{target}", db_path)
+    steps = [(v, down) for v, _, _, down in sorted(MIGRATIONS, reverse=True) if target < v <= current]
+    check = _apply(db_path, steps, target, current)
+    _migrated.discard(str(_path(db_path)))
+    return {"from_version": current, "to_version": schema_version(db_path), "backup": backup, "data_check": check}
+
+
+def restore(backup_path, db_path=None):
+    """Replace the database with a backup. The backup is checked first and opened read-only; the
+    current database is backed up before it is replaced."""
+    backup_path = Path(backup_path)
+    if not backup_path.exists():
+        raise FileNotFoundError(backup_path)
+    checked = inspect_db(backup_path)
+    if checked["integrity"] != "ok":
+        raise ValueError(f"Backup failed integrity_check: {checked['integrity']}")
+    safety = backup_db("pre-restore", db_path) if _path(db_path).exists() else None
+    with closing(_connect_ro(backup_path)) as src, closing(sqlite3.connect(_path(db_path))) as dst:
+        src.backup(dst)
+    _migrated.discard(str(_path(db_path)))
+    return {"restored_from": backup_path, "backup": safety, "restored": inspect_db(_path(db_path))}
+
+
 def init_db(db_path=None):
-    """Create portfolio.db and the dime_trades table if they don't exist."""
+    """Create the baseline tables if missing, then apply pending migrations (with backup)."""
+    key = str(_path(db_path))
     with closing(_connect(db_path)) as conn, conn:
         conn.executescript(_SCHEMA)
+    if key in _migrated:
+        return
+    migrate(db_path)
+    _migrated.add(key)
 
 
 def _normalize_symbol(symbol, account_type):
@@ -246,24 +489,41 @@ def _insert_sql(table, fields):
     return f"INSERT INTO {table} ({', '.join(fields)}) VALUES ({', '.join('?' * len(fields))})"
 
 
-def save_webull_data(summary, positions, orders=None, synced_at=None, db_path=None):
-    """Replace the cached Webull snapshot in one transaction.
+def _summary_value(summary, field):
+    value = summary.get(field)
+    if field in ("warnings", "raw_balance") and value is not None and not isinstance(value, str):
+        return json.dumps(value, ensure_ascii=False, default=str)
+    if field == "fx_as_of" and isinstance(value, datetime):
+        return value.astimezone(timezone.utc).isoformat(timespec="seconds")
+    if field == "fx_estimated" and value is not None:
+        return int(bool(value))
+    if field == "cash" and value is None:
+        return 0.0  # NOT NULL in the v0 schema; cash_status = 'unverified' marks it as unknown on read
+    return value
 
-    summary: dict with WEBULL_SUMMARY_FIELDS; positions / orders: DataFrames with the snake_case fields.
-    orders=None keeps the previously cached orders (e.g. when only the order-history call failed).
+
+def save_webull_data(summary, positions, orders=None, synced_at=None, db_path=None):
+    """Replace the cached Webull snapshot in one transaction and append it to webull_sync_log.
+
+    summary: dict with WEBULL_SUMMARY_FIELDS (+ optional WEBULL_CURRENCY_FIELDS); positions / orders:
+    DataFrames with the snake_case fields. orders=None keeps the previously cached orders.
     """
-    synced = synced_at or datetime.now(timezone.utc)
+    synced = (synced_at or datetime.now(timezone.utc)).isoformat(timespec="seconds")
     init_db(db_path)
+    summary_fields = [*WEBULL_SUMMARY_FIELDS, *WEBULL_CURRENCY_FIELDS]
     with closing(_connect(db_path)) as conn, conn:
         conn.execute("DELETE FROM webull_summary")
-        conn.execute(_insert_sql("webull_summary", ["id", *WEBULL_SUMMARY_FIELDS, "last_synced"]),
-                     [1, *[summary.get(f) for f in WEBULL_SUMMARY_FIELDS], synced.isoformat(timespec="seconds")])
+        conn.execute(_insert_sql("webull_summary", ["id", *summary_fields, "last_synced"]),
+                     [1, *[_summary_value(summary, f) for f in summary_fields], synced])
         conn.execute("DELETE FROM webull_positions")
-        conn.executemany(_insert_sql("webull_positions", WEBULL_POSITION_FIELDS),
-                         _records(positions, WEBULL_POSITION_FIELDS))
+        position_fields = [*WEBULL_POSITION_FIELDS, "fx_to_usd"]
+        conn.executemany(_insert_sql("webull_positions", position_fields), _records(positions, position_fields))
         if orders is not None:
             conn.execute("DELETE FROM webull_orders")
             conn.executemany(_insert_sql("webull_orders", WEBULL_ORDER_FIELDS), _records(orders, WEBULL_ORDER_FIELDS))
+        log_fields = _SYNC_LOG_FIELDS[2:]
+        conn.execute(_insert_sql("webull_sync_log", _SYNC_LOG_FIELDS),
+                     [synced, summary.get("account_id"), *[_summary_value(summary, f) for f in log_fields]])
 
 
 def get_webull_data(db_path=None):
@@ -272,9 +532,21 @@ def get_webull_data(db_path=None):
     with closing(_connect(db_path)) as conn:
         row = conn.execute("SELECT * FROM webull_summary WHERE id = 1").fetchone()
         positions = pd.read_sql_query(
-            f"SELECT {', '.join(WEBULL_POSITION_FIELDS)} FROM webull_positions ORDER BY market_value DESC", conn)
+            f"SELECT {', '.join(WEBULL_POSITION_FIELDS)}, fx_to_usd FROM webull_positions "
+            "ORDER BY market_value DESC", conn)
         orders = pd.read_sql_query(
             f"SELECT {', '.join(WEBULL_ORDER_FIELDS)} FROM webull_orders ORDER BY time DESC", conn)
     summary = dict(row) if row else None
+    if summary:
+        try:
+            summary["warnings"] = json.loads(summary.get("warnings") or "[]")
+        except ValueError:
+            summary["warnings"] = [str(summary.get("warnings"))]
     return {"summary": summary, "positions": positions, "orders": orders,
             "last_synced": summary["last_synced"] if summary else None}
+
+
+def get_sync_log(limit=50, db_path=None):
+    init_db(db_path)
+    with closing(_connect(db_path)) as conn:
+        return pd.read_sql_query("SELECT * FROM webull_sync_log ORDER BY id DESC LIMIT ?", conn, params=(limit,))

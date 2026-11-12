@@ -7,7 +7,7 @@ import streamlit as st
 
 from core import theme
 from core.theme import money, pct
-from core.webull_data import get_dividend_history, get_order_history, get_portfolio, sync_from_webull
+from core.webull_data import fx_from_metrics, get_dividend_history, get_order_history, get_portfolio, sync_from_webull
 
 BANGKOK = ZoneInfo("Asia/Bangkok")
 
@@ -67,11 +67,23 @@ if sync_result:
     orders_note = "" if sync_result["orders"] is None else f", {sync_result['orders']} orders"
     st.success(f"Synced {sync_result['positions']} positions{orders_note} from Webull.", icon="✅")
     for warning in sync_result["warnings"]:
-        st.warning(warning)
+        if warning not in (m.get("warnings") or []):  # snapshot warnings are shown below
+            st.warning(warning)
 
 if data["is_mock"]:
     st.info("No Webull data saved yet: the figures below are sample data. Press **🔄 Sync Live Data from Webull** "
             "to fetch your account, then approve the request in the Webull app.", icon="🧪")
+
+# Currency audit trail: everything below is USD; show how it got there and anything unverified.
+for warning in m.get("warnings") or []:
+    st.warning(warning, icon="⚠️")
+if not data["is_mock"]:
+    snapshot_fx = fx_from_metrics(m)
+    parts = [f"Base currency **{m.get('base_currency') or 'USD'}**",
+             f"Webull account currency **{m.get('account_currency') or 'not reported'}**",
+             f"Cash: {m.get('cash_detail') or '—'}"]
+    parts.append(f"FX: {snapshot_fx.label(BANGKOK)}" if snapshot_fx else "FX: not needed (all amounts in USD)")
+    st.caption(" · ".join(parts))
 
 st.write("")
 
@@ -85,8 +97,12 @@ with tab_overview:
               delta_arrow="off")
     k2.metric("Day PnL", money(m["day_pnl"], signed=True), pct(m["day_pnl_pct"]) if m["day_pnl"] is not None else None)
     k3.metric("Open PnL", money(m["open_pnl"], signed=True), pct(m["open_pnl_pct"]))
-    cash_share = m["cash"] / m["total_value"] * 100 if m["total_value"] else 0.0
-    k4.metric("Cash Balance", money(m["cash"]), f"{cash_share:.1f}% of account", delta_color="off", delta_arrow="off")
+    if m["cash"] is None:
+        k4.metric("Cash Balance", "—", "Unverified · excluded from total", delta_color="off", delta_arrow="off")
+    else:
+        cash_share = m["cash"] / m["total_value"] * 100 if m["total_value"] else 0.0
+        k4.metric("Cash Balance", money(m["cash"]), f"{cash_share:.1f}% of account", delta_color="off",
+                  delta_arrow="off")
 
     st.write("")
     if df.empty:
@@ -220,27 +236,34 @@ with tab_div:
     if df.empty:
         st.info("No positions to estimate dividends for.")
     else:
-        divs = get_dividend_history(tuple(df["Symbol"]))
-        shares = df.set_index("Symbol")["Quantity"]
-        price = df.set_index("Symbol")["Last Price"]
+        # Yahoo dividends are per share in the listing currency; prices here are USD, so only USD-listed
+        # holdings give a meaningful yield.
+        div_df = df[df["Currency"] == "USD"]
+        skipped = len(df) - len(div_df)
+        if skipped:
+            st.caption(f"{skipped} non-USD holding(s) are excluded from the dividend estimate.")
+        divs = get_dividend_history(tuple(div_df["Symbol"]))
+        shares = div_df.set_index("Symbol")["Quantity"]
+        price = div_df.set_index("Symbol")["Last Price"]
         cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=365)
         last12 = divs[divs["Date"] >= cutoff].groupby("Symbol")["Dividend"].sum() if not divs.empty else pd.Series()
         income = pd.DataFrame({
-            "Symbol": df["Symbol"], "Shares": df["Quantity"].values,
-            "Dividend / Share (TTM)": df["Symbol"].map(last12).fillna(0.0).values,
+            "Symbol": div_df["Symbol"], "Shares": div_df["Quantity"].values,
+            "Dividend / Share (TTM)": div_df["Symbol"].map(last12).fillna(0.0).values,
         })
         income["Est. Annual Income"] = income["Shares"] * income["Dividend / Share (TTM)"]
         income["Yield %"] = income["Dividend / Share (TTM)"] / income["Symbol"].map(price) * 100
         income["Yield on Cost %"] = income["Dividend / Share (TTM)"] / income["Symbol"].map(
-            df.set_index("Symbol")["Avg Cost"]) * 100
+            div_df.set_index("Symbol")["Avg Cost"]) * 100
         payers = income[income["Est. Annual Income"] > 0].sort_values("Est. Annual Income", ascending=False)
 
         annual = payers["Est. Annual Income"].sum()
         d1, d2, d3, d4 = st.columns(4)
         d1.metric("Est. Annual Income", money(annual), f"{money(annual / 12)} / month", delta_color="off",
                   delta_arrow="off")
-        d2.metric("Portfolio Yield", f"{annual / m['market_value'] * 100:.2f}%" if m["market_value"] else "—")
-        d3.metric("Dividend Payers", f"{len(payers)} / {len(df)}")
+        div_mv = float(div_df["Market Value"].sum())
+        d2.metric("Portfolio Yield", f"{annual / div_mv * 100:.2f}%" if div_mv else "—")
+        d3.metric("Dividend Payers", f"{len(payers)} / {len(div_df)}")
         d4.metric("Top Payer", payers.iloc[0]["Symbol"] if not payers.empty else "—",
                   money(payers.iloc[0]["Est. Annual Income"]) if not payers.empty else None,
                   delta_color="off", delta_arrow="off")

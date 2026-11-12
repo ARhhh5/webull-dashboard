@@ -16,7 +16,7 @@ import numpy as np
 import pandas as pd
 import streamlit as st
 
-from core import db_manager
+from core import db_manager, fx
 
 REGION = "th"
 DEFAULT_HOST = "api.webull.co.th"
@@ -106,7 +106,7 @@ def _connect():
 
 
 def _fetch_account(api_client, trade, account_id):
-    """Balance, positions and day change over an already-authenticated connection."""
+    """Balance (raw API dict), positions and day change over an already-authenticated connection."""
     from webull.data.quotes.market_data import MarketData
 
     balance = _json_or_raise(trade.account_v2.get_account_balance(account_id), "Account balance") or {}
@@ -122,7 +122,8 @@ def _fetch_account(api_client, trade, account_id):
         cost = _num(p.get("cost_price"))
         rows.append({"Symbol": str(p.get("symbol", "")).upper(), "Quantity": qty, "Avg Cost": cost,
                      "Last Price": _num(p.get("last_price"), cost),
-                     "Currency": str(p.get("currency") or "USD").upper()})
+                     # Never default to USD: an unknown currency is excluded from USD totals with a warning.
+                     "Currency": str(p.get("currency") or "").upper() or None})
 
     # Day change needs market-data permission; positions still render without it.
     # ETFs (e.g. VOO) are only returned under the US_ETF category.
@@ -146,41 +147,156 @@ def _fetch_account(api_client, trade, account_id):
                         "pct": _num(s.get("change_ratio")) * 100, "change": _num(s.get("change"), None)}
         except Exception:
             day_change = {}
-
-    summary = {
-        "cash": _num(balance.get("total_cash_balance")),
-        "market_value": _num(balance.get("total_market_value"), None),
-        "open_pnl": _num(balance.get("total_unrealized_profit_loss"), None),
-        "currency": balance.get("total_asset_currency") or "USD",
-    }
-    return rows, day_change, summary
+    return rows, day_change, balance
 
 
-def _build(rows, day_change, summary):
-    df = pd.DataFrame(rows, columns=["Symbol", "Quantity", "Avg Cost", "Last Price", "Currency"])
+RECONCILE_TOLERANCE_PCT = 2.0
+
+
+def _ccy(value):
+    return str(value or "").strip().upper() or None
+
+
+def _cash_usd(balance, account_ccy, cash_items, rate):
+    """(cash_usd | None, status, detail). Per-currency cash is preferred over the account-currency total."""
+    if cash_items:
+        parts, total, failed, converted = [], 0.0, [], False
+        for item in cash_items:
+            ccy, amount = _ccy(item.get("currency")), _num(item.get("cash_balance"), None)
+            if amount is None:
+                failed.append(f"{ccy or 'unknown currency'} (no amount)")
+                continue
+            if amount == 0:
+                continue
+            usd = fx.to_usd(amount, ccy, rate)
+            if usd is None:
+                failed.append(f"{ccy or 'unknown currency'} {amount:,.2f}")
+                continue
+            total += usd
+            if ccy == "USD":
+                parts.append(f"USD {amount:,.2f}")
+            else:
+                converted = True
+                parts.append(f"{ccy} {amount:,.2f} → USD {usd:,.2f}")
+        if failed:
+            return None, "unverified", "Could not convert cash: " + ", ".join(failed)
+        return total, ("converted" if converted else "USD"), " + ".join(parts) or "USD 0.00"
+
+    amount = _num(balance.get("total_cash_balance"), None)
+    if amount is None:
+        return None, "unverified", "Webull did not report a cash balance"
+    if account_ccy is None:
+        return None, "unverified", f"Cash {amount:,.2f} was reported without a currency"
+    usd = fx.to_usd(amount, account_ccy, rate)
+    if usd is None:
+        return None, "unverified", f"{account_ccy} {amount:,.2f} could not be converted to USD"
+    if account_ccy == "USD":
+        return usd, "USD", f"USD {amount:,.2f} (account total)"
+    return usd, "converted", f"{account_ccy} {amount:,.2f} → USD {usd:,.2f} (account total)"
+
+
+def _confirm_missing_currencies(rows, cash_items, warnings):
+    """Positions without a currency get one only when Webull's own per-currency market_value confirms it:
+    exactly one currency bucket must match (within RECONCILE_TOLERANCE_PCT) the value of that currency's
+    known positions plus all currency-less positions. Otherwise they stay unknown and are excluded."""
+    missing = [r for r in rows if not _ccy(r.get("Currency"))]
+    if not missing:
+        return rows
+    unknown_mv = sum(r["Quantity"] * r["Last Price"] for r in missing)
+    matches = []
+    for item in cash_items:
+        ccy, reported = _ccy(item.get("currency")), _num(item.get("market_value"), None)
+        if not ccy or not reported:
+            continue
+        known = sum(r["Quantity"] * r["Last Price"] for r in rows if _ccy(r.get("Currency")) == ccy)
+        if abs(known + unknown_mv - reported) / abs(reported) * 100 <= RECONCILE_TOLERANCE_PCT:
+            matches.append(ccy)
+    if len(matches) != 1:
+        return rows
+    warnings.append(f"{len(missing)} position(s) had no currency from Webull; confirmed as {matches[0]} because "
+                    f"Webull's {matches[0]} market value matches them.")
+    return [{**r, "Currency": matches[0]} if not _ccy(r.get("Currency")) else r for r in rows]
+
+
+def compute_snapshot(rows, day_change, balance, fx_lookup=None, now=None):
+    """Pure calculation of the Webull snapshot in USD (base currency).
+
+    rows: positions in their own currency; balance: raw /trading/assets/balances/get dict;
+    fx_lookup: callable returning fx.FxRate | None, called at most once and only if a non-USD
+    amount is present. Every amount is converted to USD exactly once here.
+    Returns (positions DataFrame in USD, metrics dict incl. currency metadata and warnings).
+    """
+    balance, warnings = balance or {}, []
+    account_ccy = _ccy(balance.get("total_asset_currency"))
+    cash_items = [i for i in (balance.get("account_currency_assets") or []) if isinstance(i, dict)]
+    rows = _confirm_missing_currencies(rows, cash_items, warnings)
+    value_ccys = {_ccy(r.get("Currency")) for r in rows} | {_ccy(i.get("currency")) for i in cash_items
+                                                             if _num(i.get("cash_balance"), None) != 0}
+    if not cash_items and _num(balance.get("total_cash_balance"), None) not in (None, 0):
+        value_ccys.add(account_ccy)
+    needs_fx = bool(value_ccys - {"USD", None})  # an unknown currency cannot be fixed by FX
+    reported_mv = _num(balance.get("total_market_value"), None)
+
+    rate = fx_lookup() if fx_lookup and (needs_fx or (account_ccy and account_ccy != "USD")) else None
+    if rate is None and needs_fx:
+        usd_rows = [r for r in rows if _ccy(r.get("Currency")) == "USD"]
+        usd_mv = sum(r["Quantity"] * r["Last Price"] for r in usd_rows)
+        # Fallback only, and only when every position is USD so the ratio is a clean THB/USD.
+        rate = fx.estimate_fx(reported_mv, account_ccy, usd_mv, now) if rows and len(usd_rows) == len(rows) else None
+        if rate is not None:
+            warnings.append(f"Live USD/THB unavailable: using {rate.label()}. Treat converted figures as estimates.")
+        else:
+            warnings.append("USD/THB rate unavailable: non-USD amounts could not be converted and are excluded.")
+
+    out, excluded = [], []
+    for r in rows:
+        ccy = _ccy(r.get("Currency"))
+        factor = fx.usd_factor(ccy, rate)
+        if factor is None:
+            excluded.append(f"{r['Symbol']} ({ccy or 'unknown currency'})")
+            continue
+        day = day_change.get(r["Symbol"], {})
+        change = day.get("change")
+        out.append({"Symbol": r["Symbol"], "Quantity": r["Quantity"], "Avg Cost": r["Avg Cost"] * factor,
+                    "Last Price": r["Last Price"] * factor, "Currency": ccy, "FX to USD": factor,
+                    "_pct": day.get("pct"), "_change": None if change is None else change * factor})
+    if excluded:
+        warnings.append("Excluded from USD totals (currency could not be converted): " + ", ".join(excluded))
+
+    df = pd.DataFrame(out, columns=["Symbol", "Quantity", "Avg Cost", "Last Price", "Currency", "FX to USD",
+                                    "_pct", "_change"])
     df["Market Value"] = df["Quantity"] * df["Last Price"]
     df["Cost Basis"] = df["Quantity"] * df["Avg Cost"]
     df["Open PnL"] = df["Market Value"] - df["Cost Basis"]
     df["Open PnL %"] = np.where(df["Cost Basis"] > 0, df["Open PnL"] / df["Cost Basis"] * 100, 0.0)
-    df["Day Change %"] = df["Symbol"].map(lambda s: day_change.get(s, {}).get("pct")).astype(float)
-    change = df["Symbol"].map(lambda s: day_change.get(s, {}).get("change")).astype(float)
+    df["Day Change %"] = df["_pct"].astype(float)
     # Prefer the absolute per-share change; derive it from change % when the API omits it.
     derived = df["Market Value"] - df["Market Value"] / (1 + df["Day Change %"] / 100)
-    df["Day PnL"] = (df["Quantity"] * change).fillna(derived)
-    total_mv = df["Market Value"].sum()
-    df["Weight %"] = df["Market Value"] / total_mv * 100 if total_mv else 0.0
-    df = df[POSITION_COLUMNS].sort_values("Market Value", ascending=False).reset_index(drop=True)
+    df["Day PnL"] = (df["Quantity"] * df["_change"].astype(float)).fillna(derived)
+    market_value = float(df["Market Value"].sum())
+    df["Weight %"] = df["Market Value"] / market_value * 100 if market_value else 0.0
+    df = df[POSITION_COLUMNS + ["FX to USD"]].sort_values("Market Value", ascending=False).reset_index(drop=True)
 
-    # Account Summary totals are authoritative when the API returns them.
-    market_value = summary["market_value"] if summary.get("market_value") is not None else total_mv
-    open_pnl = summary["open_pnl"] if summary.get("open_pnl") is not None else df["Open PnL"].sum()
-    cash = summary["cash"]
-    cost = df["Cost Basis"].sum()
-    has_day = df["Day PnL"].notna().any()
-    day_pnl = df["Day PnL"].sum() if has_day else None
-    prev_total = market_value - (day_pnl or 0)
+    cash, cash_status, cash_detail = _cash_usd(balance, account_ccy, cash_items, rate)
+    if cash is None:
+        warnings.append(f"Cash balance not verified ({cash_detail}). Total Account Value excludes cash.")
+
+    cost = float(df["Cost Basis"].sum())
+    open_pnl = float(df["Open PnL"].sum())
+    has_day = bool(df["Day PnL"].notna().any())
+    day_pnl = float(df["Day PnL"].sum()) if has_day else None
+    prev_total = market_value - (day_pnl or 0.0)
+
+    reported_usd = fx.to_usd(reported_mv, account_ccy, rate) if reported_mv is not None else None
+    recon = None
+    if reported_usd and market_value and not (rate is not None and rate.estimated):
+        recon = (market_value - reported_usd) / reported_usd * 100
+        if abs(recon) > RECONCILE_TOLERANCE_PCT:
+            warnings.append(f"Positions total differs from Webull's reported holdings by {recon:+.2f}% "
+                            f"(${market_value:,.2f} vs {account_ccy} {reported_mv:,.2f} ≈ ${reported_usd:,.2f}).")
+
     metrics = {
-        "total_value": market_value + cash,
+        "total_value": market_value + (cash or 0.0),
         "market_value": market_value,
         "cash": cash,
         "cost_basis": cost,
@@ -189,6 +305,20 @@ def _build(rows, day_change, summary):
         "day_pnl": day_pnl,
         "day_pnl_pct": (day_pnl / prev_total * 100) if has_day and prev_total else None,
         "positions": int(len(df)),
+        "base_currency": fx.BASE_CURRENCY,
+        "account_currency": account_ccy,
+        "cash_status": cash_status,
+        "cash_detail": cash_detail,
+        "fx_rate": rate.rate if rate else None,
+        "fx_source": rate.source if rate else None,
+        "fx_as_of": rate.as_of if rate else None,
+        "fx_estimated": bool(rate.estimated) if rate else None,
+        "reported_market_value": reported_mv,
+        "reported_open_pnl": _num(balance.get("total_unrealized_profit_loss"), None),
+        "reported_cash": _num(balance.get("total_cash_balance"), None),
+        "reconciliation_diff_pct": recon,
+        "warnings": warnings,
+        "raw_balance": balance,
     }
     return df, metrics
 
@@ -203,44 +333,79 @@ def _mock():
     ]
     data = [{"Symbol": s, "Quantity": q, "Avg Cost": c, "Last Price": p, "Currency": "USD"} for s, q, c, p, _ in rows]
     day = {s: {"pct": d, "change": None} for s, _, _, _, d in rows}
-    return data, day, {"cash": 4_825.37, "market_value": None, "open_pnl": None, "currency": "USD"}
+    balance = {"total_asset_currency": "USD",
+               "account_currency_assets": [{"currency": "USD", "cash_balance": "4825.37"}]}
+    return data, day, balance
 
 
 METRIC_KEYS = ["total_value", "market_value", "cash", "cost_basis", "open_pnl", "open_pnl_pct", "day_pnl",
                "day_pnl_pct", "positions"]
-POSITION_DB = dict(zip(POSITION_COLUMNS, ["symbol", "quantity", "avg_cost", "last_price", "market_value",
-                                          "cost_basis", "open_pnl", "open_pnl_pct", "day_change_pct", "day_pnl",
-                                          "weight_pct", "currency"]))
+POSITION_DB = dict(zip(POSITION_COLUMNS + ["FX to USD"],
+                       ["symbol", "quantity", "avg_cost", "last_price", "market_value", "cost_basis", "open_pnl",
+                        "open_pnl_pct", "day_change_pct", "day_pnl", "weight_pct", "currency", "fx_to_usd"]))
 
 
-def _parse_synced(value):
+def _parse_ts(value):
     return pd.Timestamp(value).tz_convert("UTC").to_pydatetime() if value else None
 
 
-def get_portfolio():
-    """Portfolio from the SQLite cache (no SDK call).
+def fx_from_metrics(metrics):
+    """The FX quote recorded with a snapshot (for display/audit), or None."""
+    if not metrics.get("fx_rate"):
+        return None
+    as_of = metrics.get("fx_as_of")
+    as_of = as_of if isinstance(as_of, datetime) else _parse_ts(as_of)
+    return fx.FxRate(rate=float(metrics["fx_rate"]), source=metrics.get("fx_source") or "unknown",
+                     as_of=as_of or datetime.now(timezone.utc), estimated=bool(metrics.get("fx_estimated")))
 
-    Returns dict(positions, metrics, is_mock, error, account_id, fetched_at, last_synced). Before the first
-    sync there is nothing cached, so demo data is returned with is_mock=True and last_synced=None.
+
+def _legacy_snapshot(cache):
+    """Snapshot synced before the USD fix: totals/cash have no recorded currency, so rebuild from positions."""
+    cached = cache["positions"]
+    rows = [{"Symbol": r.symbol, "Quantity": r.quantity, "Avg Cost": r.avg_cost, "Last Price": r.last_price,
+             "Currency": r.currency} for r in cached.itertuples()]
+    day = {r.symbol: {"pct": r.day_change_pct,
+                      "change": (r.day_pnl / r.quantity) if pd.notna(r.day_pnl) and r.quantity else None}
+           for r in cached.itertuples() if pd.notna(r.day_change_pct)}
+    positions, metrics = compute_snapshot(rows, day, {})
+    metrics["cash_detail"] = "Synced before the currency fix: cash currency was not recorded"
+    metrics["warnings"] = ["This Webull snapshot was saved before the USD currency fix. Totals are rebuilt from "
+                           "positions and cash is excluded. Press Sync to refresh."] + [
+        w for w in metrics["warnings"] if not w.startswith("Cash balance not verified")]
+    return positions, metrics
+
+
+def get_portfolio():
+    """Portfolio from the SQLite cache (no SDK call). All money in USD.
+
+    Returns dict(positions, metrics, is_mock, legacy, error, account_id, fetched_at, last_synced).
+    Before the first sync there is nothing cached, so demo data is returned with is_mock=True.
     """
     cache = db_manager.get_webull_data()
     summary = cache["summary"]
     if summary is None:
-        rows, day_change, demo_summary = _mock()
-        positions, metrics = _build(rows, day_change, demo_summary)
-        return {"positions": positions, "metrics": metrics, "is_mock": True, "error": None,
+        positions, metrics = compute_snapshot(*_mock())
+        return {"positions": positions, "metrics": metrics, "is_mock": True, "legacy": False, "error": None,
                 "account_id": "DEMO-ACCOUNT", "fetched_at": None, "last_synced": None}
 
+    synced = _parse_ts(cache["last_synced"])
+    base = {"is_mock": False, "error": None, "account_id": summary.get("account_id") or "-",
+            "fetched_at": synced, "last_synced": synced}
+    if summary.get("base_currency") is None:
+        positions, metrics = _legacy_snapshot(cache)
+        return {**base, "positions": positions, "metrics": metrics, "legacy": True}
+
     positions = cache["positions"].rename(columns={v: k for k, v in POSITION_DB.items()})
-    positions = positions.reindex(columns=POSITION_COLUMNS)
-    for col in POSITION_COLUMNS:
+    positions = positions.reindex(columns=POSITION_COLUMNS + ["FX to USD"])
+    for col in POSITION_COLUMNS + ["FX to USD"]:
         if col not in ("Symbol", "Currency"):
             positions[col] = pd.to_numeric(positions[col], errors="coerce")
-    metrics = {k: summary.get(k) for k in METRIC_KEYS}
+    metrics = {k: summary.get(k) for k in [*METRIC_KEYS, *db_manager.WEBULL_CURRENCY_FIELDS]}
     metrics["positions"] = int(metrics["positions"] or 0)
-    synced = _parse_synced(cache["last_synced"])
-    return {"positions": positions.reset_index(drop=True), "metrics": metrics, "is_mock": False, "error": None,
-            "account_id": summary.get("account_id") or "-", "fetched_at": synced, "last_synced": synced}
+    metrics["fx_estimated"] = None if metrics["fx_estimated"] is None else bool(metrics["fx_estimated"])
+    if metrics["cash_status"] == "unverified":
+        metrics["cash"] = None
+    return {**base, "positions": positions.reset_index(drop=True), "metrics": metrics, "legacy": False}
 
 
 ORDER_COLUMNS = ["Time", "Symbol", "Side", "Status", "Order Type", "Quantity", "Filled Qty", "Filled Price",
@@ -303,7 +468,6 @@ def _mock_orders(days):
                      "Order ID": f"DEMO{1000 + i}"})
     return rows
 
-
 def get_order_history(days=180):
     """Order history from the SQLite cache (no SDK call). Returns dict(orders DataFrame, is_mock, error)."""
     cache = db_manager.get_webull_data()
@@ -327,10 +491,11 @@ def sync_from_webull():
     failure keeps the previously cached orders and is reported in "warnings".
     """
     api_client, trade, account_id = _connect()
-    rows, day_change, summary = _fetch_account(api_client, trade, account_id)
-    positions, metrics = _build(rows, day_change, summary)
+    rows, day_change, balance = _fetch_account(api_client, trade, account_id)
+    # Uncached quote so the stored FX timestamp matches this sync.
+    positions, metrics = compute_snapshot(rows, day_change, balance, fx_lookup=fx.fetch_usd_thb)
 
-    warnings = []
+    warnings = list(metrics["warnings"])
     try:
         orders = pd.DataFrame(_fetch_orders(trade, account_id), columns=ORDER_COLUMNS)
         orders_db = orders.rename(columns=ORDER_DB)

@@ -7,17 +7,19 @@ from unittest.mock import MagicMock, patch
 import pandas as pd
 from streamlit.testing.v1 import AppTest
 
-from core import db_manager, dime_data, webull_data
+from core import db_manager, dime_data, fx, webull_data
 from core.theme import money
 
 SYNC_KEY = "webull_sync"
+FX = fx.FxRate(rate=35.0, source="test", as_of=datetime(2026, 11, 12, tzinfo=timezone.utc))
 
 
 def live_rows(scale=1.0):
     rows = [{"Symbol": "AAPL", "Quantity": 10.0, "Avg Cost": 150.0, "Last Price": 200.0 * scale, "Currency": "USD"},
             {"Symbol": "TSLA", "Quantity": 4.0, "Avg Cost": 300.0, "Last Price": 250.0 * scale, "Currency": "USD"}]
     day = {"AAPL": {"pct": 1.0, "change": 2.0}, "TSLA": {"pct": -2.0, "change": -5.0}}
-    return rows, day, {"cash": 1000.0, "market_value": None, "open_pnl": None, "currency": "USD"}
+    return rows, day, {"total_asset_currency": "USD",
+                       "account_currency_assets": [{"currency": "USD", "cash_balance": "1000"}]}
 
 
 def live_orders():
@@ -40,7 +42,8 @@ class WebullSyncTest(unittest.TestCase):
             patch.object(db_manager, "DB_PATH", self.db),
             patch.object(webull_data, "_connect", self.connect),
             patch.object(dime_data, "get_prices", lambda syms: {}),
-            patch.object(dime_data, "get_usd_thb", lambda: (35.0, True)),
+            patch.object(dime_data, "get_usd_thb", lambda: FX),
+            patch.object(fx, "fetch_usd_thb", lambda: FX),  # no network in tests
             patch.object(webull_data, "get_dividend_history",
                          lambda syms: pd.DataFrame(columns=["Date", "Symbol", "Dividend"])),
         ]
@@ -67,7 +70,7 @@ class WebullSyncTest(unittest.TestCase):
         return app
 
     def test_sync_saves_snapshot_and_reads_it_back(self):
-        expected_positions, expected_metrics = webull_data._build(*live_rows())
+        expected_positions, expected_metrics = webull_data.compute_snapshot(*live_rows())
         result = self.sync()
         self.assertEqual(result, {"account_id": "ACC-1", "positions": 2, "orders": 2, "warnings": []})
 
@@ -75,7 +78,8 @@ class WebullSyncTest(unittest.TestCase):
         self.assertFalse(cached["is_mock"])
         self.assertEqual(cached["account_id"], "ACC-1")
         self.assertLess(datetime.now(timezone.utc) - cached["last_synced"], timedelta(minutes=1))
-        for key, value in expected_metrics.items():
+        for key in webull_data.METRIC_KEYS:
+            value = expected_metrics[key]
             self.assertAlmostEqual(cached["metrics"][key], value, msg=key)
         pd.testing.assert_frame_equal(cached["positions"], expected_positions, check_dtype=False)
 
@@ -107,7 +111,7 @@ class WebullSyncTest(unittest.TestCase):
         self.assertTrue(any("never synced" in i.value.lower() or "No Webull data saved" in i.value for i in app.info))
         self.run_page("../app.py")  # Executive Dashboard is the default page
 
-        positions, metrics = webull_data._build(*live_rows())
+        positions, metrics = webull_data.compute_snapshot(*live_rows())
         db_manager.save_webull_data({**metrics, "account_id": "ACC-9"}, positions.rename(columns=webull_data.POSITION_DB),
                                     pd.DataFrame(columns=db_manager.WEBULL_ORDER_FIELDS),
                                     synced_at=datetime.now(timezone.utc) - timedelta(hours=3))
@@ -135,11 +139,11 @@ class WebullSyncTest(unittest.TestCase):
                 p.stop()
         self.assertEqual(self.connect.call_count, 1)
         self.assertTrue(any("Synced 2 positions, 2 orders" in s.value for s in app.success))
-        self.assertEqual(app.tabs[0].metric[0].value, money(webull_data._build(*live_rows())[1]["total_value"]))
+        self.assertEqual(app.tabs[0].metric[0].value, money(webull_data.compute_snapshot(*live_rows())[1]["total_value"]))
         self.assertIsNotNone(db_manager.get_webull_data()["summary"])
 
     def test_sync_failure_keeps_cached_data(self):
-        positions, metrics = webull_data._build(*live_rows())
+        positions, metrics = webull_data.compute_snapshot(*live_rows())
         db_manager.save_webull_data({**metrics, "account_id": "ACC-1"}, positions.rename(columns=webull_data.POSITION_DB),
                                     pd.DataFrame(columns=db_manager.WEBULL_ORDER_FIELDS))
         before = db_manager.get_webull_data()["summary"]

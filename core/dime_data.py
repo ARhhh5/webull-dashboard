@@ -2,9 +2,7 @@
 import pandas as pd
 import streamlit as st
 
-from core import db_manager
-
-DEFAULT_USD_THB = 35.0
+from core import db_manager, fx
 
 
 def _yf_symbol(symbol, account_type):
@@ -35,23 +33,15 @@ def get_prices(yf_symbols):
     return prices
 
 
-@st.cache_data(ttl=900, show_spinner=False)
 def get_usd_thb():
-    try:
-        import yfinance as yf
-
-        rate = yf.Ticker("THB=X").fast_info.last_price
-        if rate and rate > 0:
-            return float(rate), True
-    except Exception:
-        pass
-    return DEFAULT_USD_THB, False
+    """USD/THB as fx.FxRate (source + timestamp); a constant flagged as estimated when no live quote."""
+    return fx.rate_or_fallback(fx.get_usd_thb())
 
 
 def get_dime_portfolio():
     """Holdings with Last Price, Market Value (native currency) and Market Value USD."""
     holdings = db_manager.get_holdings()
-    fx, _ = get_usd_thb()
+    rate = get_usd_thb()
     if holdings.empty:
         return holdings.assign(last_price=[], market_value=[], unrealized_pnl=[], unrealized_pct=[],
                                market_value_usd=[], cost_basis_usd=[], unrealized_pnl_usd=[], price_source=[])
@@ -64,7 +54,7 @@ def get_dime_portfolio():
     holdings["unrealized_pnl"] = holdings["market_value"] - holdings["cost_basis"]
     holdings["unrealized_pct"] = (holdings["unrealized_pnl"] / holdings["cost_basis"] * 100).where(
         holdings["cost_basis"] > 0, 0.0)
-    to_usd = holdings["currency"].map({"USD": 1.0, "THB": 1 / fx})
+    to_usd = holdings["currency"].map(lambda c: fx.usd_factor(c, rate)).astype(float)
     holdings["market_value_usd"] = holdings["market_value"] * to_usd
     holdings["cost_basis_usd"] = holdings["cost_basis"] * to_usd
     holdings["unrealized_pnl_usd"] = holdings["unrealized_pnl"] * to_usd
@@ -75,10 +65,11 @@ def summarize(df, account_type):
     sub = df[df["account_type"] == account_type] if not df.empty else df
     if sub.empty:
         return {"market_value": 0.0, "market_value_usd": 0.0, "cost_basis": 0.0, "unrealized_pnl": 0.0,
-                "unrealized_pct": 0.0, "positions": 0}
+                "unrealized_pnl_usd": 0.0, "unrealized_pct": 0.0, "positions": 0}
     cost = float(sub["cost_basis"].sum())
     pnl = float(sub["unrealized_pnl"].sum())
     return {"market_value": float(sub["market_value"].sum()),
             "market_value_usd": float(sub["market_value_usd"].sum()),
+            "unrealized_pnl_usd": float(sub["unrealized_pnl_usd"].sum()),
             "cost_basis": cost, "unrealized_pnl": pnl,
             "unrealized_pct": pnl / cost * 100 if cost else 0.0, "positions": int(len(sub))}
