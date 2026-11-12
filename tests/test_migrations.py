@@ -107,6 +107,12 @@ class MigrationTest(unittest.TestCase):
         self.assertFalse(db_manager._apply(self.db, steps, db_manager.SCHEMA_VERSION, 0))
         self.assertEqual(db_manager.schema_version(self.db), db_manager.SCHEMA_VERSION)
 
+    def test_migrations_use_only_sqlite_334_compatible_sql(self):
+        # Streamlit Community Cloud has shipped SQLite 3.34.1; DROP COLUMN / RENAME COLUMN need newer versions.
+        for version, name, up, down in db_manager.MIGRATIONS:
+            for sql in up + down:
+                self.assertNotRegex(sql.upper(), r"DROP\s+COLUMN|RENAME\s+COLUMN", f"v{version} {name}: {sql}")
+
     def test_db_tool_cli(self):
         with patch("builtins.print") as out:
             db_tool.main(["--db", self.db, "status"])

@@ -102,7 +102,7 @@ _SYNC_LOG_FIELDS = ["synced_at", "account_id", "total_value", "market_value", "c
                     "day_pnl", "positions", *WEBULL_CURRENCY_FIELDS]
 
 def _rebuild_without_new_columns(table, keep_columns):
-    """Down-migration that drops columns by rebuilding the table, since ALTER TABLE DROP COLUMN needs
+    """Down-migration that removes added columns by rebuilding the table: dropping a column in place needs
     SQLite >= 3.35 and Streamlit Community Cloud has shipped 3.34.1. Rows in kept columns are copied as is."""
     ddl = _SCHEMA.split(f"CREATE TABLE IF NOT EXISTS {table} (", 1)[1].split("\n);", 1)[0]
     cols = ", ".join(keep_columns)
