@@ -1,23 +1,28 @@
-"""Webull data layer: live data via the Webull OpenAPI SDK, with a mock fallback.
+"""Webull data layer.
 
+Page loads read the SQLite cache only (get_portfolio / get_order_history) and never touch the SDK, so
+browsing the app cannot trigger a Webull mobile approval. The SDK runs only in sync_from_webull(), called
+from the explicit "Sync" button; it fetches everything over one connection and saves it to SQLite.
 Credentials come from st.secrets["Webull"]: AppKey, AppSecret, AccessToken, AccountId.
-Any failure (missing secrets, auth, network, API errors) returns mock data so the UI always renders.
 """
+import hashlib
 import logging
 import sys
 import tempfile
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
 import pandas as pd
 import streamlit as st
 
+from core import db_manager
+
 REGION = "th"
 DEFAULT_HOST = "api.webull.co.th"
 TOKEN_DIR = Path(tempfile.gettempdir()) / "webull_openapi_token"
-# The SDK polls for 2FA approval when the token is not yet verified; keep that short in a web app.
-TOKEN_CHECK_SECONDS = 20
+# Sync is user-initiated, so allow time to approve the 2FA prompt on the phone.
+TOKEN_CHECK_SECONDS = 120
 
 POSITION_COLUMNS = ["Symbol", "Quantity", "Avg Cost", "Last Price", "Market Value", "Cost Basis",
                     "Open PnL", "Open PnL %", "Day Change %", "Day PnL", "Weight %", "Currency"]
@@ -45,14 +50,20 @@ def _load_credentials():
 
 
 def _seed_token(access_token):
-    """Pre-load AccessToken so the SDK reuses it instead of starting a new 2FA flow."""
+    """Seed the SDK token file from AccessToken once per secret value.
+
+    After the first approval the SDK rewrites token.txt with its own verified token. Re-seeding the
+    secret on every connect would discard that token and force a new mobile approval each time.
+    """
     if not access_token:
         return
     TOKEN_DIR.mkdir(parents=True, exist_ok=True)
-    token_file = TOKEN_DIR / "token.txt"
-    if token_file.exists() and token_file.read_text(encoding="utf-8").split("\n", 1)[0].strip() == access_token:
-        return  # keep the verified token/expiry the SDK already saved
+    token_file, marker = TOKEN_DIR / "token.txt", TOKEN_DIR / "seeded_secret.sha256"
+    digest = hashlib.sha256(access_token.encode("utf-8")).hexdigest()
+    if token_file.exists() and marker.exists() and marker.read_text(encoding="utf-8").strip() == digest:
+        return
     token_file.write_text(f"{access_token}\n0\nNORMAL\n", encoding="utf-8")
+    marker.write_text(digest, encoding="utf-8")
 
 
 def _api_client(creds):
@@ -94,10 +105,9 @@ def _connect():
     return api_client, trade, account_id
 
 
-def _fetch_live():
-    from webull.data.data_client import DataClient
-
-    api_client, trade, account_id = _connect()
+def _fetch_account(api_client, trade, account_id):
+    """Balance, positions and day change over an already-authenticated connection."""
+    from webull.data.quotes.market_data import MarketData
 
     balance = _json_or_raise(trade.account_v2.get_account_balance(account_id), "Account balance") or {}
     positions = _json_or_raise(trade.account_v2.get_account_position(account_id), "Positions") or []
@@ -119,14 +129,15 @@ def _fetch_live():
     day_change = {}
     if rows:
         try:
-            data_client = DataClient(api_client)
+            # MarketData directly: DataClient() would run the SDK token handshake a second time.
+            market_data = MarketData(api_client)
             wanted = {r["Symbol"] for r in rows}
             for category in ("US_STOCK", "US_ETF"):
                 missing = sorted(wanted - set(day_change))
                 if not missing:
                     break
                 try:
-                    snaps = _json_or_raise(data_client.market_data.get_snapshot(",".join(missing), category),
+                    snaps = _json_or_raise(market_data.get_snapshot(",".join(missing), category),
                                            f"Snapshot {category}")
                 except Exception:
                     continue
@@ -142,7 +153,7 @@ def _fetch_live():
         "open_pnl": _num(balance.get("total_unrealized_profit_loss"), None),
         "currency": balance.get("total_asset_currency") or "USD",
     }
-    return rows, day_change, summary, account_id
+    return rows, day_change, summary
 
 
 def _build(rows, day_change, summary):
@@ -195,30 +206,51 @@ def _mock():
     return data, day, {"cash": 4_825.37, "market_value": None, "open_pnl": None, "currency": "USD"}
 
 
-@st.cache_data(ttl=900, show_spinner="Fetching Webull portfolio...")
+METRIC_KEYS = ["total_value", "market_value", "cash", "cost_basis", "open_pnl", "open_pnl_pct", "day_pnl",
+               "day_pnl_pct", "positions"]
+POSITION_DB = dict(zip(POSITION_COLUMNS, ["symbol", "quantity", "avg_cost", "last_price", "market_value",
+                                          "cost_basis", "open_pnl", "open_pnl_pct", "day_change_pct", "day_pnl",
+                                          "weight_pct", "currency"]))
+
+
+def _parse_synced(value):
+    return pd.Timestamp(value).tz_convert("UTC").to_pydatetime() if value else None
+
+
 def get_portfolio():
-    """Returns dict(positions, metrics, is_mock, error, account_id, fetched_at)."""
-    try:
-        rows, day_change, summary, account_id = _fetch_live()
-        is_mock, error = False, None
-    except Exception as exc:  # KeyError, missing secrets file, SDK/auth/network errors
-        rows, day_change, summary = _mock()
-        account_id, is_mock = "DEMO-ACCOUNT", True
-        error = f"{type(exc).__name__}: {str(exc)[:300]}"
-    positions, metrics = _build(rows, day_change, summary)
-    return {"positions": positions, "metrics": metrics, "is_mock": is_mock, "error": error,
-            "account_id": account_id, "fetched_at": datetime.now()}
+    """Portfolio from the SQLite cache (no SDK call).
+
+    Returns dict(positions, metrics, is_mock, error, account_id, fetched_at, last_synced). Before the first
+    sync there is nothing cached, so demo data is returned with is_mock=True and last_synced=None.
+    """
+    cache = db_manager.get_webull_data()
+    summary = cache["summary"]
+    if summary is None:
+        rows, day_change, demo_summary = _mock()
+        positions, metrics = _build(rows, day_change, demo_summary)
+        return {"positions": positions, "metrics": metrics, "is_mock": True, "error": None,
+                "account_id": "DEMO-ACCOUNT", "fetched_at": None, "last_synced": None}
+
+    positions = cache["positions"].rename(columns={v: k for k, v in POSITION_DB.items()})
+    positions = positions.reindex(columns=POSITION_COLUMNS)
+    for col in POSITION_COLUMNS:
+        if col not in ("Symbol", "Currency"):
+            positions[col] = pd.to_numeric(positions[col], errors="coerce")
+    metrics = {k: summary.get(k) for k in METRIC_KEYS}
+    metrics["positions"] = int(metrics["positions"] or 0)
+    synced = _parse_synced(cache["last_synced"])
+    return {"positions": positions.reset_index(drop=True), "metrics": metrics, "is_mock": False, "error": None,
+            "account_id": summary.get("account_id") or "-", "fetched_at": synced, "last_synced": synced}
 
 
 ORDER_COLUMNS = ["Time", "Symbol", "Side", "Status", "Order Type", "Quantity", "Filled Qty", "Filled Price",
                  "Amount", "Order ID"]
+ORDER_DB = dict(zip(ORDER_COLUMNS, ["time", "symbol", "side", "status", "order_type", "quantity", "filled_qty",
+                                    "filled_price", "amount", "order_id"]))
 MAX_ORDER_PAGES = 20  # API pages through history; cap to protect rate limits
 
 
-def _fetch_orders_live(days):
-    from datetime import timedelta, timezone
-
-    _, trade, account_id = _connect()
+def _fetch_orders(trade, account_id, days=180):
     end = datetime.now(timezone.utc)
     start = end - timedelta(days=min(days, 180))  # API look-back limit is 6 months
     fmt = "%Y-%m-%dT%H:%M:%S.000Z"
@@ -251,8 +283,6 @@ def _fetch_orders_live(days):
 
 
 def _mock_orders(days):
-    from datetime import timedelta
-
     rows, now = [], datetime.now()
     rng = np.random.default_rng(7)
     base = {s: c for s, _, c, _, _ in [
@@ -274,18 +304,45 @@ def _mock_orders(days):
     return rows
 
 
-@st.cache_data(ttl=900, show_spinner="Fetching Webull order history...")
 def get_order_history(days=180):
-    """Returns dict(orders DataFrame, is_mock, error)."""
-    try:
-        rows, is_mock, error = _fetch_orders_live(days), False, None
-    except Exception as exc:
-        rows, is_mock = _mock_orders(days), True
-        error = f"{type(exc).__name__}: {str(exc)[:300]}"
-    df = pd.DataFrame(rows, columns=ORDER_COLUMNS)
+    """Order history from the SQLite cache (no SDK call). Returns dict(orders DataFrame, is_mock, error)."""
+    cache = db_manager.get_webull_data()
+    if cache["summary"] is None:
+        df, is_mock = pd.DataFrame(_mock_orders(days), columns=ORDER_COLUMNS), True
+    else:
+        df = cache["orders"].rename(columns={v: k for k, v in ORDER_DB.items()}).reindex(columns=ORDER_COLUMNS)
+        df["Time"] = pd.to_datetime(df["Time"], errors="coerce", utc=True)
+        for col in ("Quantity", "Filled Qty", "Filled Price", "Amount"):
+            df[col] = pd.to_numeric(df[col], errors="coerce")
+        is_mock = False
     if not df.empty:
         df = df.sort_values("Time", ascending=False).reset_index(drop=True)
-    return {"orders": df, "is_mock": is_mock, "error": error}
+    return {"orders": df, "is_mock": is_mock, "error": None}
+
+
+def sync_from_webull():
+    """Fetch live data from Webull and replace the SQLite cache. May trigger a mobile approval.
+
+    Raises on credential/auth/account errors, leaving the existing cache untouched. An order-history
+    failure keeps the previously cached orders and is reported in "warnings".
+    """
+    api_client, trade, account_id = _connect()
+    rows, day_change, summary = _fetch_account(api_client, trade, account_id)
+    positions, metrics = _build(rows, day_change, summary)
+
+    warnings = []
+    try:
+        orders = pd.DataFrame(_fetch_orders(trade, account_id), columns=ORDER_COLUMNS)
+        orders_db = orders.rename(columns=ORDER_DB)
+        orders_db["time"] = [t.isoformat() if pd.notna(t) else None for t in orders["Time"]]
+    except Exception as exc:
+        orders, orders_db = None, None
+        warnings.append(f"Order history was not updated ({type(exc).__name__}: {str(exc)[:200]})")
+
+    db_manager.save_webull_data({**metrics, "account_id": account_id}, positions.rename(columns=POSITION_DB),
+                                orders_db)
+    return {"account_id": account_id, "positions": len(positions),
+            "orders": None if orders is None else len(orders), "warnings": warnings}
 
 
 @st.cache_data(ttl=86400, show_spinner="Loading dividend history...")
