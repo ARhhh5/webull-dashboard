@@ -236,19 +236,25 @@ with tab_div:
     if df.empty:
         st.info("No positions to estimate dividends for.")
     else:
-        divs = get_dividend_history(tuple(df["Symbol"]))
-        shares = df.set_index("Symbol")["Quantity"]
-        price = df.set_index("Symbol")["Last Price"]
+        # Yahoo dividends are per share in the listing currency; prices here are USD, so only USD-listed
+        # holdings give a meaningful yield.
+        div_df = df[df["Currency"] == "USD"]
+        skipped = len(df) - len(div_df)
+        if skipped:
+            st.caption(f"{skipped} non-USD holding(s) are excluded from the dividend estimate.")
+        divs = get_dividend_history(tuple(div_df["Symbol"]))
+        shares = div_df.set_index("Symbol")["Quantity"]
+        price = div_df.set_index("Symbol")["Last Price"]
         cutoff = pd.Timestamp.now(tz="UTC") - pd.Timedelta(days=365)
         last12 = divs[divs["Date"] >= cutoff].groupby("Symbol")["Dividend"].sum() if not divs.empty else pd.Series()
         income = pd.DataFrame({
-            "Symbol": df["Symbol"], "Shares": df["Quantity"].values,
-            "Dividend / Share (TTM)": df["Symbol"].map(last12).fillna(0.0).values,
+            "Symbol": div_df["Symbol"], "Shares": div_df["Quantity"].values,
+            "Dividend / Share (TTM)": div_df["Symbol"].map(last12).fillna(0.0).values,
         })
         income["Est. Annual Income"] = income["Shares"] * income["Dividend / Share (TTM)"]
         income["Yield %"] = income["Dividend / Share (TTM)"] / income["Symbol"].map(price) * 100
         income["Yield on Cost %"] = income["Dividend / Share (TTM)"] / income["Symbol"].map(
-            df.set_index("Symbol")["Avg Cost"]) * 100
+            div_df.set_index("Symbol")["Avg Cost"]) * 100
         payers = income[income["Est. Annual Income"] > 0].sort_values("Est. Annual Income", ascending=False)
 
         annual = payers["Est. Annual Income"].sum()
