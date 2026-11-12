@@ -1,4 +1,5 @@
 from datetime import date
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import plotly.express as px
@@ -7,6 +8,7 @@ import streamlit as st
 from core import db_manager, dime_data, theme
 from core.theme import money, pct
 
+BANGKOK = ZoneInfo("Asia/Bangkok")
 CCY_SYMBOL = {"Dime US": "$", "Dime TH": "฿"}
 SHORT = {"Dime US": "US", "Dime TH": "TH"}
 VIEWS = ["All Dime", "Dime US", "Dime TH"]
@@ -22,7 +24,8 @@ with c_filter:
                     label_visibility="collapsed")
 account = None if view == "All Dime" else view
 
-fx, fx_live = dime_data.get_usd_thb()
+fx_rate = dime_data.get_usd_thb()  # FxRate with source + timestamp; estimated when no live quote
+fx = fx_rate.rate
 
 
 def _prepare(df, usd_thb):
@@ -44,7 +47,8 @@ def _prepare(df, usd_thb):
     df["price_source"] = df["price_source"].fillna("Avg cost")
     df["unrealized_pnl"] = df["market_value"] - df["cost_basis"]
     df["unrealized_pct"] = (df["unrealized_pnl"] / df["cost_basis"] * 100).where(df["cost_basis"] > 0, 0.0)
-    to_usd = df["currency"].map({"USD": 1.0, "THB": 1 / usd_thb}).fillna(1.0)
+    # Currency comes from the account above; no default, so an unknown currency stays NaN instead of USD.
+    to_usd = df["currency"].map({"USD": 1.0, "THB": 1 / usd_thb})
     df["market_value_usd"] = df["market_value"] * to_usd
     df["cost_basis_usd"] = df["cost_basis"] * to_usd
     df["unrealized_pnl_usd"] = df["unrealized_pnl"] * to_usd
@@ -57,7 +61,7 @@ holdings = holdings_all if account is None else holdings_all[holdings_all["accou
 # Mixed accounts are consolidated in USD; a single account stays in its own currency.
 if account is None:
     cur, value_col, cost_col, pnl_col = "$", "market_value_usd", "cost_basis_usd", "unrealized_pnl_usd"
-    ccy_note = f"All amounts in USD · Dime TH converted at USD/THB {fx:,.2f}" + ("" if fx_live else " (fallback)")
+    ccy_note = f"All amounts in USD · Dime TH converted at {fx_rate.label(BANGKOK)}"
 else:
     cur, value_col, cost_col, pnl_col = CCY_SYMBOL[account], "market_value", "cost_basis", "unrealized_pnl"
     ccy_note = f"Amounts in {db_manager.ACCOUNT_CURRENCY[account]}"
