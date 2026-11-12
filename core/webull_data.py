@@ -195,6 +195,29 @@ def _cash_usd(balance, account_ccy, cash_items, rate):
     return usd, "converted", f"{account_ccy} {amount:,.2f} → USD {usd:,.2f} (account total)"
 
 
+def _confirm_missing_currencies(rows, cash_items, warnings):
+    """Positions without a currency get one only when Webull's own per-currency market_value confirms it:
+    exactly one currency bucket must match (within RECONCILE_TOLERANCE_PCT) the value of that currency's
+    known positions plus all currency-less positions. Otherwise they stay unknown and are excluded."""
+    missing = [r for r in rows if not _ccy(r.get("Currency"))]
+    if not missing:
+        return rows
+    unknown_mv = sum(r["Quantity"] * r["Last Price"] for r in missing)
+    matches = []
+    for item in cash_items:
+        ccy, reported = _ccy(item.get("currency")), _num(item.get("market_value"), None)
+        if not ccy or not reported:
+            continue
+        known = sum(r["Quantity"] * r["Last Price"] for r in rows if _ccy(r.get("Currency")) == ccy)
+        if abs(known + unknown_mv - reported) / abs(reported) * 100 <= RECONCILE_TOLERANCE_PCT:
+            matches.append(ccy)
+    if len(matches) != 1:
+        return rows
+    warnings.append(f"{len(missing)} position(s) had no currency from Webull; confirmed as {matches[0]} because "
+                    f"Webull's {matches[0]} market value matches them.")
+    return [{**r, "Currency": matches[0]} if not _ccy(r.get("Currency")) else r for r in rows]
+
+
 def compute_snapshot(rows, day_change, balance, fx_lookup=None, now=None):
     """Pure calculation of the Webull snapshot in USD (base currency).
 
@@ -206,6 +229,7 @@ def compute_snapshot(rows, day_change, balance, fx_lookup=None, now=None):
     balance, warnings = balance or {}, []
     account_ccy = _ccy(balance.get("total_asset_currency"))
     cash_items = [i for i in (balance.get("account_currency_assets") or []) if isinstance(i, dict)]
+    rows = _confirm_missing_currencies(rows, cash_items, warnings)
     value_ccys = {_ccy(r.get("Currency")) for r in rows} | {_ccy(i.get("currency")) for i in cash_items
                                                              if _num(i.get("cash_balance"), None) != 0}
     if not cash_items and _num(balance.get("total_cash_balance"), None) not in (None, 0):

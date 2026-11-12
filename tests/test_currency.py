@@ -90,6 +90,25 @@ class ComputeSnapshotTest(unittest.TestCase):
         self.assertEqual(m["total_value"], 100.0)  # cash excluded, never guessed as USD
         self.assertTrue(any("Cash balance not verified" in w for w in m["warnings"]))
 
+    def test_missing_position_currency_confirmed_by_webull_market_value(self):
+        rows, day, balance = webull_app_case()
+        rows = [{**r, "Currency": None} for r in rows]
+        balance = {**balance, "account_currency_assets": [
+            {"currency": "USD", "cash_balance": "20.47", "market_value": "8029.51"},
+            {"currency": "THB", "cash_balance": "0", "market_value": "0"}]}
+        _, m = webull_data.compute_snapshot(rows, day, balance, fx_lookup=lambda: FX)
+        self.assertEqual(m["positions"], 34)
+        self.assertAlmostEqual(m["total_value"], 8049.98, places=2)
+        self.assertTrue(any("confirmed as USD" in w for w in m["warnings"]))
+
+    def test_missing_position_currency_not_confirmed_stays_excluded(self):
+        rows = [pos("AAPL", 1, 100, 100), pos("MYST", 5, 10, 10, None)]
+        balance = {"total_asset_currency": "USD", "account_currency_assets": [
+            {"currency": "USD", "cash_balance": "0", "market_value": "100"}]}  # 150 would be needed
+        df, m = webull_data.compute_snapshot(rows, {}, balance, fx_lookup=no_fx)
+        self.assertEqual(list(df["Symbol"]), ["AAPL"])
+        self.assertFalse(any("confirmed as" in w for w in m["warnings"]))
+
     def test_position_without_currency_is_excluded(self):
         rows = [pos("AAPL", 1, 100, 100), pos("MYST", 5, 10, 10, None)]
         df, m = webull_data.compute_snapshot(rows, {}, {"total_asset_currency": "USD"}, fx_lookup=no_fx)
@@ -217,6 +236,14 @@ class CachedSnapshotTest(unittest.TestCase):
         self.assertEqual(usd.metric[1].value, "$8,049.98")
         thb = self.run_page("../app.py", ccy="THB")
         self.assertEqual(thb.metric[1].value, money(8049.98 * 33.65, "฿"))
+
+    def test_dividends_use_only_usd_holdings(self):
+        self.save(lambda: ([pos("AAPL", 2, 100, 150), pos("PTT", 100, 30, 33.65, "THB")], {},
+                           {"total_asset_currency": "USD", "account_currency_assets": []}))
+        webull = self.run_page("../pages/2_Webull.py")
+        dividends = webull.tabs[3]
+        self.assertTrue(any("1 non-USD holding(s) are excluded" in c.value for c in dividends.caption))
+        self.assertEqual(dividends.metric[2].value, "0 / 1")
 
     def test_pages_flag_unverified_cash(self):
         self.save(lambda: ([pos("AAPL", 1, 100, 100)], {}, {"total_cash_balance": "5"}))
